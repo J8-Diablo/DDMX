@@ -2,6 +2,11 @@
 
 ## Vue d'ensemble
 DummyDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos projecteurs, gerer des cues JSON et appliquer des effets en temps reel.
+<img width="1845" height="752" alt="Capture d&#39;écran 2025-12-24 003907" src="https://github.com/user-attachments/assets/34c1bf47-48f7-4efc-ab61-ac8e5a556257" />
+<img width="1381" height="436" alt="Capture d&#39;écran 2025-12-24 003923" src="https://github.com/user-attachments/assets/368a2d39-5a8e-468e-902a-ac5074d7f62a" />
+<img width="1827" height="615" alt="Capture d&#39;écran 2025-12-24 003935" src="https://github.com/user-attachments/assets/c5aab0fe-f1f9-4130-aa4b-81b6331b5313" />
+
+
 
 ## Pre-requis
 - Python 3.10+ installe
