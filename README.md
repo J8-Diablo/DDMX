@@ -1,7 +1,7 @@
-﻿# DummyDMX - Guide Utilisateur
+﻿# DDMX - Guide Utilisateur
 
 ## Vue d'ensemble
-DummyDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos projecteurs, gerer des cues JSON et appliquer des effets en temps reel.
+DDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos projecteurs, gerer des cues JSON et appliquer des effets en temps reel.
 <img width="1845" height="752" alt="Capture d&#39;écran 2025-12-24 003907" src="https://github.com/user-attachments/assets/34c1bf47-48f7-4efc-ab61-ac8e5a556257" />
 <img width="1381" height="436" alt="Capture d&#39;écran 2025-12-24 003923" src="https://github.com/user-attachments/assets/368a2d39-5a8e-468e-902a-ac5074d7f62a" />
 <img width="1827" height="615" alt="Capture d&#39;écran 2025-12-24 003935" src="https://github.com/user-attachments/assets/c5aab0fe-f1f9-4130-aa4b-81b6331b5313" />
@@ -57,3 +57,20 @@ DummyDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vo
 - Ajoutez de nouveaux effets dans `effects_definitions.json` et, si necessaire, le calcul associe dans `Effect.py`.
 - Dupliquez/editez des cues dans `cue/` pour creer des shows personnalises.
 - Changez l'IP ArtNet ou le port Flask selon votre reseau.
+
+## License
+
+This project is licensed under the [Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC-SA 4.0)](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
+You are free to:
+- **Share** — copy and redistribute the material in any medium or format.
+- **Adapt** — remix, transform, and build upon the material.
+
+Under the following terms:
+- **Attribution** — You must give appropriate credit.  
+- **NonCommercial** — You may not use the material for commercial purposes.
+
+## Credits
+
+- **JDiablo** (GitHub: [J8-Diablo](https://github.com/J8-Diablo) Original author)  
+- **Hugo Dupont** (Original author Name)
