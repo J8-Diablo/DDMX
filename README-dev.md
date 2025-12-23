@@ -1,4 +1,4 @@
-﻿# DummyDMX - Guide Developpeur
+﻿# DDMX - Guide Developpeur
 
 ## Architecture rapide
 - Backend : Flask (`app.py`) gere l'API, rend `templates/index.html`.
