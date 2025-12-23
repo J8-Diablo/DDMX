@@ -1,0 +1,128 @@
+{
+  "effects": [
+    {
+      "name": "Sinus",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" }
+      ]
+    },
+    {
+      "name": "Triangle",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" }
+      ]
+    },
+    {
+      "name": "Sawtooth",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" }
+      ]
+    },
+    {
+      "name": "Rectangle",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" },
+        { "key": "duty", "label": "Duty Cycle", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0.5 }
+      ]
+    },
+    {
+      "name": "Bump",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" },
+        { "key": "width", "label": "Width", "type": "range", "min": 0.01, "max": 1, "step": 0.01, "default": 0.1 }
+      ]
+    },
+    {
+      "name": "Trapezoid",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" },
+        { "key": "rise", "label": "Rise", "type": "range", "min": 0, "max": 0.5, "step": 0.05, "default": 0.2 },
+        { "key": "high", "label": "High", "type": "range", "min": 0, "max": 0.5, "step": 0.05, "default": 0.3 },
+        { "key": "fall", "label": "Fall", "type": "range", "min": 0, "max": 0.5, "step": 0.05, "default": 0.2 }
+      ]
+    },
+    {
+      "name": "Capacitor",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" },
+        { "key": "charge", "label": "Charge", "type": "range", "min": 0.01, "max": 0.5, "step": 0.01, "default": 0.2 },
+        { "key": "discharge", "label": "Discharge", "type": "range", "min": 0.01, "max": 0.5, "step": 0.01, "default": 0.2 }
+      ]
+    },
+    {
+      "name": "CardinalSinus",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" }
+      ]
+    },
+    {
+      "name": "Pows",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" },
+        { "key": "power", "label": "Power", "type": "range", "min": 0.1, "max": 5, "step": 0.1, "default": 2 }
+      ]
+    },
+    {
+      "name": "Swing",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" },
+        { "key": "hold", "label": "Hold", "type": "range", "min": 0, "max": 0.5, "step": 0.05, "default": 0.1 }
+      ]
+    },
+    {
+      "name": "Swing Up",
+      "category": "Wave",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "range", "min": -255, "max": 255, "default": 100 },
+        { "key": "frequency", "label": "Frequency (Hz)", "type": "range", "min": 0, "max": 10, "step": 0.1, "default": 1 },
+        { "key": "phase", "label": "Phase (ms)", "type": "text", "default": "0", "hint": "0, 0>500, 0<500, 0|500, 0||500, 0?500" }
+      ]
+    },
+    {
+      "name": "Chaser",
+      "category": "Sequence",
+      "params": [
+        { "key": "amplitude", "label": "Amplitude", "type": "number", "min": -255, "max": 255, "default": 255 },
+        { "key": "duration", "label": "Duration (ms)", "type": "number", "min": 0, "max": 60000, "default": 200, "hint": "Temps au peak (peut etre 0)" },
+        { "key": "fade", "label": "Fade (ms)", "type": "number", "min": 0, "max": 10000, "default": 100, "hint": "Fade in ET out" },
+        { "key": "fadeCurve", "label": "Fade Curve", "type": "select", "options": ["Linear", "EaseIn", "EaseOut", "EaseInOut", "Snap", "Smooth"], "default": "Linear" },
+        { "key": "breakStep", "label": "Break Step", "type": "number", "min": 0, "max": 100, "default": 0, "hint": "Pause tous les N steps (0=jamais)" },
+        { "key": "breakSize", "label": "Break Size (ms)", "type": "number", "min": 0, "max": 5000, "default": 500, "hint": "Duree de la pause" },
+        { "key": "size", "label": "Size", "type": "number", "min": 1, "max": 100, "default": 1, "hint": "Nb devices allumes" },
+        { "key": "stepSize", "label": "Step Size", "type": "number", "min": 1, "max": 100, "default": 1, "hint": "Saut de N devices" },
+        { "key": "playMode", "label": "Play Mode", "type": "select", "options": ["Normal", "Reverse", "Bounce", "In", "Out", "InOut", "Random", "Switch"], "default": "Normal" }
+      ]
+    }
+  ]
+}
+

@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DMX Controller ArtNet Engine UI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+
+  <!-- Notyf (toasts) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/notyf@3/notyf.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/notyf@3/notyf.min.js"></script>
+
+  <!-- SweetAlert2 (modals) -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <h1 data-i18n="header.title">DMX Controller ArtNet Engine UI</h1>
+  </div>
+
+  <div class="topbar-right">
+    <label class="lang-switch">
+      <span data-i18n="header.lang">Language</span>
+      <select id="lang-select">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+      </select>
+    </label>
+    <button id="new-json" data-i18n="header.newJson">New JSON</button>
+    <button id="run-cues" data-i18n="header.play">Play</button>
+    <button id="pause-cues" class="secondary" disabled data-i18n="header.pause">Pause</button>
+    <button id="skip-cue" class="secondary" disabled data-i18n="header.skip">Skip</button>
+    <button id="stop-cues" data-i18n="header.stop">Stop</button>
+    <button id="stop-effects" class="secondary" data-i18n="header.stopFx">Stop FX</button>
+    <button id="ident-toggle" class="secondary" data-i18n="header.ident">Identify: OFF</button>
+  </div>
+</header>
+<!-- Playback status bar -->
+<div id="playback-bar" class="playback-bar hidden">
+  <span id="playback-cue-name">--</span>
+  <div class="playback-timing">
+    <span id="playback-phase">--</span>
+    <span id="playback-countdown">--</span>
+    <button id="wait-minus" title="-100ms">-100ms</button>
+    <button id="wait-plus" title="+100ms">+100ms</button>
+    <span id="wait-adjust-display" class="muted">±0ms</span>
+  </div>
+</div>
+
+<main class="main-grid">
+
+  <!-- LEFT -->
+  <section class="panel rig-panel">
+    <div class="panel-header">
+      <h2 data-i18n="rig.title">Rig</h2>
+      <div class="muted" data-i18n="rig.subtitle">Click to select, drag to move, dbl-click to edit settings.</div>
+    </div>
+
+    <div class="add-device-bar">
+      <label>
+        <span data-i18n="rig.fixture">Fixture</span>
+        <select id="fixture-type-select"></select>
+      </label>
+
+      <label>
+        <span data-i18n="rig.cname">Cname</span>
+        <input id="fixture-name-input" data-i18n="placeholders.auto" data-i18n-attr="placeholder" placeholder="auto" />
+      </label>
+
+      <label>
+        <span data-i18n="rig.universe">Universe</span>
+        <input id="fixture-universe-input" type="number" min="0" value="0" />
+      </label>
+
+      <label>
+        <span data-i18n="rig.address">Address (empty = auto)</span>
+        <input id="fixture-address-input" type="number" min="0" max="511" data-i18n="placeholders.auto" data-i18n-attr="placeholder" placeholder="auto" />
+      </label>
+
+      <button id="add-fixture-btn" data-i18n="rig.addDevice">Add device</button>
+      <button id="delete-device-btn" class="danger" data-i18n="rig.deleteSelected">Delete selected</button>
+    </div>
+
+    <!-- NOUVELLE BARRE DE TRI DE LA SÉLECTION -->
+    <div class="rig-sort-bar">
+      <span class="muted" data-i18n="rig.orderSelection">Order selection:</span>
+      <button id="rig-sort-vert" disabled data-i18n="rig.sortVertical">Vertical</button>
+      <button id="rig-sort-horiz" disabled data-i18n="rig.sortHorizontal">Horizontal</button>
+      <button id="rig-sort-vert-one" disabled data-i18n="rig.sortVertOne">Vert ONE</button>
+      <button id="rig-sort-horiz-one" disabled data-i18n="rig.sortHorizOne">Horiz ONE</button>
+      <button id="rig-sort-id" disabled data-i18n="rig.sortId">ID</button>
+      <button id="rig-sort-random" disabled data-i18n="rig.sortRandom">Random</button>
+      <button id="rig-sort-reverse" disabled data-i18n="rig.sortReverse">Revert</button>
+    </div>
+
+    <canvas id="rig-canvas" width="900" height="520"></canvas>
+  </section>
+
+  <!-- RIGHT -->
+  <section class="panel cues-panel">
+    <div class="panel-header">
+      <h2 data-i18n="cues.title">Cue Lists</h2>
+      <div class="muted" data-i18n="cues.path">/cue/*.json</div>
+    </div>
+
+    <div class="cue-files">
+      <select id="cue-file-select"></select>
+      <button id="cue-load-file" data-i18n="cues.load">Load</button>
+      <button id="cue-save-file" data-i18n="cues.save">Save</button>
+      <button id="cue-save-as" data-i18n="cues.saveAs">Save as</button>
+    </div>
+
+    <div class="cue-actions">
+      <button id="cue-add" data-i18n="cues.add">Add Cue</button>
+      <button id="cue-update" data-i18n="cues.update">Update Cue</button>
+      <button id="cue-duplicate" data-i18n="cues.duplicate">Duplicate</button>
+      <button id="cue-play-from" class="secondary" disabled data-i18n="cues.playFrom">Play From</button>
+      <button id="cue-delete" class="danger" data-i18n="cues.delete">Delete Cue</button>
+      <button id="cue-move-up" data-i18n="cues.up">Up</button>
+      <button id="cue-move-down" data-i18n="cues.down">Down</button>
+      <span id="cue-selection-count"></span>
+    </div>
+
+    <div class="cue-loop-actions">
+      <button id="cue-create-loop" data-i18n="cues.createLoop">Create Loop Group</button>
+      <button id="cue-remove-loop" data-i18n="cues.removeLoop">Remove Loop</button>
+      <label>
+        <span data-i18n="cues.loopCount">Loop count:</span>
+        <input id="loop-count-input" type="number" min="1" value="2" style="width:50px"/>
+      </label>
+    </div>
+
+    <div class="cue-table-container">
+      <table class="cue-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Name</th>
+            <th>Sleep</th>
+            <th>Duration</th>
+            <th>Devices</th>
+          </tr>
+        </thead>
+        <tbody id="cue-table-body"></tbody>
+      </table>
+    </div>
+
+    <div class="cue-props">
+      <h3 data-i18n="cues.propsTitle">Cue properties</h3>
+
+      <label>
+        <span data-i18n="cues.propName">Name</span>
+        <input id="cue-prop-name" data-i18n="cues.placeholderName" data-i18n-attr="placeholder" placeholder="Cue name"/>
+      </label>
+
+      <label>
+        <span data-i18n="cues.propSleep">Sleep (ms)</span>
+        <input id="cue-prop-sleep" data-i18n="cues.placeholderSleep" data-i18n-attr="placeholder" placeholder="ex: 0 or 500" />
+      </label>
+
+      <label>
+        <span data-i18n="cues.propDuration">Duration / Fade (ms / patterns)</span>
+        <input id="cue-prop-duration" data-i18n="cues.placeholderDuration" data-i18n-attr="placeholder" placeholder="ex: 500 or 100 > 1000" />
+      </label>
+
+      <button id="cue-prop-apply" data-i18n="cues.propApply">Apply</button>
+    </div>
+  </section>
+
+</main>
+
+<section class="panel controller-panel">
+  <div class="panel-header">
+    <h2 data-i18n="controller.title">Controller</h2>
+    <div id="controller-info" class="muted" data-i18n="controller.info">Select device(s) in rig.</div>
+  </div>
+
+
+  <div class="controller-tabs">
+    <button class="tab-btn active" data-tab="rig" data-i18n="tabs.rig">Rig</button>
+    <button class="tab-btn" data-tab="effects" data-i18n="tabs.effects">Effects</button>
+  </div>
+
+  <div id="tab-rig" class="tab-content active">
+    <div class="controller-grid">
+      <div class="ctrl-box">
+        <h3 data-i18n="controller.intensity">Intensity</h3>
+        <div id="intensity-body"></div>
+      </div>
+
+      <div class="ctrl-box">
+        <h3 data-i18n="controller.color">Color</h3>
+        <div id="color-body"></div>
+      </div>
+
+      <div class="ctrl-box">
+        <h3 data-i18n="controller.position">Position</h3>
+        <div id="position-body"></div>
+      </div>
+
+      <div class="ctrl-box">
+        <h3 data-i18n="controller.beam">Beam</h3>
+        <div id="beam-body"></div>
+      </div>
+    </div>
+
+    <div class="controller-actions">
+      <button id="apply-selection" data-i18n="controller.applyNow">Apply now</button>
+    </div>
+  </div>
+
+  <div id="tab-effects" class="tab-content">
+    <div class="effects-grid">
+      <div class="ctrl-box effects-left">
+        <h3 data-i18n="effects.targetsTitle">Targets & Effects</h3>
+        <div id="effects-targets" class="effects-targets"></div>
+      </div>
+
+      <div class="ctrl-box effects-right">
+        <h3 data-i18n="effects.libraryTitle">Effect Library</h3>
+        <div id="effects-list" class="effects-list"></div>
+        <div class="muted effects-hint" data-i18n="effects.hint">
+          Double-click an effect to apply it to the selected devices and attribute.
+        </div>
+      </div>
+    </div>
+
+    <div class="ctrl-box actual-effects-panel">
+      <div class="actual-effects-header">
+        <h3 data-i18n="effects.actualTitle">Actual Effects</h3>
+        <div class="muted" data-i18n="effects.actualSub">Effets actuellement appliqu?s (live ou cue).</div>
+      </div>
+      <div id="actual-effects-list" class="actual-effects-list"></div>
+    </div>
+  </div>
+</section>
+
+
+<!-- SortableJS (drag & drop des cues) -->
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="{{ url_for('static', filename='i18n.js') }}"></script>
+<!-- Scripts -->
+<script src="{{ url_for('static', filename='ui.js') }}"></script>
+<script src="{{ url_for('static', filename='core.js') }}"></script>
+<script src="{{ url_for('static', filename='rig.js') }}"></script>
+<script src="{{ url_for('static', filename='effects.js') }}"></script>
+<script src="{{ url_for('static', filename='cues.js') }}"></script>
+<script src="{{ url_for('static', filename='popup.js') }}"></script>
+
+</body>
+</html>

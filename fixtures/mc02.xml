@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<device type="DMXDevice" dmxaddresscount="4" dmxcversion="3.1.0" ddfversion="1.0.0">
+  <information>
+    <model>LED Pannel</model>
+    <vendor>Rushmead-Theatrical</vendor>
+    <author>Conversion Tool</author>
+    <mode>Mode 4</mode>
+  </information>
+
+  <functions>
+    <!-- Dimmer -->
+    <dimmer dmxchannel="0"/>
+    <!-- Focus/Beam -->
+    <focus dmxchannel="4"/>
+  
+
+    <!-- RGB color mix -->
+    <rgb>
+      <red   dmxchannel="1"/>
+      <green dmxchannel="2"/>
+      <blue  dmxchannel="3"/>
+    </rgb>
+  </functions>
+
+  <procedures>
+    <reset>
+      <!-- Pour refermer la lampe -->
+      <set dmxchannel="0" value="0"/>
+      <hold value="1000"/>
+      <restore dmxchannel="0"/>
+    </reset>
+  </procedures>
+</device>

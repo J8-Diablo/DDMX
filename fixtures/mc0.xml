@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<device type="DMXDevice" dmxaddresscount="7" dmxcversion="3.1.0" ddfversion="1.0.0">
+  <information>
+    <model>MovingLightV1</model>
+    <vendor>Rushmead-Theatrical</vendor>
+    <author>Conversion Tool</author>
+    <mode>Mode 7</mode>
+  </information>
+
+  <functions>
+    <!-- Dimmer -->
+    <dimmer dmxchannel="0"/>
+
+    <!-- RGB color mix -->
+    <rgb>
+      <red   dmxchannel="1"/>
+      <green dmxchannel="2"/>
+      <blue  dmxchannel="3"/>
+    </rgb>
+
+    <!-- Focus/Beam -->
+    <focus dmxchannel="4"/>
+
+    <!-- Pan/Tilt positioning -->
+    <position>
+      <pan  dmxchannel="5">
+        <!-- -270° à +270° = 540° total -->
+        <range range="720"/>
+      </pan>
+      <tilt dmxchannel="6">
+        <!-- -135° à +135° = 270° total -->
+        <range range="720"/>
+      </tilt>
+    </position>
+  </functions>
+
+  <procedures>
+    <reset>
+      <!-- Pour refermer la lampe -->
+      <set dmxchannel="0" value="0"/>
+      <hold value="1000"/>
+      <restore dmxchannel="0"/>
+    </reset>
+  </procedures>
+</device>
