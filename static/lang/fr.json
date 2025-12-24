@@ -12,7 +12,7 @@
   "header.identOff": "Identify : OFF",
 
   "rig.title": "Rig",
-  "rig.subtitle": "Clique pour sélectionner, déplace en drag, double-clic pour éditer.",
+  "rig.subtitle": "Clique pour sélectionner, déplace en drag, double-clic pour éditer, CTRL + drag pour selection multiple.",
   "rig.fixture": "Projecteur",
   "rig.cname": "Nom",
   "rig.universe": "Univers",

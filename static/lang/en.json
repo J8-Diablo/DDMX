@@ -12,7 +12,7 @@
   "header.identOff": "Identify: OFF",
 
   "rig.title": "Rig",
-  "rig.subtitle": "Click to select, drag to move, dbl-click to edit settings.",
+  "rig.subtitle": "Click to select, drag to move, dbl-click to edit settings; CTRL+Drag to multi select.",
   "rig.fixture": "Fixture",
   "rig.cname": "Cname",
   "rig.universe": "Universe",
