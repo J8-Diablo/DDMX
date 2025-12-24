@@ -6,7 +6,8 @@ DDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos pr
 <img width="1381" height="436" alt="Capture d&#39;écran 2025-12-24 003923" src="https://github.com/user-attachments/assets/368a2d39-5a8e-468e-902a-ac5074d7f62a" />
 <img width="1827" height="615" alt="Capture d&#39;écran 2025-12-24 003935" src="https://github.com/user-attachments/assets/c5aab0fe-f1f9-4130-aa4b-81b6331b5313" />
 
-
+## Live Demo in Minecraft
+[![Demo](https://img.youtube.com/vi/oqz7Yo2GnXA/0.jpg)](https://www.youtube.com/watch?v=oqz7Yo2GnXA "Demo")
 
 ## Pre-requis
 - Python 3.10+ installe
