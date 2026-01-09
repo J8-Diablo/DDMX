@@ -213,6 +213,15 @@ function initSplitLayout() {
 // UI HELPERS
 ///////////////////////
 
+const t = (key, fallback) =>
+  (typeof window.t === "function" ? window.t(key, fallback) : (fallback || key));
+const tfmt = (key, fallback, params) => {
+  if (typeof window.tfmt === "function") return window.tfmt(key, fallback, params);
+  const template = t(key, fallback);
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (_, k) => (params[k] == null ? "" : String(params[k])));
+};
+
 const toast = (m, t = "success") => {
   if (!m) return;
   if (window.ui && typeof window.ui.toast === "function") window.ui.toast(m, t);
@@ -223,7 +232,10 @@ const confirmModal = async (title, text) => {
   if (window.ui && typeof window.ui.confirmModal === "function") {
     return await window.ui.confirmModal(title, text);
   }
-  toast(`(no confirm modal) ${title}: ${text}`, "warning");
+  toast(
+    tfmt("ui.confirmUnavailable", "(confirm unavailable) {title}: {text}", { title, text }),
+    "warning"
+  );
   return true;
 };
 
@@ -231,7 +243,10 @@ const promptModal = async (title, val = "", ph = "") => {
   if (window.ui && typeof window.ui.promptModal === "function") {
     return await window.ui.promptModal(title, val, ph);
   }
-  toast(`(input indisponible) ${title} → action annulée`, "warning");
+  toast(
+    tfmt("ui.inputUnavailable", "(input unavailable) {title} -> action canceled", { title }),
+    "warning"
+  );
   return null;
 };
 
@@ -239,7 +254,7 @@ const deviceEditModal = async (dev) => {
   if (window.ui && typeof window.ui.deviceEditModal === "function") {
     return await window.ui.deviceEditModal(dev);
   }
-  toast("Device edit modal indisponible.", "error");
+  toast(t("ui.deviceEditUnavailable", "(device edit unavailable) SweetAlert2 not loaded."), "error");
   return null;
 };
 
@@ -493,9 +508,10 @@ document.addEventListener("DOMContentLoaded", () => {
 // FIXTURES
 ///////////////////////
 
-async function loadFixtures() {
+async function loadFixtures(retryCount = 0) {
   try {
-    const r = await fetch("/api/fixtures");
+    const r = await fetch("/api/fixtures", { cache: "no-store" });
+    if (!r.ok) throw new Error(`fixtures: ${r.status}`);
     fixtures = await r.json();
   } catch (e) {
     fixtures = {};
@@ -511,6 +527,10 @@ async function loadFixtures() {
     opt.value = name;
     opt.textContent = `${fx.info?.model || name} (${name})`;
     sel.appendChild(opt);
+  }
+
+  if (!Object.keys(fixtures).length && retryCount < 5) {
+    setTimeout(() => loadFixtures(retryCount + 1), 1000);
   }
 }
 
@@ -582,7 +602,7 @@ function bindButtons() {
 
 async function handleLoadCueClick() {
   const sel = $id("cue-file-select");
-  if (!sel) return toast("cue-file-select introuvable.", "error");
+  if (!sel) return toast(t("cues.toast.selectMissing", "Cue file selector not found."), "error");
 
   if (!sel.value) {
     await refreshCueFileList();
@@ -594,7 +614,7 @@ async function handleLoadCueClick() {
     sel.options[0]?.value;
 
   if (!filename) {
-    toast("Aucun fichier de cue dispo.", "error");
+    toast(t("cues.toast.noneAvailable", "No cue file available."), "error");
     return;
   }
 
@@ -615,26 +635,63 @@ window.addEventListener("load", () => {
   rigCtx = rigCanvas.getContext("2d");
 
   // Layout : split horizontal Rig/Cues
-  initSplitLayout();
+  try {
+    initSplitLayout();
+  } catch (e) {
+    console.error("[BOOT] initSplitLayout failed", e);
+  }
 
   // Events rig (pan/zoom/select dans rig.js)
-  bindRigCanvasEvents();
-  rigCanvas.addEventListener("wheel", onRigWheel, { passive: false });
+  if (typeof bindRigCanvasEvents === "function") {
+    try {
+      bindRigCanvasEvents();
+    } catch (e) {
+      console.error("[BOOT] bindRigCanvasEvents failed", e);
+    }
+  } else {
+    console.warn("[BOOT] bindRigCanvasEvents missing");
+  }
+  if (typeof onRigWheel === "function") {
+    rigCanvas.addEventListener("wheel", onRigWheel, { passive: false });
+  } else {
+    console.warn("[BOOT] onRigWheel missing");
+  }
 
-  bindButtons();
-  bindTabs();
+  try {
+    bindButtons();
+  } catch (e) {
+    console.error("[BOOT] bindButtons failed", e);
+  }
+  try {
+    bindTabs();
+  } catch (e) {
+    console.error("[BOOT] bindTabs failed", e);
+  }
 
   loadFixtures().then(() => {
-    refreshCueFileList();
-    applyLayoutSplit(); // ensure canvas size + first draw
+    if (typeof refreshCueFileList === "function") {
+      refreshCueFileList();
+    } else {
+      console.warn("[BOOT] refreshCueFileList missing");
+    }
+    try {
+      applyLayoutSplit(); // ensure canvas size + first draw
+    } catch (e) {
+      console.error("[BOOT] applyLayoutSplit failed", e);
+    }
   });
 
-  if ($id("tab-effects")?.classList.contains("active")) {
+  if ($id("tab-effects")?.classList.contains("active") &&
+      typeof ensureEffectsLoaded === "function") {
     ensureEffectsLoaded().then(() => {
       renderEffectsLibrary();
       renderEffectsTargets();
     });
   }
 
-  startEffectRunner();
+  if (typeof startEffectRunner === "function") {
+    startEffectRunner();
+  } else {
+    console.warn("[BOOT] startEffectRunner missing");
+  }
 });

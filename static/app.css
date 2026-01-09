@@ -409,6 +409,63 @@ select:focus {
   border-radius: 4px;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
+.sync-video-section {
+  margin-top: 6px;
+  padding: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sync-video-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sync-video-header h3 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sync-video-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sync-video-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sync-video-row input {
+  flex: 1 1 160px;
+  min-width: 120px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.sync-video-row button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 .cue-files select {
   flex: 1;
 }
@@ -1023,6 +1080,76 @@ input[type="range"].vertical.tilt-slider {
   border-color: var(--accent);
   color: var(--text);
   transform: scale(1.05);
+}
+
+.swal2-popup.dmx-settings-modal {
+  max-height: 82vh;
+  overflow: hidden;
+  background: radial-gradient(circle at top, rgba(37, 99, 235, 0.12), transparent 55%),
+              linear-gradient(160deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.96));
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: var(--shadow-soft);
+}
+
+.swal2-popup.dmx-settings-modal .swal2-html-container {
+  max-height: 68vh;
+  overflow-y: auto;
+  margin: 0;
+}
+
+.swal2-popup.dmx-settings-modal .swal2-title {
+  color: var(--text);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 16px;
+}
+
+.swal2-popup.dmx-settings-modal .swal2-actions .swal2-styled {
+  border-radius: 999px;
+}
+
+.dmx-settings-form {
+  display: grid;
+  gap: 12px;
+  text-align: left;
+}
+
+.dmx-settings-section {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.dmx-settings-section-title {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.dmx-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dmx-settings-form label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.dmx-settings-form input[type="text"],
+.dmx-settings-form input[type="url"] {
+  width: 100%;
+  background: rgba(15, 23, 42, 0.95);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
 }
 
 /* PANEL PLACEHOLDER (when panel is popped out) */

@@ -1,7 +1,6 @@
 // static/rig.js
 // Gestion du rig : devices, canvas pan/zoom, multi-select, controller (sliders, color, position)
 
-
 // Initialize default values for a device (RGB=white, dimmer=255)
 function initDeviceDefaults(deviceId, fixtureName) {
   const fi = fixtures[fixtureName];
@@ -108,12 +107,14 @@ function findNextFreeAddress(universe, addrCount) {
 
 function addDeviceFromUI() {
   const fixtureName = $id("fixture-type-select")?.value;
-  if (!fixtureName) return toast("Select a fixture first.", "error");
+  if (!fixtureName) return toast(t("rig.toast.selectFixture", "Select a fixture first."), "error");
 
   const fi = fixtures[fixtureName] || {};
   const addrCount = fi.addr_count || 1;
 
-  const cname = $id("fixture-name-input")?.value || `Device ${nextDeviceId}`;
+  const cname =
+    $id("fixture-name-input")?.value ||
+    tfmt("rig.defaultDeviceName", "Device {id}", { id: nextDeviceId });
   const universe = parseInt($id("fixture-universe-input")?.value || "0", 10);
 
   const addrInput = $id("fixture-address-input");
@@ -122,7 +123,9 @@ function addDeviceFromUI() {
 
   if (!manualMode) {
     const free = findNextFreeAddress(universe, addrCount);
-    if (free == null) return toast("No free DMX address in this universe.", "error");
+    if (free == null) {
+      return toast(t("rig.toast.noFreeAddress", "No free DMX address in this universe."), "error");
+    }
     address = free;
   } else {
     address = clamp(parseInt(addrInput.value, 10) || 0, 0, 511);
@@ -149,7 +152,7 @@ function addDeviceFromUI() {
 
   refreshControllerFromSelection();
   drawRig();
-  toast(`Device ${id} ajouté`);
+  toast(tfmt("rig.toast.deviceAdded", "Device {id} added", { id }));
 }
 
 async function editDeviceDialog(id) {
@@ -171,8 +174,12 @@ async function deleteSelectedDevices() {
   if (selectedDeviceOrder.length === 0) return;
 
   const ok = await confirmModal(
-    "Delete devices",
-    `Delete ${selectedDeviceOrder.length} selected device(s)?`
+    t("rig.confirm.deleteTitle", "Delete devices"),
+    tfmt(
+      "rig.confirm.deleteBody",
+      "Delete {count} selected device(s)?",
+      { count: selectedDeviceOrder.length }
+    )
   );
   if (!ok) return;
 
@@ -203,7 +210,7 @@ async function deleteSelectedDevices() {
   if (typeof renderActualEffectsPanel === "function") {
     renderActualEffectsPanel();
   }
-  toast("Devices deleted", "info");
+  toast(t("rig.toast.devicesDeleted", "Devices deleted"), "info");
 }
 
 ///////////////////////
@@ -255,7 +262,7 @@ function rebuildRigFromCueFile() {
     rigDevices[id] = {
       id,
       fixture: dev.fixture,
-      cname: dev.cname ?? `Device ${id}`,
+      cname: dev.cname ?? tfmt("rig.defaultDeviceName", "Device {id}", { id }),
       universe: dev.universe ?? 0,
       address: dev.address ?? 0,
       x: dev.x ?? 100,
@@ -385,7 +392,7 @@ function sortSelectionVerticalOne() {
 
   refreshControllerFromSelection();
   drawRig();
-  toast(`${groups.length} columns`, "info");
+  toast(tfmt("rig.toast.columns", "{count} columns", { count: groups.length }), "info");
 }
 
 // Horizontal ONE: devices in same row (same Y) get same index
@@ -441,7 +448,7 @@ function sortSelectionHorizontalOne() {
 
   refreshControllerFromSelection();
   drawRig();
-  toast(`${groups.length} rows`, "info");
+  toast(tfmt("rig.toast.rows", "{count} rows", { count: groups.length }), "info");
 }
 
 function sortSelectionById() {
@@ -514,7 +521,7 @@ function refreshControllerFromSelection() {
   updateRigSortButtonsState();
 
   if (!selectedDeviceOrder.length) {
-    if (info) info.textContent = "Select device(s) in rig.";
+    if (info) info.textContent = t("rig.info.selectDevices", "Select device(s) in rig.");
     $id("intensity-body") && ($id("intensity-body").innerHTML = "");
     $id("color-body") && ($id("color-body").innerHTML = "");
     $id("position-body") && ($id("position-body").innerHTML = "");
@@ -523,7 +530,13 @@ function refreshControllerFromSelection() {
     return;
   }
 
-  if (info) info.textContent = `${selectedDeviceOrder.length} device(s) selected.`;
+  if (info) {
+    info.textContent = tfmt(
+      "rig.info.devicesSelected",
+      "{count} device(s) selected.",
+      { count: selectedDeviceOrder.length }
+    );
+  }
 
   const firstId = selectedDeviceOrder[0];
   const first = rigDevices[firstId];
@@ -542,29 +555,29 @@ function refreshControllerFromSelection() {
   const ib = $id("intensity-body");
   if (ib) {
     ib.innerHTML = "";
-    if (funcs.dimmer) addLocalSlider(ib, "Dimmer", funcs.dimmer.channel);
-    else ib.innerHTML = "<span class='muted'>No dimmer defined.</span>";
+    if (funcs.dimmer) addLocalSlider(ib, t("rig.label.dimmer", "Dimmer"), funcs.dimmer.channel);
+    else ib.innerHTML = `<span class='muted'>${t("rig.info.noDimmer", "No dimmer defined.")}</span>`;
   }
 
   const cb = $id("color-body");
   if (cb) {
     cb.innerHTML = "";
     if (funcs.rgb) addRgbControls(cb, funcs.rgb);
-    else cb.innerHTML = "<span class='muted'>No RGB function defined.</span>";
+    else cb.innerHTML = `<span class='muted'>${t("rig.info.noRgb", "No RGB function defined.")}</span>`;
   }
 
   const pb = $id("position-body");
   if (pb) {
     pb.innerHTML = "";
     if (funcs.position) addPositionControls(pb, funcs.position);
-    else pb.innerHTML = "<span class='muted'>No position function defined.</span>";
+    else pb.innerHTML = `<span class='muted'>${t("rig.info.noPosition", "No position function defined.")}</span>`;
   }
 
   const bb = $id("beam-body");
   if (bb) {
     bb.innerHTML = "";
     if (funcs.beam) addBeamControls(bb, funcs.beam);
-    else bb.innerHTML = "<span class='muted'>No beam controls yet.</span>";
+    else bb.innerHTML = `<span class='muted'>${t("rig.info.noBeam", "No beam controls yet.")}</span>`;
   }
 
   // Si l’onglet "Effects" est actif, on rafraîchit l’affichage des groupes
@@ -660,9 +673,9 @@ function addRgbControls(container, rgbMap) {
   const sliders = {};
 
   const comps = [
-    { name: "Red", key: "red" },
-    { name: "Green", key: "green" },
-    { name: "Blue", key: "blue" },
+    { name: t("rig.label.red", "Red"), key: "red" },
+    { name: t("rig.label.green", "Green"), key: "green" },
+    { name: t("rig.label.blue", "Blue"), key: "blue" },
   ];
 
   comps.forEach(c => {
@@ -797,12 +810,12 @@ function addPositionControls(container, posMap) {
   let tiltSlider = null;
 
   if (panIdx != null) {
-    panSlider = addLocalSlider(panWrapper, "Pan", panIdx);
+    panSlider = addLocalSlider(panWrapper, t("rig.label.pan", "Pan"), panIdx);
   }
 
   if (tiltIdx != null) {
     // on lui donne juste une classe en plus pour le style vertical
-    tiltSlider = addLocalSlider(tiltWrapper, "Tilt", tiltIdx, {
+    tiltSlider = addLocalSlider(tiltWrapper, t("rig.label.tilt", "Tilt"), tiltIdx, {
       className: "tilt-row"
     });
   }
@@ -903,7 +916,7 @@ async function applySelectionToEngine(silent = false) {
     await applyUniverseState(u, flat);
   }
 
-  if (!silent) toast("Applied", "info");
+  if (!silent) toast(t("rig.toast.applied", "Applied"), "info");
 }
 
 ///////////////////////

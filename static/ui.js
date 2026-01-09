@@ -4,6 +4,14 @@
 
 window.ui = (() => {
   let notyf = null;
+  const t = (key, fallback) =>
+    (typeof window.t === "function" ? window.t(key, fallback) : (fallback || key));
+  const tfmt = (key, fallback, params) => {
+    if (typeof window.tfmt === "function") return window.tfmt(key, fallback, params);
+    const template = t(key, fallback);
+    if (!params) return template;
+    return template.replace(/\{(\w+)\}/g, (_, k) => (params[k] == null ? "" : String(params[k])));
+  };
 
   try {
     if (window.Notyf) {
@@ -90,15 +98,15 @@ window.ui = (() => {
         text,
         icon,
         showCancelButton: true,
-        confirmButtonText: "OK",
-        cancelButtonText: "Annuler",
+        confirmButtonText: t("common.ok", "OK"),
+        cancelButtonText: t("common.cancel", "Cancel"),
         reverseButtons: true,
         focusCancel: true
       });
       return !!res.isConfirmed;
     }
-    toast(`(confirm indisponible) ${title}: ${text}`, "warning");
-    return true;
+    const msg = [title, text].filter(Boolean).join("\n\n");
+    return window.confirm(msg);
   }
 
   async function promptModal(title, inputValue = "", placeholder = "") {
@@ -109,34 +117,36 @@ window.ui = (() => {
         inputValue,
         inputPlaceholder: placeholder,
         showCancelButton: true,
-        confirmButtonText: "OK",
-        cancelButtonText: "Annuler"
+        confirmButtonText: t("common.ok", "OK"),
+        cancelButtonText: t("common.cancel", "Cancel")
       });
       return res.isConfirmed ? (res.value ?? "") : null;
     }
-    toast(`(input indisponible) ${title} → action annulée`, "warning");
-    return null;
+    const hint = placeholder ? `\n${placeholder}` : "";
+    const res = window.prompt(`${title}${hint}`, inputValue);
+    return res === null ? null : res;
   }
 
   async function deviceEditModal(dev) {
     if (hasSwal()) {
+      const modalTitle = tfmt("ui.deviceEditTitle", "Edit Device {id}", { id: dev.id });
       const res = await window.Swal.fire({
-        title: `Edit Device ${dev.id}`,
+        title: modalTitle,
         html: `
           <div style="display:grid;gap:8px;text-align:left">
-            <label style="font-size:12px;opacity:.7">CName</label>
-            <input id="sw-cname" class="swal2-input" value="${dev.cname ?? ""}" placeholder="Device name">
+            <label style="font-size:12px;opacity:.7">${t("ui.deviceEditCnameLabel", "CName")}</label>
+            <input id="sw-cname" class="swal2-input" value="${dev.cname ?? ""}" placeholder="${t("ui.deviceEditCnamePlaceholder", "Device name")}">
 
-            <label style="font-size:12px;opacity:.7">Universe</label>
+            <label style="font-size:12px;opacity:.7">${t("ui.deviceEditUniverseLabel", "Universe")}</label>
             <input id="sw-uni" class="swal2-input" type="number" min="0" value="${dev.universe ?? 0}">
 
-            <label style="font-size:12px;opacity:.7">Address</label>
+            <label style="font-size:12px;opacity:.7">${t("ui.deviceEditAddressLabel", "Address")}</label>
             <input id="sw-addr" class="swal2-input" type="number" min="0" max="511" value="${dev.address ?? 0}">
           </div>
         `,
         showCancelButton: true,
-        confirmButtonText: "Save",
-        cancelButtonText: "Cancel",
+        confirmButtonText: t("common.save", "Save"),
+        cancelButtonText: t("common.cancel", "Cancel"),
         preConfirm: () => {
           const cname = document.getElementById("sw-cname").value.trim();
           const universe = parseInt(document.getElementById("sw-uni").value, 10) || 0;
@@ -146,8 +156,24 @@ window.ui = (() => {
       });
       return res.isConfirmed ? res.value : null;
     }
-    toast("(device edit indisponible) SweetAlert2 non chargé.", "warning");
-    return null;
+    const cname = window.prompt(t("ui.deviceEditCnameLabel", "CName"), dev.cname ?? "");
+    if (cname === null) return null;
+    const universeRaw = window.prompt(
+      t("ui.deviceEditUniverseLabel", "Universe"),
+      String(dev.universe ?? 0)
+    );
+    if (universeRaw === null) return null;
+    const addressRaw = window.prompt(
+      t("ui.deviceEditAddressLabel", "Address"),
+      String(dev.address ?? 0)
+    );
+    if (addressRaw === null) return null;
+    return {
+      ...dev,
+      cname: cname.trim(),
+      universe: parseInt(universeRaw, 10) || 0,
+      address: parseInt(addressRaw, 10) || 0
+    };
   }
 
   return { toast, confirmModal, promptModal, deviceEditModal };

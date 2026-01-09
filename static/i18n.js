@@ -13,6 +13,15 @@
     return translations[key] || fallback || key;
   };
 
+  window.tfmt = function tfmt(key, fallback, params) {
+    const template = window.t(key, fallback);
+    if (!params) return template;
+    return template.replace(/\{(\w+)\}/g, (_, k) => {
+      const v = params[k];
+      return v == null ? "" : String(v);
+    });
+  };
+
   async function loadLanguage(lang) {
     const safeLang = lang || DEFAULT_LANG;
     try {
@@ -66,4 +75,3 @@
     loadLanguage(saved);
   });
 })();
-

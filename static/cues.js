@@ -5,6 +5,7 @@
 window.dmxLocked = window.dmxLocked || false;
 window.identMode = window.identMode || false;
 
+
 // ============================================================================
 // PLAYBACK STATE
 // ============================================================================
@@ -46,18 +47,25 @@ function startEffectRenderLoop() {
   requestAnimationFrame(tick);
 }
 
+async function runSyncVideoCue(step) {
+  if (window.syncVideo && typeof window.syncVideo.runCueAction === "function") {
+    await window.syncVideo.runCueAction(step);
+  }
+}
+
 
 ///////////////////////
 // FICHIERS DE CUE
 ///////////////////////
 
-async function refreshCueFileList() {
+async function refreshCueFileList(retryCount = 0) {
   const sel = $id("cue-file-select");
   if (!sel) return;
   sel.innerHTML = "";
   
   try {
-    const r = await fetch("/api/cue_files");
+    const r = await fetch("/api/cue_files", { cache: "no-store" });
+    if (!r.ok) throw new Error(`cue_files: ${r.status}`);
     const data = await r.json();
     const files = data.files || [];
     
@@ -73,8 +81,14 @@ async function refreshCueFileList() {
       sel.value = currentCueFilename;
       await loadCueFile(currentCueFilename);
     }
+    if (!files.length && retryCount < 5) {
+      setTimeout(() => refreshCueFileList(retryCount + 1), 1000);
+    }
   } catch (e) {
     console.error(e);
+    if (retryCount < 5) {
+      setTimeout(() => refreshCueFileList(retryCount + 1), 1000);
+    }
   }
 }
 
@@ -112,7 +126,10 @@ async function loadCueFile(filename) {
   if (!filename) return;
   
   try {
-    const r = await fetch(`/api/cues/${filename}`);
+    const r = await fetch(`/api/cues/${encodeURIComponent(filename)}`, { cache: "no-store" });
+    if (!r.ok) {
+      throw new Error(`load cue failed (${r.status})`);
+    }
     const data = await r.json();
     cuesObj = data || { 
       loop: false, 
@@ -129,34 +146,40 @@ async function loadCueFile(filename) {
     rebuildRigFromCueFile();
     renderCueTable();
     fillCuePropsFromSelected();
-    toast(`Loaded ${filename}`, "success");
+    toast(tfmt("cues.toast.loaded", "Loaded {filename}", { filename }), "success");
   } catch (e) {
     console.error(e);
-    toast("Failed to load cue file", "error");
+    toast(t("cues.toast.loadFailed", "Failed to load cue file"), "error");
   }
 }
 
 async function saveCurrentCueFile() {
-  if (!currentCueFilename) return toast("No cue file selected.", "error");
+  if (!currentCueFilename) {
+    return toast(t("cues.toast.noFileSelected", "No cue file selected."), "error");
+  }
   
   cuesObj.devices_def = buildDevicesDefFromRig();
   cuesObj.virtual_groups = virtualGroups;
   
   try {
-    await fetch(`/api/cues/${currentCueFilename}`, {
+    await fetch(`/api/cues/${encodeURIComponent(currentCueFilename)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
     });
-    toast("Saved", "success");
+    toast(t("cues.toast.saved", "Saved"), "success");
   } catch (e) {
     console.error(e);
-    toast("Save failed", "error");
+    toast(t("cues.toast.saveFailed", "Save failed"), "error");
   }
 }
 
 async function saveCueFileAs() {
-  let name = await promptModal("New cue filename", "New.json", "ex: myshow.json");
+  let name = await promptModal(
+    t("cues.prompt.newFilenameTitle", "New cue filename"),
+    t("cues.prompt.newFilenameDefault", "New.json"),
+    t("cues.prompt.newFilenamePlaceholder", "ex: myshow.json")
+  );
   if (!name) return;
   
   name = makeUniqueCueName(name);
@@ -164,7 +187,7 @@ async function saveCueFileAs() {
   cuesObj.virtual_groups = virtualGroups;
   
   try {
-    await fetch(`/api/cues/${name}`, {
+    await fetch(`/api/cues/${encodeURIComponent(name)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
@@ -174,10 +197,10 @@ async function saveCueFileAs() {
     
     const sel = $id("cue-file-select");
     if (sel) sel.value = name;
-    toast("Saved as " + name, "success");
+    toast(tfmt("cues.toast.savedAs", "Saved as {name}", { name }), "success");
   } catch (e) {
     console.error(e);
-    toast("Save as failed", "error");
+    toast(t("cues.toast.saveAsFailed", "Save as failed"), "error");
   }
 }
 
@@ -187,7 +210,7 @@ async function saveCueFileAs() {
 
 function buildDevicesBlockFromSelection() {
   if (selectedDeviceOrder.length === 0) {
-    toast("Select at least one device in the rig.", "error");
+    toast(t("cues.toast.selectDevice", "Select at least one device in the rig."), "error");
     return { devices: null, deviceGroups: null };
   }
   
@@ -277,7 +300,7 @@ function cueAddFromSelection() {
 
   const seq = cuesObj.sequence || [];
   const step = {
-    name: `Cue ${seq.length + 1}`,
+    name: tfmt("cues.defaultIndexedName", "Cue {index}", { index: seq.length + 1 }),
     sleep: "0",
     duration: "0",
     devices,
@@ -290,11 +313,13 @@ function cueAddFromSelection() {
   selectedCueIndex = seq.length - 1;
   fillCuePropsFromSelected();
   renderCueTable();
-  toast("Cue added");
+  toast(t("cues.toast.added", "Cue added"));
 }
 
 function cueUpdateFromSelection() {
-  if (selectedCueIndex == null) return toast("Select a cue first.", "error");
+  if (selectedCueIndex == null) {
+    return toast(t("cues.toast.selectCueFirst", "Select a cue first."), "error");
+  }
 
   const { devices, deviceGroups } = buildDevicesBlockFromSelection();
   if (!devices) return;
@@ -315,18 +340,20 @@ function cueUpdateFromSelection() {
   }
 
   renderCueTable();
-  toast("Cue updated", "info");
+  toast(t("cues.toast.updated", "Cue updated"), "info");
 }
 
 async function cueDelete() {
   const count = selectedCueIndices.size;
   if (count === 0) {
-    toast("Select a cue first.", "error");
+    toast(t("cues.toast.selectCueFirst", "Select a cue first."), "error");
     return;
   }
 
-  const msg = count > 1 ? `Delete ${count} selected cues?` : "Delete selected cue?";
-  const ok = await confirmModal("Delete cue(s)", msg);
+  const msg = count > 1
+    ? tfmt("cues.confirm.deleteBodyMulti", "Delete {count} selected cues?", { count })
+    : t("cues.confirm.deleteBodySingle", "Delete selected cue?");
+  const ok = await confirmModal(t("cues.confirm.deleteTitle", "Delete cue(s)"), msg);
   if (!ok) return;
 
   // Delete in reverse order to keep indices valid
@@ -339,7 +366,7 @@ async function cueDelete() {
   selectedCueIndices.clear();
   renderCueTable();
   fillCuePropsFromSelected();
-  toast(`${count} cue(s) deleted`, "info");
+  toast(tfmt("cues.toast.deleted", "{count} cue(s) deleted", { count }), "info");
 }
 
 // Deep copy helper for cue duplication
@@ -382,7 +409,7 @@ function cloneEffectsForCueCopy(copy) {
 function cueDuplicate() {
   const count = selectedCueIndices.size;
   if (count === 0) {
-    toast("Select a cue first.", "error");
+    toast(t("cues.toast.selectCueFirst", "Select a cue first."), "error");
     return;
   }
 
@@ -394,7 +421,8 @@ function cueDuplicate() {
   for (const idx of sortedIndices) {
     const original = cuesObj.sequence[idx];
     const copy = deepCopyCue(original);
-    copy.name = (original.name || "Cue") + " (copy)";
+    const baseName = original.name || t("cues.defaultName", "Cue");
+    copy.name = tfmt("cues.copyName", "{name} (copy)", { name: baseName });
     cloneEffectsForCueCopy(copy);
     newCues.push(copy);
   }
@@ -411,7 +439,7 @@ function cueDuplicate() {
 
   renderCueTable();
   fillCuePropsFromSelected();
-  toast(`${count} cue(s) duplicated`, "success");
+  toast(tfmt("cues.toast.duplicated", "{count} cue(s) duplicated", { count }), "success");
 }
 
 function fillCuePropsFromSelected() {
@@ -430,7 +458,7 @@ function applyCueProps() {
   step.duration = $id("cue-prop-duration")?.value || "0";
   
   renderCueTable();
-  toast("Cue props updated", "info");
+  toast(t("cues.toast.propsUpdated", "Cue props updated"), "info");
 }
 
 let lastClickedCueIndex = null; // For shift+click range selection
@@ -465,7 +493,11 @@ function renderCueTable() {
       const loopBadge = document.createElement("span");
       loopBadge.className = "loop-badge";
       loopBadge.textContent = `🔁${step.loopCount || 1}`;
-      loopBadge.title = `Loop group: ${step.loopGroup}, ${step.loopCount || 1}x`;
+      loopBadge.title = tfmt(
+        "cues.loopBadgeTitle",
+        "Loop group: {group}, {count}x",
+        { group: step.loopGroup, count: step.loopCount || 1 }
+      );
       tdIdx.appendChild(loopBadge);
     }
 
@@ -542,7 +574,9 @@ function updateCueSelectionCount() {
   const countEl = $id("cue-selection-count");
   if (countEl) {
     const count = selectedCueIndices.size;
-    countEl.textContent = count > 1 ? `(${count} selected)` : "";
+    countEl.textContent = count > 1
+      ? tfmt("cues.selectionCount", "({count} selected)", { count })
+      : "";
   }
 }
 
@@ -555,7 +589,7 @@ let nextLoopGroupId = 1;
 function createLoopGroup() {
   const count = selectedCueIndices.size;
   if (count < 2) {
-    toast("Select at least 2 cues to create a loop group.", "error");
+    toast(t("cues.toast.loopNeedTwo", "Select at least 2 cues to create a loop group."), "error");
     return;
   }
 
@@ -567,7 +601,7 @@ function createLoopGroup() {
   // Check if indices are contiguous
   for (let i = 1; i < sortedIndices.length; i++) {
     if (sortedIndices[i] !== sortedIndices[i-1] + 1) {
-      toast("Selected cues must be contiguous for loop group.", "error");
+      toast(t("cues.toast.loopContiguous", "Selected cues must be contiguous for loop group."), "error");
       return;
     }
   }
@@ -582,13 +616,20 @@ function createLoopGroup() {
   }
 
   renderCueTable();
-  toast(`Loop group created (${count} cues, ${loopCount}x)`, "success");
+  toast(
+    tfmt(
+      "cues.toast.loopCreated",
+      "Loop group created ({count} cues, {loopCount}x)",
+      { count, loopCount }
+    ),
+    "success"
+  );
 }
 
 function removeLoopGroup() {
   const count = selectedCueIndices.size;
   if (count === 0) {
-    toast("Select cues to remove from loop group.", "error");
+    toast(t("cues.toast.loopRemoveSelect", "Select cues to remove from loop group."), "error");
     return;
   }
 
@@ -604,9 +645,12 @@ function removeLoopGroup() {
 
   if (removed > 0) {
     renderCueTable();
-    toast(`Removed ${removed} cue(s) from loop group`, "info");
+    toast(
+      tfmt("cues.toast.loopRemoved", "Removed {removed} cue(s) from loop group", { removed }),
+      "info"
+    );
   } else {
-    toast("No loop groups found in selection.", "warning");
+    toast(t("cues.toast.loopNone", "No loop groups found in selection."), "warning");
   }
 }
 
@@ -630,7 +674,7 @@ function newJSON() {
   if (typeof renderActualEffectsPanel === "function") {
     renderActualEffectsPanel();
   }
-  toast("New cue list created", "success");
+  toast(t("cues.toast.newList", "New cue list created"), "success");
 }
 
 ///////////////////////
@@ -639,8 +683,8 @@ function newJSON() {
 
 async function runCuesFromUI() {
   const seq = cuesObj.sequence || [];
-  if (!seq.length) return toast("No cues to play.", "error");
-  if (playbackActive) return toast("Playback déjà actif.", "warning");
+  if (!seq.length) return toast(t("cues.toast.noCuesPlay", "No cues to play."), "error");
+  if (playbackActive) return toast(t("cues.toast.playbackActive", "Playback already active."), "warning");
   
   playbackActive = true;
   uiFollowStopFlag = false;
@@ -651,7 +695,7 @@ async function runCuesFromUI() {
   
   // Pilotage 100% côté UI
   uiFollowSequence(seq, runId, 0).catch(e => console.error("[UI-FOLLOW]", e));
-  toast("Playback started", "info");
+  toast(t("cues.toast.playbackStarted", "Playback started"), "info");
   showPlaybackBar();
 }
 
@@ -672,7 +716,7 @@ async function stopRun() {
   updatePlaybackUI();
 
   await fetch("/api/stop_run", { method: "POST" });
-  toast("Stopped", "info");
+  toast(t("cues.toast.playbackStopped", "Stopped"), "info");
 }
 
 function resetRigStateForPlayback() {
@@ -746,8 +790,8 @@ function findLoopGroupStart(seq, idx) {
 
 async function playFromSelectedCue() {
   const seq = cuesObj.sequence || [];
-  if (!seq.length) return toast("No cues to play.", "error");
-  if (selectedCueIndex == null) return toast("Select a cue first.", "error");
+  if (!seq.length) return toast(t("cues.toast.noCuesPlay", "No cues to play."), "error");
+  if (selectedCueIndex == null) return toast(t("cues.toast.selectCueFirst", "Select a cue first."), "error");
 
   // If selection is inside a loop group, start from the beginning of that group
   const startIdx = findLoopGroupStart(seq, Math.min(selectedCueIndex, seq.length - 1));
@@ -778,7 +822,7 @@ async function playFromSelectedCue() {
   updatePlaybackUI();
 
   uiFollowSequence(seq.slice(startIdx), runId, startIdx).catch(e => console.error("[UI-FOLLOW]", e));
-  toast(`Playback from cue ${startIdx + 1}`, "info");
+  toast(tfmt("cues.toast.playbackFrom", "Playback from cue {index}", { index: startIdx + 1 }), "info");
 }
 
 // ============================================================================
@@ -803,7 +847,9 @@ function updatePlaybackButtons() {
 
   if (pauseBtn) {
     pauseBtn.disabled = !playbackActive;
-    pauseBtn.textContent = playbackPaused ? "▶ Resume" : "⏸ Pause";
+    pauseBtn.textContent = playbackPaused
+      ? `▶ ${t("cues.playback.resume", "Resume")}`
+      : `⏸ ${t("cues.playback.pause", "Pause")}`;
   }
   if (skipBtn) {
     skipBtn.disabled = !playbackActive;
@@ -827,18 +873,24 @@ function updatePlaybackUI() {
 
   if (cueName) {
     const step = seq[playbackCueIndex];
-    cueName.textContent = step ? `Cue ${playbackCueIndex + 1}: ${step.name || ""}` : "--";
+    cueName.textContent = step
+      ? tfmt(
+        "cues.playback.cueLabel",
+        "Cue {index}: {name}",
+        { index: playbackCueIndex + 1, name: step.name || "" }
+      )
+      : "--";
   }
 
   if (phaseEl) {
     if (playbackPaused) {
-      phaseEl.textContent = "⏸ PAUSED";
+      phaseEl.textContent = `⏸ ${t("cues.playback.phasePaused", "PAUSED")}`;
       phaseEl.style.color = "#fbbf24";
     } else if (playbackPhase === "waiting") {
-      phaseEl.textContent = "⏳ Waiting";
+      phaseEl.textContent = `⏳ ${t("cues.playback.phaseWaiting", "Waiting")}`;
       phaseEl.style.color = "#60a5fa";
     } else if (playbackPhase === "fading") {
-      phaseEl.textContent = "🎬 Fading";
+      phaseEl.textContent = `🎬 ${t("cues.playback.phaseFading", "Fading")}`;
       phaseEl.style.color = "#22c55e";
     } else {
       phaseEl.textContent = "--";
@@ -905,7 +957,10 @@ function loadCueIntoUIAndRun(idx) {
 
   // Lecture d'une seule cue en pilotage 100% UI
   uiFollowSequence([step], runId, idx).catch(e => console.error("[UI-FOLLOW]", e));
-  toast(`Played ${step.name || "cue"}`, "info");
+  toast(
+    tfmt("cues.toast.played", "Played {name}", { name: step.name || t("cues.toast.playedFallback", "cue") }),
+    "info"
+  );
 }
 
 ///////////////////////
@@ -1149,6 +1204,8 @@ async function uiFollowStep(step, runId) {
   playbackPhase = "fading";
   playbackWaitRemaining = 0;
   updatePlaybackUI();
+
+  await runSyncVideoCue(step);
 
   if (!step.devices) return;
   
@@ -1468,7 +1525,7 @@ function swapCues(i, j) {
 function moveSelectedCues(delta) {
   const count = selectedCueIndices.size;
   if (count === 0) {
-    toast("Select a cue first.", "error");
+    toast(t("cues.toast.selectCueFirst", "Select a cue first."), "error");
     return;
   }
 
@@ -1540,6 +1597,11 @@ function applyCueOrderFromDOM() {
 
 
 document.addEventListener("DOMContentLoaded", () => {
+  const cueSelect = $id("cue-file-select");
+  if (cueSelect && cueSelect.options.length === 0) {
+    refreshCueFileList();
+  }
+
   // Boutons Up / Down
   const btnUp = $id("cue-move-up");
   const btnDown = $id("cue-move-down");
@@ -1599,7 +1661,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!playbackActive) return;
       playbackPaused = !playbackPaused;
       updatePlaybackUI();
-      toast(playbackPaused ? "Playback paused" : "Playback resumed", "info");
+      toast(
+        playbackPaused
+          ? t("cues.toast.playbackPaused", "Playback paused")
+          : t("cues.toast.playbackResumed", "Playback resumed"),
+        "info"
+      );
     });
   }
 
@@ -1609,7 +1676,7 @@ document.addEventListener("DOMContentLoaded", () => {
     skipCueBtn.addEventListener("click", () => {
       if (!playbackActive) return;
       skipToNextCue = true;
-      toast("Skipping to next cue...", "info");
+      toast(t("cues.toast.playbackSkip", "Skipping to next cue..."), "info");
     });
   }
 
@@ -1643,7 +1710,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       sendToEngineWithEffects(1.0);
       drawRig();
-      toast("Effects stopped", "info");
+      toast(t("cues.toast.effectsStopped", "Effects stopped"), "info");
     });
   }
 
@@ -1656,7 +1723,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // ON: Start identify mode via Python engine
         identBtn.textContent = (typeof t === "function") ? t("header.identOn", "Identify: ON") : "Identify: ON";
         identBtn.classList.add("active");
-        toast("Identification mode ON", "info");
+        toast(t("cues.toast.identOn", "Identification mode ON"), "info");
 
         // Stop any playback
         uiFollowStopFlag = true;
@@ -1697,14 +1764,14 @@ document.addEventListener("DOMContentLoaded", () => {
           console.log("[IDENT] Started via Python engine");
         } catch (e) {
           console.error("[IDENT] Failed to start:", e);
-          toast("Identify start failed", "error");
+          toast(t("cues.toast.identStartFailed", "Identify start failed"), "error");
         }
 
       } else {
         // OFF: Stop identify mode
         identBtn.textContent = (typeof t === "function") ? t("header.identOff", "Identify: OFF") : "Identify: OFF";
         identBtn.classList.remove("active");
-        toast("Identification mode OFF", "info");
+        toast(t("cues.toast.identOff", "Identification mode OFF"), "info");
 
         // Call Python engine to stop identify
         try {

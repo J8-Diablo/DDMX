@@ -76,12 +76,14 @@ class DMXRenderEngine:
     TICK_HZ = 40  # 40 Hz = 25ms per tick
 
     def __init__(self, artnet_ip: str = "127.0.0.1", bind_ip: str = "0.0.0.0"):
+        self._target_ip = artnet_ip
+        self._bind_ip = bind_ip
         # ArtNet sender
         self.artnet: Optional[ArtNetSender] = None
         if ArtNetSender:
             try:
-                self.artnet = ArtNetSender(target_ip=artnet_ip, bind_iface=bind_ip, broadcast=False)
-                log.info(f"ArtNet initialized: {artnet_ip}")
+                self.artnet = ArtNetSender(target_ip=self._target_ip, bind_iface=self._bind_ip, broadcast=False)
+                log.info(f"ArtNet initialized: {self._target_ip}")
             except Exception as e:
                 log.error(f"ArtNet init failed: {e}")
 
@@ -114,6 +116,27 @@ class DMXRenderEngine:
         self._last_state_broadcast: float = 0.0
 
         log.info("DMXRenderEngine initialized")
+
+    def set_artnet_target(self, artnet_ip: str, bind_ip: Optional[str] = None) -> bool:
+        """Reinitialize ArtNet sender with a new target IP."""
+        self._target_ip = artnet_ip
+        if bind_ip:
+            self._bind_ip = bind_ip
+        if not ArtNetSender:
+            log.warning("ArtNet sender not available.")
+            return False
+        try:
+            if self.artnet and hasattr(self.artnet, "sock"):
+                try:
+                    self.artnet.sock.close()
+                except Exception:
+                    pass
+            self.artnet = ArtNetSender(target_ip=self._target_ip, bind_iface=self._bind_ip, broadcast=False)
+            log.info(f"ArtNet target updated: {self._target_ip}")
+            return True
+        except Exception as e:
+            log.error(f"ArtNet reinit failed: {e}")
+            return False
 
     # -------------------------------------------------------------------------
     # THREAD CONTROL

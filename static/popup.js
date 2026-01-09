@@ -2,22 +2,33 @@
 // Système de popup pour détacher les panneaux UI dans des fenêtres séparées
 
 (function() {
-  // État des popups actives { panelId: { window, placeholder } }
+  // Etat des popups actives { panelId: { window, placeholder, panel, watcher } }
   const activePopups = {};
+  const t = (key, fallback) =>
+    (typeof window.t === "function" ? window.t(key, fallback) : (fallback || key));
 
   // Configuration des panneaux
   const PANEL_CONFIG = {
-    'rig-panel': { title: 'DMX - Rig', minWidth: 600, minHeight: 400 },
-    'cues-panel': { title: 'DMX - Cue Lists', minWidth: 500, minHeight: 400 },
-    'controller-panel': { title: 'DMX - Controller', minWidth: 700, minHeight: 350 }
+    'rig-panel': { titleKey: 'popup.panel.rig', fallback: 'DMX - Rig', minWidth: 600, minHeight: 400 },
+    'cues-panel': { titleKey: 'popup.panel.cues', fallback: 'DMX - Cue Lists', minWidth: 500, minHeight: 400 },
+    'controller-panel': { titleKey: 'popup.panel.controller', fallback: 'DMX - Controller', minWidth: 700, minHeight: 350 }
   };
+
+  function getPanelConfig(panelClass) {
+    const base = PANEL_CONFIG[panelClass];
+    if (!base) return null;
+    return {
+      ...base,
+      title: t(base.titleKey, base.fallback)
+    };
+  }
 
   // Crée le bouton popup pour un panneau
   function createPopupButton(panel) {
     const btn = document.createElement('button');
     btn.className = 'popup-btn';
     btn.innerHTML = '⧉';  // Unicode window icon
-    btn.title = 'Détacher dans une nouvelle fenêtre';
+    btn.title = t("popup.detachTitle", "Detach to a new window");
     btn.onclick = (e) => {
       e.stopPropagation();
       togglePopup(panel);
@@ -57,16 +68,16 @@
       openPopup(panel, panelClass);
     }
   }
-
   // Ouvre un panneau dans une popup
   function openPopup(panel, panelClass) {
-    const config = PANEL_CONFIG[panelClass];
+    const config = getPanelConfig(panelClass);
+    if (!config) return;
 
     // Crée un placeholder pour maintenir le layout
     const placeholder = document.createElement('div');
     placeholder.className = 'panel-placeholder ' + panelClass + '-placeholder';
     placeholder.dataset.forPanel = panelClass;
-    placeholder.innerHTML = `<div class="placeholder-text">📤 ${config.title}<br><small>Ouvert dans une fenêtre séparée</small></div>`;
+    placeholder.innerHTML = `<div class="placeholder-text">${config.title}<br><small>${t("popup.placeholderOpen", "Opened in a separate window")}</small></div>`;
 
     // Insère le placeholder avant le panneau
     panel.parentNode.insertBefore(placeholder, panel);
@@ -82,14 +93,14 @@
 
     if (!popup) {
       placeholder.remove();
-      alert('Popup bloquée! Autorisez les popups pour ce site.');
+      alert(t("popup.blocked", "Popup blocked! Allow popups for this site."));
       return;
     }
 
     // Construit le document de la popup
     popup.document.write(`
       <!DOCTYPE html>
-      <html lang="fr">
+      <html lang="${document.documentElement.lang || "en"}">
       <head>
         <meta charset="utf-8">
         <title>${config.title}</title>
@@ -113,11 +124,22 @@
     const popupBtn = panel.querySelector('.popup-btn');
     if (popupBtn) {
       popupBtn.innerHTML = '⮐';  // Return icon
-      popupBtn.title = 'Retourner à la fenêtre principale';
+      popupBtn.title = t("popup.returnTitle", "Return to main window");
     }
 
+    const closeWatcher = setInterval(() => {
+      if (!activePopups[panelClass]) {
+        clearInterval(closeWatcher);
+        return;
+      }
+      if (popup.closed) {
+        clearInterval(closeWatcher);
+        closePopup(panelClass);
+      }
+    }, 500);
+
     // Enregistre la popup
-    activePopups[panelClass] = { window: popup, placeholder, panel };
+    activePopups[panelClass] = { window: popup, placeholder, panel, watcher: closeWatcher };
 
     // Gère la fermeture de la popup
     popup.onbeforeunload = () => closePopup(panelClass);
@@ -137,7 +159,7 @@
     const data = activePopups[panelClass];
     if (!data) return;
 
-    const { window: popup, placeholder, panel } = data;
+    const { window: popup, placeholder, panel, watcher } = data;
 
     // Retourne le panneau à la fenêtre principale
     if (placeholder && placeholder.parentNode) {
@@ -149,10 +171,16 @@
     const popupBtn = panel.querySelector('.popup-btn');
     if (popupBtn) {
       popupBtn.innerHTML = '⧉';
-      popupBtn.title = 'Détacher dans une nouvelle fenêtre';
+      popupBtn.title = t("popup.detachTitle", "Detach to a new window");
     }
 
-    // Ferme la fenêtre popup si encore ouverte
+    if (watcher) {
+      clearInterval(watcher);
+    }
+
+
+
+    // Ferme la fenetre popup si encore ouverte
     if (popup && !popup.closed) {
       popup.onbeforeunload = null;
       popup.close();

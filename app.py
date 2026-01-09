@@ -5,6 +5,7 @@ import os
 import json
 import time
 import logging
+import socket
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional
 from queue import Queue
@@ -26,9 +27,65 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURES_DIR = os.path.join(BASE_DIR, "fixtures")
 CUE_DIR = os.path.join(BASE_DIR, "cue")
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
+SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 os.makedirs(FIXTURES_DIR, exist_ok=True)
 os.makedirs(CUE_DIR, exist_ok=True)
+os.makedirs(CONFIG_DIR, exist_ok=True)
+
+# ---------- SETTINGS ----------
+
+def get_local_ip() -> str:
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def load_settings() -> Dict[str, Any]:
+    defaults = {
+        "dmx_target_ip": get_local_ip(),
+        "sync_video": {
+            "enabled": False,
+            "base_url": "http://127.0.0.1:3000",
+            "token": ""
+        }
+    }
+    if not os.path.exists(SETTINGS_PATH):
+        return defaults
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            if isinstance(data.get("dmx_target_ip"), str) and data["dmx_target_ip"].strip():
+                defaults["dmx_target_ip"] = data["dmx_target_ip"].strip()
+            sync = data.get("sync_video")
+            if isinstance(sync, dict):
+                if isinstance(sync.get("enabled"), bool):
+                    defaults["sync_video"]["enabled"] = sync["enabled"]
+                base_url = sync.get("base_url") or sync.get("baseUrl")
+                if isinstance(base_url, str) and base_url.strip():
+                    defaults["sync_video"]["base_url"] = base_url.strip()
+                if isinstance(sync.get("token"), str):
+                    defaults["sync_video"]["token"] = sync["token"].strip()
+    except Exception:
+        pass
+    return defaults
+
+
+def save_settings(settings: Dict[str, Any]) -> None:
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+SETTINGS = load_settings()
+if not os.path.exists(SETTINGS_PATH):
+    save_settings(SETTINGS)
 
 # ---------- LOGGING ----------
 logging.basicConfig(
@@ -39,6 +96,12 @@ logging.basicConfig(
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.logger.setLevel(logging.DEBUG)
 
+@app.after_request
+def disable_api_cache(response):
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 # ---------- DMX RENDER ENGINE ----------
 RENDER_ENGINE: Optional[DMXRenderEngine] = None
 
@@ -46,7 +109,8 @@ def init_engine():
     global RENDER_ENGINE
     if DMXRenderEngine is not None:
         try:
-            RENDER_ENGINE = DMXRenderEngine(artnet_ip="127.0.0.1", bind_ip="0.0.0.0")
+            target_ip = SETTINGS.get("dmx_target_ip") or "127.0.0.1"
+            RENDER_ENGINE = DMXRenderEngine(artnet_ip=target_ip, bind_ip="0.0.0.0")
             RENDER_ENGINE.start()
             app.logger.info("DMX Render Engine started.")
         except Exception as e:
@@ -217,6 +281,60 @@ def api_cues_file(filename: str):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"ok": True})
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    sync = SETTINGS.get("sync_video") or {}
+    return jsonify({
+        "dmx_target_ip": SETTINGS.get("dmx_target_ip", "127.0.0.1"),
+        "local_ip": get_local_ip(),
+        "sync_video": {
+            "enabled": bool(sync.get("enabled")),
+            "base_url": sync.get("base_url") or "http://127.0.0.1:3000",
+            "token": sync.get("token") or ""
+        }
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_post():
+    payload = request.get_json() or {}
+    ip = payload.get("dmx_target_ip") or payload.get("dmx_ip")
+    engine_updated = False
+    if ip is not None:
+        if not isinstance(ip, str) or not ip.strip():
+            return jsonify({"error": "invalid dmx_target_ip"}), 400
+        ip = ip.strip()
+        SETTINGS["dmx_target_ip"] = ip
+        if RENDER_ENGINE is not None and hasattr(RENDER_ENGINE, "set_artnet_target"):
+            try:
+                engine_updated = bool(RENDER_ENGINE.set_artnet_target(ip))
+            except Exception as e:
+                app.logger.exception("Failed to update DMX target IP: %s", e)
+
+    sync_payload = payload.get("sync_video")
+    if isinstance(sync_payload, dict):
+        sync = SETTINGS.get("sync_video") or {}
+        enabled = sync_payload.get("enabled")
+        if isinstance(enabled, bool):
+            sync["enabled"] = enabled
+        base_url = sync_payload.get("base_url") or sync_payload.get("baseUrl")
+        if isinstance(base_url, str):
+            sync["base_url"] = base_url.strip()
+        token = sync_payload.get("token")
+        if isinstance(token, str):
+            sync["token"] = token.strip()
+        SETTINGS["sync_video"] = sync
+
+    save_settings(SETTINGS)
+
+    return jsonify({
+        "ok": True,
+        "dmx_target_ip": SETTINGS.get("dmx_target_ip", "127.0.0.1"),
+        "engineUpdated": engine_updated,
+        "sync_video": SETTINGS.get("sync_video") or {}
+    })
 
 
 # ---------- NEW API: LIVE CONTROL ----------

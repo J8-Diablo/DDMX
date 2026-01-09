@@ -45,17 +45,18 @@ function getDeviceGroupIndex(deviceId, deviceOrder) {
 }
 
 const EFFECT_ATTRS = [
-  { key: "dimmer", label: "Dimmer" },
-  { key: "r", label: "Color R" },
-  { key: "g", label: "Color G" },
-  { key: "b", label: "Color B" },
-  { key: "pan", label: "Pan" },
-  { key: "tilt", label: "Tilt" },
+  { key: "dimmer", labelKey: "effects.attr.dimmer", fallback: "Dimmer" },
+  { key: "r", labelKey: "effects.attr.colorR", fallback: "Color R" },
+  { key: "g", labelKey: "effects.attr.colorG", fallback: "Color G" },
+  { key: "b", labelKey: "effects.attr.colorB", fallback: "Color B" },
+  { key: "pan", labelKey: "effects.attr.pan", fallback: "Pan" },
+  { key: "tilt", labelKey: "effects.attr.tilt", fallback: "Tilt" },
 ];
 
 function getAttrLabel(key) {
   const entry = EFFECT_ATTRS.find(a => a.key === key);
-  return entry?.label || key || "Attr";
+  if (!entry) return t("effects.attr.fallback", "Attr");
+  return t(entry.labelKey, entry.fallback);
 }
 
 ///////////////////////
@@ -89,7 +90,7 @@ function renderEffectsLibrary() {
   listEl.innerHTML = "";
   
   if (!availableEffects.length) {
-    listEl.innerHTML = "<div class='muted'>No effects loaded.</div>";
+    listEl.innerHTML = `<div class='muted'>${t("effects.library.empty", "No effects loaded.")}</div>`;
     return;
   }
   
@@ -100,7 +101,7 @@ function renderEffectsLibrary() {
     const item = document.createElement("div");
     item.className = "effects-item";
     item.textContent = label;
-    item.title = "Double-click to apply";
+    item.title = t("effects.library.itemTitle", "Double-click to apply");
     
     item.addEventListener("dblclick", (ev) => {
       ev.preventDefault();
@@ -169,7 +170,7 @@ function renderEffectsTargets() {
   container.innerHTML = "";
   
   if (!selectedDeviceOrder.length) {
-    container.innerHTML = "<div class='muted'>Select devices in the rig to manage effects.</div>";
+    container.innerHTML = `<div class='muted'>${t("effects.targets.empty", "Select devices in the rig to manage effects.")}</div>`;
     return;
   }
   
@@ -185,11 +186,14 @@ function renderEffectsTargets() {
     header.onclick = () => {
       activeEffectAttr = attr.key;
       renderEffectsTargets();
-      toast(`Attribut actif: ${attr.label}`, "info");
+      toast(
+        tfmt("effects.toast.activeAttr", "Active attribute: {attr}", { attr: getAttrLabel(attr.key) }),
+        "info"
+      );
     };
     
     const title = document.createElement("div");
-    title.textContent = attr.label;
+    title.textContent = getAttrLabel(attr.key);
     
     const groupsForAttr = Object.values(virtualGroups).filter(g => {
       if (g.attrKey !== attr.key) return false;
@@ -203,7 +207,11 @@ function renderEffectsTargets() {
     
     const badge = document.createElement("span");
     badge.className = "badge";
-    badge.textContent = groupsForAttr.length + " group(s)";
+    badge.textContent = tfmt(
+      "effects.targets.groupCount",
+      "{count} group(s)",
+      { count: groupsForAttr.length }
+    );
     
     header.appendChild(title);
     header.appendChild(badge);
@@ -216,7 +224,10 @@ function renderEffectsTargets() {
         const none = document.createElement("div");
         none.className = "muted";
         none.style.fontSize = "12px";
-        none.textContent = "No effect group on this attribute for this selection.";
+        none.textContent = t(
+          "effects.targets.noneForSelection",
+          "No effect group on this attribute for this selection."
+        );
         body.appendChild(none);
       } else {
         groupsForAttr.forEach(group => {
@@ -240,14 +251,22 @@ function buildEffectGroupCard(group, options = {}) {
   card.className = "effect-card";
 
   const title = document.createElement("div");
-  title.textContent = group.type || "Effect";
+  title.textContent = group.type || t("effects.card.titleFallback", "Effect");
   title.style.fontWeight = "600";
   card.appendChild(title);
 
   const sub = document.createElement("div");
   sub.className = "muted";
   sub.style.fontSize = "11px";
-  const defaultSubtitle = `Group ${group.id} - ${getAttrLabel(group.attrKey)} - devices: ${(group.deviceIds || []).join(', ')}`;
+  const defaultSubtitle = tfmt(
+    "effects.card.subtitle",
+    "Group {id} - {attr} - devices: {devices}",
+    {
+      id: group.id,
+      attr: getAttrLabel(group.attrKey),
+      devices: (group.deviceIds || []).join(", ")
+    }
+  );
   sub.textContent = subtitle || defaultSubtitle;
   card.appendChild(sub);
 
@@ -354,7 +373,7 @@ function buildEffectGroupCard(group, options = {}) {
 
   const rm = document.createElement("button");
   rm.className = "remove-btn";
-  rm.textContent = removeLabel || "Remove";
+  rm.textContent = removeLabel || t("effects.card.remove", "Remove");
   rm.onclick = () => {
     if (typeof onRemove === "function") onRemove(group);
     else removeEffectGroupFromCurrentSelection(group);
@@ -365,7 +384,7 @@ function buildEffectGroupCard(group, options = {}) {
     for (const action of extraActions) {
       if (!action || typeof action.handler !== "function") continue;
       const btn = document.createElement("button");
-      btn.textContent = action.label || "Action";
+      btn.textContent = action.label || t("effects.card.action", "Action");
       btn.className = action.className || "secondary";
       btn.onclick = () => action.handler(group);
       actions.push(btn);
@@ -388,7 +407,7 @@ function removeEffectGroupFromCurrentSelection(group) {
     if (!deviceCurrentGroups[id]) deviceCurrentGroups[id] = new Set();
     deviceCurrentGroups[id].delete(group.id);
   }
-  toast(`Group ${group.id} removed.`, "info");
+  toast(tfmt("effects.toast.groupRemoved", "Group {id} removed.", { id: group.id }), "info");
   renderEffectsTargets();
   renderActualEffectsPanel();
 }
@@ -400,7 +419,7 @@ function removeEffectGroupFromCurrentSelection(group) {
 async function applyEffectToSelection(effectName) {
   try {
     if (!selectedDeviceOrder.length) {
-      toast("Sélectionne d'abord des devices.", "error");
+      toast(t("effects.toast.selectDevicesFirst", "Select devices first."), "error");
       return;
     }
 
@@ -438,10 +457,17 @@ async function applyEffectToSelection(effectName) {
 
     renderEffectsTargets();
     renderActualEffectsPanel();
-    toast(`Effet ${effectName} ajouté (${groupId}) sur ${attrKey}`, "success");
+    toast(
+      tfmt(
+        "effects.toast.effectAdded",
+        "Effect {name} added ({groupId}) on {attr}",
+        { name: effectName, groupId, attr: getAttrLabel(attrKey) }
+      ),
+      "success"
+    );
   } catch (err) {
     console.error("[FX] error:", err);
-    toast("Ajout d'effet échoué.", "error");
+    toast(t("effects.toast.effectAddFailed", "Failed to add effect."), "error");
   }
 }
 
@@ -497,13 +523,13 @@ function isGroupUsedAnywhere(groupId) {
 function glowDevicesInRig(devices, durationMs = 5000) {
   const ids = (devices || []).map(String).filter(id => rigDevices[id]);
   if (!ids.length) {
-    toast("Devices non trouvés dans le rig.", "warning");
+    toast(t("effects.toast.devicesNotFound", "Devices not found in rig."), "warning");
     return;
   }
   if (typeof triggerRigGlow === "function") {
     triggerRigGlow(ids, durationMs);
   } else {
-    toast("Glow rig indisponible.", "error");
+    toast(t("effects.toast.glowUnavailable", "Glow rig unavailable."), "error");
   }
 }
 
@@ -575,7 +601,7 @@ function removeEffectGroupCompletely(groupId) {
   }
 
   if (removedFromCues || removedLive) {
-    toast(`Effet ${groupId} supprimé.`, "info");
+    toast(tfmt("effects.toast.effectRemoved", "Effect {id} removed.", { id: groupId }), "info");
   }
 }
 
@@ -587,7 +613,7 @@ function renderActualEffectsPanel() {
   listEl.innerHTML = "";
 
   if (!active.length) {
-    listEl.innerHTML = "<div class='muted'>Aucun effet actif.</div>";
+    listEl.innerHTML = `<div class='muted'>${t("effects.actual.empty", "No active effects.")}</div>`;
     return;
   }
 
@@ -600,17 +626,23 @@ function renderActualEffectsPanel() {
 
   for (const { group, devices } of active) {
     const usage = countGroupUsageInCues(group.id);
-    const subtitle = `Attr: ${getAttrLabel(group.attrKey)} - Devices: ${devices.join(', ') || 'n/a'}`;
-    const metaText = usage ? `Présent dans ${usage} cue(s)` : "Pas dans la cue chargée";
+    const subtitle = tfmt(
+      "effects.actual.subtitle",
+      "Attr: {attr} - Devices: {devices}",
+      { attr: getAttrLabel(group.attrKey), devices: devices.join(", ") || "n/a" }
+    );
+    const metaText = usage
+      ? tfmt("effects.actual.presentInCues", "Present in {count} cue(s)", { count: usage })
+      : t("effects.actual.notInCue", "Not in current cue");
 
     const card = buildEffectGroupCard(group, {
       subtitle,
       metaText,
-      removeLabel: "Glow device in Rig",
+      removeLabel: t("effects.actual.glowButton", "Glow device in Rig"),
       onRemove: () => glowDevicesInRig(devices, 5000),
       extraActions: [
         {
-          label: "Désactiver",
+          label: t("effects.actual.disableButton", "Disable"),
           handler: () => disableGroupOnRig(group.id),
           className: "secondary"
         }

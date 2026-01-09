@@ -1,4 +1,5 @@
 ﻿# DDMX - Guide Utilisateur
+Version: 0.1.1
 
 ## Vue d'ensemble
 DDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos projecteurs, gerer des cues JSON et appliquer des effets en temps reel.
@@ -14,16 +15,23 @@ DDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos pr
 - Reseau permettant l'envoi ArtNet (cible par defaut 127.0.0.1)
 - Fixtures XML dans `fixtures/`
 - (Optionnel) Cues JSON dans `cue/`
+- (Optionnel GUI) Qt WebEngine via `PySide6` (installe via `requirements.txt`)
 
 ## Installation rapide
 1) Creez/activez un venv si besoin.
-2) Installez Flask : `pip install flask` (ou `pip install -r requirements.txt` si present).
+2) Installez les dependances : `pip install -r requirements.txt`.
 3) Verifiez vos fixtures dans `fixtures/` et vos cues dans `cue/` (les dossiers sont crees automatiquement).
 
 ## Lancement du serveur
 - Demarrer : `python app.py`
 - Acces UI : http://localhost:5000
 - ArtNet : la cible est `127.0.0.1` (changeable dans `app.py` via `DMXRenderEngine(artnet_ip=...)`).
+
+## Lancement en mode app (PySide6)
+- Installer les dependances : `pip install -r requirements.txt`
+- Demarrer : `python gui.py` (ouvre une fenetre integree QtWebEngine)
+- Les popups JS (`window.open`) ouvrent une nouvelle fenetre.
+- Les settings sont sauvegardes dans `config/settings.json`.
 
 ## Utilisation de l'interface
 - Barre superieure : choix de langue (EN/FR), creation de nouveau JSON, Play/Pause/Skip/Stop, Stop FX, Identify ON/OFF.
@@ -41,6 +49,7 @@ DDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos pr
 - `GET /api/fixtures` : liste les fixtures parses.
 - `GET /api/cue_files` : liste des cues disponibles.
 - `GET/POST /api/cues/<filename>` : lire/ecrire une cue JSON.
+- `GET/POST /api/settings` : lire/ecrire `dmx_target_ip` et config Sync Video.
 - `POST /api/live/channels` : ecrire des valeurs DMX `{universe, channels:{ch:val}}`.
 - `POST /api/live/effect/start|stop` : demarrer/arret er un effet live sur un device.
 - `POST /api/playback/go|stop` : lancer/arret er la lecture d'une cue.
@@ -53,6 +62,7 @@ DDMX est un controleur DMX/ArtNet avec interface web (Flask) pour piloter vos pr
 - Aucun fixture visible : XML mal forme ou manquant dans `fixtures/`.
 - UI vide ou boutons inactifs : controlez la console du navigateur pour les appels API (port/CORS).
 - Effets inactifs : assurez-vous que les devices sont selectionnes et que Stop FX n'est pas actif.
+- GUI blanche au demarrage : relancez `python gui.py` et verifiez que Flask est demarre.
 
 ## Aller plus loin
 - Ajoutez de nouveaux effets dans `effects_definitions.json` et, si necessaire, le calcul associe dans `Effect.py`.
