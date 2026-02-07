@@ -23,6 +23,124 @@ function initDeviceDefaults(deviceId, fixtureName) {
   }
 }
 
+///////////////////////
+// MOVEMENT CHANNELS SYNC (PAN/TILT)
+///////////////////////
+
+let movementSyncTimer = null;
+let lastMovementChannelsPayload = "";
+let dummySyncTimer = null;
+let lastDummyChannelsPayload = "";
+
+const DUMMY_MIN_CHANNELS = 13;
+
+function buildMovementChannelsByUniverse() {
+  const map = {};
+
+  for (const dev of Object.values(rigDevices)) {
+    if (!dev) continue;
+    const fi = fixtures[dev.fixture] || {};
+    const pos = fi.functions?.position;
+    if (!pos) continue;
+
+    const u = parseInt(dev.universe, 10) || 0;
+    map[u] ||= new Set();
+
+    if (pos.pan?.channel != null) {
+      const abs = dev.address + parseInt(pos.pan.channel, 10);
+      if (Number.isFinite(abs)) map[u].add(abs);
+    }
+    if (pos.tilt?.channel != null) {
+      const abs = dev.address + parseInt(pos.tilt.channel, 10);
+      if (Number.isFinite(abs)) map[u].add(abs);
+    }
+  }
+
+  const out = {};
+  for (const [u, set] of Object.entries(map)) {
+    out[u] = Array.from(set).sort((a, b) => a - b);
+  }
+  return out;
+}
+
+async function syncMovementChannelsToEngine() {
+  const universes = buildMovementChannelsByUniverse();
+  const payload = JSON.stringify({ universes });
+  if (payload === lastMovementChannelsPayload) return;
+  lastMovementChannelsPayload = payload;
+
+  try {
+    await fetch("/api/movement_channels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+  } catch (e) {
+    console.warn("[DMX] movement channel sync failed:", e);
+  }
+}
+
+function scheduleMovementSync() {
+  if (movementSyncTimer) return;
+  movementSyncTimer = setTimeout(() => {
+    movementSyncTimer = null;
+    syncMovementChannelsToEngine();
+  }, 200);
+}
+
+function buildDummyChannelsByUniverse() {
+  const used = {};
+
+  for (const dev of Object.values(rigDevices)) {
+    if (!dev) continue;
+    const fi = fixtures[dev.fixture] || {};
+    const addrCount = fi.addr_count || 1;
+    const u = parseInt(dev.universe, 10) || 0;
+    used[u] ||= new Set();
+    for (let li = 0; li < addrCount; li++) {
+      const abs = dev.address + li;
+      if (Number.isFinite(abs) && abs >= 0 && abs < 512) {
+        used[u].add(abs);
+      }
+    }
+  }
+
+  const out = {};
+  for (const [uStr, set] of Object.entries(used)) {
+    const free = [];
+    for (let ch = 0; ch < 512 && free.length < DUMMY_MIN_CHANNELS; ch++) {
+      if (!set.has(ch)) free.push(ch);
+    }
+    if (free.length) out[uStr] = free;
+  }
+  return out;
+}
+
+async function syncDummyChannelsToEngine() {
+  const universes = buildDummyChannelsByUniverse();
+  const payload = JSON.stringify({ universes });
+  if (payload === lastDummyChannelsPayload) return;
+  lastDummyChannelsPayload = payload;
+
+  try {
+    await fetch("/api/dummy_channels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+  } catch (e) {
+    console.warn("[DMX] dummy channel sync failed:", e);
+  }
+}
+
+function scheduleDummySync() {
+  if (dummySyncTimer) return;
+  dummySyncTimer = setTimeout(() => {
+    dummySyncTimer = null;
+    syncDummyChannelsToEngine();
+  }, 200);
+}
+
 
 function snapToGridCenter(v) {
   const step = RIG_GRID_SIZE;
@@ -141,6 +259,8 @@ function addDeviceFromUI() {
   deviceLocalValues[id] = {};
   deviceCurrentGroups[id] = new Set();
   initDeviceDefaults(id, fixtureName);
+  scheduleMovementSync();
+  scheduleDummySync();
 
   if (addrInput) addrInput.value = "";
 
@@ -162,6 +282,8 @@ async function editDeviceDialog(id) {
   rigDevices[id].cname = res.cname;
   rigDevices[id].universe = clamp(parseInt(res.universe, 10) || 0, 0, 9999);
   rigDevices[id].address = clamp(parseInt(res.address, 10) || 0, 0, 511);
+  scheduleMovementSync();
+  scheduleDummySync();
 
   drawRig();
   refreshControllerFromSelection();
@@ -181,6 +303,8 @@ async function deleteSelectedDevices() {
     delete deviceLocalValues[id];
     delete deviceCurrentGroups[id];
   }
+  scheduleMovementSync();
+  scheduleDummySync();
 
   // Nettoie les steps de la cue list
   for (const step of (cuesObj.sequence || [])) {
@@ -230,6 +354,8 @@ function buildDevicesDefFromRig() {
 function rebuildRigFromCueFile() {
   const defs = cuesObj.devices_def;
   if (!defs || typeof defs !== "object" || !Object.keys(defs).length) {
+    scheduleMovementSync();
+    scheduleDummySync();
     drawRig();
     refreshControllerFromSelection();
     if (typeof renderActualEffectsPanel === "function") {
@@ -272,6 +398,8 @@ function rebuildRigFromCueFile() {
   selectedDeviceOrder = [];
   selectedDeviceSet = new Set();
 
+  scheduleMovementSync();
+  scheduleDummySync();
   drawRig();
   refreshControllerFromSelection();
   if (typeof renderActualEffectsPanel === "function") {
@@ -563,7 +691,7 @@ function refreshControllerFromSelection() {
   const bb = $id("beam-body");
   if (bb) {
     bb.innerHTML = "";
-    if (funcs.beam) addBeamControls(bb, funcs.beam);
+    if (funcs.beam || funcs.focus) addBeamControls(bb, funcs);
     else bb.innerHTML = "<span class='muted'>No beam controls yet.</span>";
   }
 
@@ -844,6 +972,19 @@ function addPositionControls(container, posMap) {
   syncPosWidgetFromFirstDevice();
 }
 
+///////////////////////
+// Beam / Focus
+///////////////////////
+
+function addBeamControls(container, funcs) {
+  const focusIdx = funcs?.focus?.channel ?? funcs?.beam?.focus?.channel;
+  if (focusIdx != null) {
+    addLocalSlider(container, "Focus", focusIdx);
+    return;
+  }
+
+  container.innerHTML = "<span class='muted'>No beam controls yet.</span>";
+}
 
 
 function moveXYCursor(nx, ny) {
@@ -884,6 +1025,11 @@ async function applySelectionToEngine(silent = false) {
   
   if (!selectedDeviceOrder.length) return;
 
+  // Ensure movement channels are synced at least once (needed after backend restart)
+  if (!lastMovementChannelsPayload) {
+    await syncMovementChannelsToEngine();
+  }
+
   const { devices } = buildDevicesBlockFromSelection();
   if (!devices) return;
 
@@ -900,7 +1046,7 @@ async function applySelectionToEngine(silent = false) {
 
   for (const [uStr, flat] of Object.entries(perU)) {
     const u = parseInt(uStr, 10) || 0;
-    await applyUniverseState(u, flat);
+    await applyUniverseState(u, flat, false, "ui_live");
   }
 
   if (!silent) toast("Applied", "info");

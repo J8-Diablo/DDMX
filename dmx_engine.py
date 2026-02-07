@@ -14,7 +14,8 @@ import threading
 import time
 import math
 import logging
-from typing import Dict, List, Any, Optional, Callable
+import os
+from typing import Dict, List, Any, Optional, Callable, Tuple
 from dataclasses import dataclass, field
 from copy import deepcopy
 
@@ -29,6 +30,8 @@ except ImportError:
     EffectModule = None
 
 log = logging.getLogger("DMXRenderEngine")
+_engine_log_level = os.environ.get("DMX_ENGINE_LOG_LEVEL", "INFO").upper()
+log.setLevel(getattr(logging, _engine_log_level, logging.INFO))
 
 # ============================================================================
 # DATA STRUCTURES
@@ -93,6 +96,16 @@ class DMXRenderEngine:
         # Direct channel values (from live UI edits, stored per universe)
         self._direct_channels: Dict[int, Dict[int, int]] = {}  # {universe: {channel: value}}
 
+        # Movement smoothing (pan/tilt) - channels provided by UI
+        self._smooth_channels: Dict[int, set] = {}  # {universe: {channel}}
+        self._smooth_targets: Dict[int, Dict[int, int]] = {}  # {universe: {channel: target}}
+        self._smooth_step = int(self._read_env_float("DMX_SMOOTH_STEP", 2))
+
+        # Dummy channels (keepalive for server mods)
+        self._dummy_channels: Dict[int, List[int]] = {}  # {universe: [channels]}
+        self._dummy_state: Dict[int, int] = {}  # {universe: 0/255}
+        self._dummy_enabled = os.environ.get("DMX_DUMMY", "1").strip().lower() in ("1", "true", "yes", "on")
+
         # Live effects (from controller, not cues)
         self._live_effects: Dict[str, Dict[int, List[LiveEffect]]] = {}  # {device_id: {channel: [effects]}}
 
@@ -113,7 +126,53 @@ class DMXRenderEngine:
         self._state_callbacks: List[Callable] = []
         self._last_state_broadcast: float = 0.0
 
-        log.info("DMXRenderEngine initialized")
+        # Debug flags
+        self._log_dmx = os.environ.get("DMX_LOG_DMX", "0").strip().lower() in ("1", "true", "yes", "on")
+        self._log_dmx_full = os.environ.get("DMX_LOG_DMX_FULL", "0").strip().lower() in ("1", "true", "yes", "on")
+
+        # Send throttling + stats (to reduce unnecessary network spam)
+        self._last_sent_universes: Dict[int, List[int]] = {}
+        self._last_sent_time: Dict[int, float] = {}
+        self._artnet_diff = os.environ.get("DMX_ARTNET_DIFF", "0").strip().lower() in ("1", "true", "yes", "on")
+        self._artnet_heartbeat_full = os.environ.get("DMX_ARTNET_HEARTBEAT_FULL", "1").strip().lower() in ("1", "true", "yes", "on")
+        self._packet_count = 0
+        self._last_send_ts = 0.0
+
+        self._max_send_hz = self._read_env_float("DMX_MAX_SEND_HZ", self.TICK_HZ)
+        self._min_send_interval = 0.0 if self._max_send_hz <= 0 else (1.0 / self._max_send_hz)
+
+        # Keepalive to avoid fixtures timing out (send even if unchanged)
+        self._heartbeat_sec = self._read_env_float("DMX_HEARTBEAT_SEC", 0.1)
+        self._stats_interval_sec = self._read_env_float("DMX_STATS_SEC", 1.0)
+
+        # Value filtering (reduce jitter)
+        self._deadband = int(self._read_env_float("DMX_DEADBAND", 0))
+        self._quantize = int(self._read_env_float("DMX_QUANTIZE", 1))
+
+        self._stats_last_log = time.time()
+        self._stats = {
+            "frames_sent": 0,
+            "universes_sent": 0,
+            "frames_skipped": 0,
+            "bytes_sent": 0,
+        }
+
+        log.info(
+            "DMXRenderEngine initialized (max_send_hz=%s heartbeat_sec=%s stats_sec=%s)",
+            self._max_send_hz,
+            self._heartbeat_sec,
+            self._stats_interval_sec,
+        )
+
+    @staticmethod
+    def _read_env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return float(default)
+        try:
+            return float(raw)
+        except ValueError:
+            return float(default)
 
     # -------------------------------------------------------------------------
     # THREAD CONTROL
@@ -134,6 +193,19 @@ class DMXRenderEngine:
         if self._thread:
             self._thread.join(timeout=1.0)
         log.info("Render thread stopped")
+
+    def set_artnet_target(self, ip: str) -> bool:
+        """Update ArtNet target IP at runtime."""
+        if not self.artnet or not ip:
+            return False
+        try:
+            # DMXEngine stores target_ip attribute
+            setattr(self.artnet, "target_ip", ip)
+            log.info("ArtNet target updated: %s", ip)
+            return True
+        except Exception as e:
+            log.error("Failed to update ArtNet target: %s", e)
+            return False
 
     def _ensure_universe(self, universe: int):
         if universe not in self._universes:
@@ -181,6 +253,10 @@ class DMXRenderEngine:
                     if 0 <= ch < 512:
                         uni[ch] = val
 
+            # Apply smoothing for movement channels (pan/tilt)
+            if self._smooth_targets:
+                self._apply_smoothing()
+
             # Apply identify overlay (highest priority, overrides everything)
             if self._identify_devices or self._identify_data:
                 self._render_identify(now)
@@ -188,7 +264,134 @@ class DMXRenderEngine:
             # Send to ArtNet
             if self.artnet:
                 for uni_num, values in self._universes.items():
-                    self.artnet.send_universe(uni_num, values)
+                    should_send, heartbeat_due = self._should_send_universe(uni_num, values, now)
+                    if not should_send:
+                        continue
+                    if self._log_dmx:
+                        if self._log_dmx_full:
+                            log.debug("[DMX] universe=%s values=%s", uni_num, values)
+                        else:
+                            nonzero = [(i, v) for i, v in enumerate(values) if v]
+                            sample = nonzero[:8]
+                            log.debug(
+                                "[DMX] universe=%s nonzero=%s sample=%s",
+                                uni_num, len(nonzero), sample
+                            )
+                    values_to_send = self._apply_dummy_overlay(uni_num, values)
+                    if self._artnet_diff:
+                        sent = self._send_artnet_diff(uni_num, values_to_send, heartbeat_due=heartbeat_due)
+                    else:
+                        self.artnet.send_universe(uni_num, values_to_send)
+                        sent = True
+                    if sent:
+                        self._packet_count += 1
+                        self._last_send_ts = now
+                    self._record_send_stats(uni_num, values_to_send, now)
+
+        self._maybe_log_stats(now)
+
+    def _should_send_universe(self, universe: int, values: List[int], now: float) -> Tuple[bool, bool]:
+        """Return True if we should send this universe at this tick."""
+        last_values = self._last_sent_universes.get(universe)
+        changed = (last_values != values)
+
+        last_time = self._last_sent_time.get(universe, 0.0)
+        heartbeat_due = (self._heartbeat_sec > 0 and (now - last_time) >= self._heartbeat_sec)
+
+        if not changed and not heartbeat_due:
+            self._stats["frames_skipped"] += 1
+            return False, heartbeat_due
+
+        if self._min_send_interval > 0 and (now - last_time) < self._min_send_interval:
+            self._stats["frames_skipped"] += 1
+            return False, heartbeat_due
+
+        return True, heartbeat_due
+
+    def _record_send_stats(self, universe: int, values: List[int], now: float):
+        self._last_sent_universes[universe] = values[:]
+        self._last_sent_time[universe] = now
+        self._stats["frames_sent"] += 1
+        self._stats["universes_sent"] += 1
+        self._stats["bytes_sent"] += len(values)
+
+    def _maybe_log_stats(self, now: float):
+        if self._stats_interval_sec <= 0:
+            return
+        if (now - self._stats_last_log) < self._stats_interval_sec:
+            return
+
+        # Avoid log spam when nothing is happening
+        if (
+            self._stats["frames_sent"] == 0
+            and self._stats["frames_skipped"] == 0
+            and self._stats["universes_sent"] == 0
+        ):
+            self._stats_last_log = now
+            self._stats = {
+                "frames_sent": 0,
+                "universes_sent": 0,
+                "frames_skipped": 0,
+                "bytes_sent": 0,
+            }
+            return
+
+        elapsed = max(0.001, now - self._stats_last_log)
+        fps = self._stats["frames_sent"] / elapsed
+        kbps = (self._stats["bytes_sent"] / 1024.0) / elapsed
+
+        log.debug(
+            "DMX stats: frames_sent=%s frames_skipped=%s universes_sent=%s fps=%.1f kbps=%.1f",
+            self._stats["frames_sent"],
+            self._stats["frames_skipped"],
+            self._stats["universes_sent"],
+            fps,
+            kbps,
+        )
+
+        self._stats_last_log = now
+        self._stats = {
+            "frames_sent": 0,
+            "universes_sent": 0,
+            "frames_skipped": 0,
+            "bytes_sent": 0,
+        }
+
+    def _send_artnet_diff(self, universe: int, values: List[int], heartbeat_due: bool) -> bool:
+        last = self._last_sent_universes.get(universe)
+        if last is None or (heartbeat_due and self._artnet_heartbeat_full):
+            self.artnet.send_universe(universe, values)
+            return True
+
+        diff = {}
+        for i, v in enumerate(values):
+            if last[i] != v:
+                diff[i] = v
+        if not diff:
+            return False
+
+        # send only changed channels
+        self.artnet.send_channels(universe, diff)
+        return True
+
+    def _filter_value(self, universe: int, channel: int, value: int) -> Optional[int]:
+        """Apply quantize + deadband to reduce jitter. Returns None if ignored."""
+        try:
+            v = int(value)
+        except Exception:
+            return None
+        v = max(0, min(255, v))
+
+        if self._quantize and self._quantize > 1:
+            v = int(round(v / self._quantize) * self._quantize)
+            v = max(0, min(255, v))
+
+        current = self._direct_channels.get(universe, {})
+        prev = current.get(channel)
+        if prev is not None and self._deadband and abs(v - prev) <= self._deadband:
+            return None
+
+        return v
 
     def _render_device(self, dev: DeviceState, dev_id: str, now: float):
         """Render a single device's channels"""
@@ -336,7 +539,19 @@ class DMXRenderEngine:
             # Use direct channel storage (simpler, no device overhead)
             if universe not in self._direct_channels:
                 self._direct_channels[universe] = {}
-            self._direct_channels[universe][channel] = max(0, min(255, value))
+            v = self._filter_value(universe, channel, value)
+            if v is None:
+                return
+            if self._is_smooth_channel(universe, channel):
+                self._ensure_universe(universe)
+                cur = self._universes[universe][channel]
+                if self._should_bypass_smoothing(cur, v):
+                    self._direct_channels[universe][channel] = v
+                    self._smooth_targets.get(universe, {}).pop(channel, None)
+                else:
+                    self._smooth_targets.setdefault(universe, {})[channel] = v
+            else:
+                self._direct_channels[universe][channel] = v
 
     def set_channels(self, device_id: str, universe: int, channels: Dict[int, int]):
         """Set multiple channel values - uses direct channel storage"""
@@ -345,7 +560,19 @@ class DMXRenderEngine:
                 self._direct_channels[universe] = {}
             for ch, val in channels.items():
                 ch_int = int(ch) if isinstance(ch, str) else ch
-                self._direct_channels[universe][ch_int] = max(0, min(255, int(val)))
+                v = self._filter_value(universe, ch_int, val)
+                if v is None:
+                    continue
+                if self._is_smooth_channel(universe, ch_int):
+                    self._ensure_universe(universe)
+                    cur = self._universes[universe][ch_int]
+                    if self._should_bypass_smoothing(cur, v):
+                        self._direct_channels[universe][ch_int] = v
+                        self._smooth_targets.get(universe, {}).pop(ch_int, None)
+                    else:
+                        self._smooth_targets.setdefault(universe, {})[ch_int] = v
+                else:
+                    self._direct_channels[universe][ch_int] = v
 
     def set_channels_bulk(self, updates: Dict[str, Dict[int, int]]):
         """Bulk update: {device_id: {channel: value}}"""
@@ -628,6 +855,84 @@ class DMXRenderEngine:
             except Exception as e:
                 log.error(f"State callback error: {e}")
 
+    # -------------------------------------------------------------------------
+    # MOVEMENT SMOOTHING
+    # -------------------------------------------------------------------------
+
+    def set_movement_channels(self, universes: Dict[int, List[int]]):
+        """Set movement (pan/tilt) channels by universe."""
+        with self._lock:
+            self._smooth_channels = {int(u): set(map(int, chs)) for u, chs in (universes or {}).items()}
+            # Remove smooth channels from direct channels to avoid overriding smoothing
+            for u, chs in self._smooth_channels.items():
+                dc = self._direct_channels.get(u)
+                if not dc:
+                    continue
+                for ch in chs:
+                    dc.pop(ch, None)
+
+    def set_dummy_channels(self, universes: Dict[int, List[int]]):
+        """Set dummy channels used to force updates."""
+        with self._lock:
+            if not self._dummy_enabled:
+                self._dummy_channels = {}
+                self._dummy_state = {}
+                return
+            self._dummy_channels = {int(u): [int(c) for c in chs] for u, chs in (universes or {}).items()}
+            self._dummy_state = {int(u): 0 for u in self._dummy_channels.keys()}
+
+    def _is_smooth_channel(self, universe: int, channel: int) -> bool:
+        return channel in self._smooth_channels.get(universe, set())
+
+    def _apply_smoothing(self):
+        """Move current values toward targets for smooth channels."""
+        step = max(1, int(self._smooth_step))
+        for uni, targets in list(self._smooth_targets.items()):
+            if not targets:
+                continue
+            self._ensure_universe(uni)
+            uni_buf = self._universes[uni]
+            to_remove = []
+            for ch, target in targets.items():
+                if not (0 <= ch < 512):
+                    to_remove.append(ch)
+                    continue
+                cur = int(uni_buf[ch])
+                if cur == target:
+                    to_remove.append(ch)
+                    continue
+                diff = target - cur
+                if abs(diff) <= step:
+                    uni_buf[ch] = target
+                    to_remove.append(ch)
+                else:
+                    uni_buf[ch] = cur + step if diff > 0 else cur - step
+            for ch in to_remove:
+                targets.pop(ch, None)
+
+    def _apply_dummy_overlay(self, universe: int, values: List[int]) -> List[int]:
+        """Toggle dummy channels between 0 and 255 on every send."""
+        if not self._dummy_enabled:
+            return values
+        channels = self._dummy_channels.get(universe)
+        if not channels:
+            return values
+
+        cur = self._dummy_state.get(universe, 0)
+        nxt = 255 if cur == 0 else 0
+        self._dummy_state[universe] = nxt
+
+        out = list(values)
+        for ch in channels:
+            if 0 <= ch < 512:
+                out[ch] = nxt
+        return out
+
+    @staticmethod
+    def _should_bypass_smoothing(cur: int, target: int) -> bool:
+        return (cur == 0 and target == 255) or (cur == 255 and target == 0)
+
+
     def get_current_state(self) -> Dict[str, Any]:
         """Get current state snapshot"""
         with self._lock:
@@ -638,3 +943,9 @@ class DMXRenderEngine:
                 "identify_active": bool(self._identify_devices),
                 "fade_active": self._fade is not None
             }
+
+    def get_packet_stats(self) -> Dict[str, Any]:
+        return {
+            "artnet_packets": self._packet_count,
+            "last_send_ts": self._last_send_ts
+        }

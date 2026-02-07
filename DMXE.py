@@ -3,8 +3,10 @@ import socket
 import threading
 import time
 import logging
+import logging.handlers
 import re
 import random
+import os
 from copy import deepcopy
 
 log = logging.getLogger("DMXEngine")
@@ -13,7 +15,33 @@ if not log.handlers:
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     h.setFormatter(fmt)
     log.addHandler(h)
-log.setLevel(logging.DEBUG)
+log.propagate = False
+
+_level_name = os.environ.get("DMX_LOG_LEVEL", "INFO").upper()
+log.setLevel(getattr(logging, _level_name, logging.INFO))
+
+LOG_ARTNET = os.environ.get("DMX_LOG_ARTNET", "0").strip().lower() in ("1", "true", "yes", "on")
+LOG_ARTNET_FULL = os.environ.get("DMX_LOG_ARTNET_FULL", "0").strip().lower() in ("1", "true", "yes", "on")
+LOG_ARTNET_FILE = os.environ.get("DMX_LOG_ARTNET_FILE", "").strip()
+
+if LOG_ARTNET and LOG_ARTNET_FILE:
+    try:
+        # Avoid duplicate file handlers
+        exists = any(
+            isinstance(h, logging.handlers.RotatingFileHandler) and getattr(h, "baseFilename", "") == os.path.abspath(LOG_ARTNET_FILE)
+            for h in log.handlers
+        )
+        if not exists:
+            fh = logging.handlers.RotatingFileHandler(
+                LOG_ARTNET_FILE,
+                maxBytes=2 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+            log.addHandler(fh)
+    except Exception:
+        pass
 
 ARTNET_PORT = 6454
 ARTNET_HEADER = b"Art-Net\x00"
@@ -192,7 +220,17 @@ class DMXEngine:
 
         packet = ARTNET_HEADER + opcode + prot + seq + phys + uni + ln + payload
         self.sock.sendto(packet, (self.target_ip, self.port))
-        log.debug(f"[SEND] universe={universe} channels_in={len(channels_dict)} sent_len={length}")
+        if LOG_ARTNET:
+            if LOG_ARTNET_FULL:
+                log.info("[ARTNET] send_channels universe=%s channels=%s length=%s", universe, channels_dict, length)
+            else:
+                sample = list(channels_dict.items())[:8]
+                log.info(
+                    "[ARTNET] send_channels universe=%s count=%s length=%s sample=%s",
+                    universe, len(channels_dict), length, sample
+                )
+        else:
+            log.debug(f"[SEND] universe={universe} channels_in={len(channels_dict)} sent_len={length}")
 
     # Compat ancienne API (utilisée par certains app.py)
     def send_universe(self, universe, buf512):
@@ -226,7 +264,18 @@ class DMXEngine:
 
         packet = ARTNET_HEADER + opcode + prot + seq + phys + uni + ln + payload
         self.sock.sendto(packet, (self.target_ip, self.port))
-        log.debug(f"[SEND-FULL] universe={universe} sent_len=512")
+        if LOG_ARTNET:
+            if LOG_ARTNET_FULL:
+                log.info("[ARTNET] send_universe universe=%s values=%s", universe, data_in)
+            else:
+                nonzero = [(i, v) for i, v in enumerate(data_in) if v]
+                sample = nonzero[:8]
+                log.info(
+                    "[ARTNET] send_universe universe=%s nonzero=%s sample=%s",
+                    universe, len(nonzero), sample
+                )
+        else:
+            log.debug(f"[SEND-FULL] universe={universe} sent_len=512")
 
     def apply_state(self, universe, channels_dict):
         self.send_channels(int(universe), {int(k): int(v) for k, v in channels_dict.items()})

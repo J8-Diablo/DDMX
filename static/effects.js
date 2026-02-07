@@ -1030,7 +1030,7 @@ async function effectTick() {
   for (const [uStr, chMap] of Object.entries(perUniverseMap)) {
     if (Object.keys(chMap).length === 0) continue;
     const u = parseInt(uStr, 10) || 0;
-    await applyUniverseState(u, chMap);
+    await applyUniverseState(u, chMap, false, "ui_effect");
   }
   
   drawRig();

@@ -46,6 +46,12 @@ function startEffectRenderLoop() {
   requestAnimationFrame(tick);
 }
 
+async function runSyncVideoCue(step) {
+  if (window.syncVideo && typeof window.syncVideo.runCueAction === "function") {
+    await window.syncVideo.runCueAction(step);
+  }
+}
+
 
 ///////////////////////
 // FICHIERS DE CUE
@@ -1150,6 +1156,8 @@ async function uiFollowStep(step, runId) {
   playbackWaitRemaining = 0;
   updatePlaybackUI();
 
+  await runSyncVideoCue(step);
+
   if (!step.devices) return;
   
   // === Snapshot des groupes AVANT la cue (état A) ===
@@ -1453,7 +1461,7 @@ async function sendToEngineWithEffects(effectScale, groupMix) {
   // On utilise bypassLock=true car cette fonction EST la source autorisée pendant lock
   for (const [uStr, chMap] of Object.entries(perUniverseMap)) {
     const u = parseInt(uStr, 10) || 0;
-    await applyUniverseState(u, chMap, true); // bypassLock=true
+    await applyUniverseState(u, chMap, true, "ui_cue"); // bypassLock=true
   }
 }
 

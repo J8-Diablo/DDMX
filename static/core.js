@@ -218,6 +218,7 @@ const toast = (m, t = "success") => {
   if (window.ui && typeof window.ui.toast === "function") window.ui.toast(m, t);
   else console.log(`[${t}] ${m}`);
 };
+window.toast = toast;
 
 const confirmModal = async (title, text) => {
   if (window.ui && typeof window.ui.confirmModal === "function") {
@@ -320,13 +321,23 @@ function getDeviceAttrAbsChannels(dev) {
 // API DMX (buffer + pump réseau)
 ///////////////////////
 
-// Cache des derniers frames envoyés par univers pour éviter les envois identiques
-const lastDmxFrames = {}; // { [universe]: { ch: val, ... } }
+// Cache des derniers frames reçus de l'engine (visualisation UNIQUEMENT)
+const lastDmxFrames = {}; // { [universe]: [512 values] }
 
-// Buffer côté front : 1 pipeline par univers
+// État "shadow" local pour filtrer les envois répétés
+const dmxShadowState = {}; // { [key]: Uint8Array(512) }
+
+function getShadowState(key) {
+  if (!dmxShadowState[key]) dmxShadowState[key] = new Uint8Array(512);
+  return dmxShadowState[key];
+}
+
+// Buffer côté front : 1 pipeline par (device_id + universe)
 const dmxUniverseBuffers = {}; 
 // structure : {
-//   [universe]: {
+//   [key]: {
+//     universe: number,
+//     deviceId: string,
 //     pending: { ch: val, ... },   // dernières valeurs à envoyer
 //     inFlight: false              // requête HTTP en cours
 //   }
@@ -338,7 +349,7 @@ const dmxUniverseBuffers = {};
 // ========================================
 
 // Send channel values to Python engine (for live controller edits)
-async function applyUniverseState(universe, channels, bypassLock = false) {
+async function applyUniverseState(universe, channels, bypassLock = false, deviceId = "ui_live") {
   // UI lock check (for visual feedback only now)
   if (window.dmxLocked && !bypassLock) return;
 
@@ -347,26 +358,40 @@ async function applyUniverseState(universe, channels, bypassLock = false) {
   if (!keys.length) return;
 
   const u = Number.isFinite(universe) ? universe : 0;
+  const devId = deviceId || "ui_live";
+  const bufKey = `${devId}:${u}`;
 
   // Buffer locally for UI preview
-  let state = dmxUniverseBuffers[u];
+  let state = dmxUniverseBuffers[bufKey];
   if (!state) {
-    state = { pending: {}, inFlight: false };
-    dmxUniverseBuffers[u] = state;
+    state = { universe: u, deviceId: devId, pending: {}, inFlight: false };
+    dmxUniverseBuffers[bufKey] = state;
   }
+
+  const forceFull = window.DMX_FORCE_FULL_SEND === true;
+  const shadow = getShadowState(bufKey);
+  let changedCount = 0;
 
   for (const [k, v] of Object.entries(channels)) {
     const ch = parseInt(k, 10);
     if (!Number.isFinite(ch) || ch < 0 || ch >= 512) continue;
     const val = Math.max(0, Math.min(255, v | 0));
+    if (!forceFull) {
+      if (shadow[ch] === val) continue;
+    }
+    shadow[ch] = val;
     state.pending[ch] = val;
+    changedCount++;
   }
+
+  if (!changedCount) return;
 }
 
 // Send buffered values to Python engine
 async function dmxNetworkPump() {
-  for (const [uStr, state] of Object.entries(dmxUniverseBuffers)) {
-    const u = parseInt(uStr, 10) || 0;
+  for (const [_key, state] of Object.entries(dmxUniverseBuffers)) {
+    const u = Number.isFinite(state.universe) ? state.universe : 0;
+    const devId = state.deviceId || "ui_live";
 
     if (state.inFlight) continue;
 
@@ -379,34 +404,18 @@ async function dmxNetworkPump() {
     }
     state.pending = {};
 
-    // Check if changed
-    const prev = lastDmxFrames[u];
-    let changed = false;
-    if (!prev) {
-      changed = true;
-    } else if (Object.keys(prev).length !== pendingKeys.length) {
-      changed = true;
-    } else {
-      for (const k of pendingKeys) {
-        if (prev[k] !== frame[k]) {
-          changed = true;
-          break;
-        }
-      }
-    }
-    if (!changed) continue;
-
     state.inFlight = true;
     try {
       // Use new API endpoint
       await fetch("/api/live/channels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ universe: u, channels: frame, device_id: "ui_live" }),
+        body: JSON.stringify({ universe: u, channels: frame, device_id: devId }),
       });
-      lastDmxFrames[u] = frame;
     } catch (err) {
       console.warn("[DMX] pump send failed for universe", u, err);
+      // Re-queue on failure
+      state.pending = { ...frame, ...state.pending };
     } finally {
       state.inFlight = false;
     }
@@ -415,6 +424,56 @@ async function dmxNetworkPump() {
 
 // DMX pump interval
 setInterval(dmxNetworkPump, 30);
+
+// ========================================
+// UI: Packet meter (ArtNet packets/sec)
+// ========================================
+let packetMeterTimer = null;
+const packetMeterState = {
+  lastCount: null,
+  lastTime: null,
+};
+
+async function pollPacketStats() {
+  const rateEl = $id("dmx-packet-rate");
+  const vuFillEl = $id("dmx-packet-vu-fill");
+  if (!rateEl || !vuFillEl) return;
+
+  try {
+    const res = await fetch("/api/stats");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || data.ok === false) return;
+
+    const count = Number(data.artnet_packets || 0);
+    const now = Number(data.server_time || (Date.now() / 1000));
+
+    let rate = 0;
+    if (packetMeterState.lastCount !== null && packetMeterState.lastTime !== null) {
+      const dt = now - packetMeterState.lastTime;
+      const delta = count - packetMeterState.lastCount;
+      if (dt > 0 && delta > 0) {
+        rate = delta / dt;
+      }
+    }
+
+    packetMeterState.lastCount = count;
+    packetMeterState.lastTime = now;
+
+    rateEl.textContent = `${rate.toFixed(1)} pkt/s`;
+    const maxRate = 60; // target scale for the VU meter
+    const pct = Math.max(0, Math.min(100, (rate / maxRate) * 100));
+    vuFillEl.style.width = `${pct.toFixed(1)}%`;
+  } catch (e) {
+    // ignore poll errors to avoid log spam
+  }
+}
+
+function startPacketMeter() {
+  if (packetMeterTimer) return;
+  pollPacketStats();
+  packetMeterTimer = setInterval(pollPacketStats, 500);
+}
 
 // ========================================
 // SSE: Receive state from Python engine
@@ -456,16 +515,8 @@ function handleEngineState(state) {
   if (state.universes) {
     for (const [uStr, values] of Object.entries(state.universes)) {
       const u = parseInt(uStr, 10);
-      if (!dmxUniverseBuffers[u]) {
-        dmxUniverseBuffers[u] = { pending: {}, inFlight: false };
-      }
       // Store for visualization only (don't feed back into pending!)
-      lastDmxFrames[u] = {};
-      for (let i = 0; i < values.length; i++) {
-        if (values[i] !== 0) {
-          lastDmxFrames[u][i] = values[i];
-        }
-      }
+      lastDmxFrames[u] = Array.isArray(values) ? values.slice(0, 512) : [];
     }
   }
 
@@ -487,6 +538,7 @@ function handleEngineState(state) {
 // Connect SSE on page load
 document.addEventListener("DOMContentLoaded", () => {
   setTimeout(connectSSE, 500);
+  startPacketMeter();
 });
 
 ///////////////////////
