@@ -1630,7 +1630,8 @@ function chaserEdgeFade(ctx, params) {
   if (fadeMs <= 0) return curOn;
 
   if (timeInStep < fadeMs) {
-    const t = timeInStep / fadeMs;
+    let t = timeInStep / fadeMs;
+    t = applyFadeCurve(t, params.fadeCurve || "Linear");
     return clamp(prevOn * (1 - t) + curOn * t, 0, 1);
   }
 
@@ -1638,7 +1639,8 @@ function chaserEdgeFade(ctx, params) {
     return curOn;
   }
 
-  const t = (timeInStep - (fadeMs + duration)) / fadeMs;
+  let t = (timeInStep - (fadeMs + duration)) / fadeMs;
+  t = applyFadeCurve(t, params.fadeCurve || "Linear");
   return clamp(curOn * (1 - t) + nextOn * t, 0, 1);
 }
 
