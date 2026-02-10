@@ -1490,6 +1490,158 @@ function evalGroupEffect(group, tMs, deviceId) {
   }
 }
 
+const intelligentChaserSeeds = {};
+
+function mapChaserStep(baseStep, numSteps, playMode, cycleNum, groupId) {
+  let effectiveStep = baseStep;
+  const mode = String(playMode || "normal").toLowerCase();
+
+  if (mode === "reverse") {
+    effectiveStep = numSteps - 1 - baseStep;
+  } else if (mode === "bounce") {
+    if (cycleNum % 2 === 1) effectiveStep = numSteps - 1 - baseStep;
+  } else if (mode === "in") {
+    const half = Math.ceil(numSteps / 2);
+    if (baseStep < half) effectiveStep = baseStep;
+    else effectiveStep = numSteps - 1 - (baseStep - half);
+  } else if (mode === "out") {
+    const half = Math.ceil(numSteps / 2);
+    const center = Math.floor(numSteps / 2);
+    if (baseStep < half) effectiveStep = center - baseStep;
+    else effectiveStep = center + (baseStep - half + 1);
+    effectiveStep = Math.max(0, Math.min(effectiveStep, numSteps - 1));
+  } else if (mode === "inout") {
+    const quarter = Math.ceil(numSteps / 4);
+    const phase = Math.floor(baseStep / quarter) % 4;
+    const posInPhase = baseStep % quarter;
+    if (phase === 0) effectiveStep = posInPhase;
+    else if (phase === 1) effectiveStep = numSteps - 1 - posInPhase;
+    else if (phase === 2) effectiveStep = numSteps - 1 - posInPhase;
+    else effectiveStep = posInPhase;
+  } else if (mode === "random") {
+    const gid = groupId || "default";
+    if (!intelligentChaserSeeds[gid] || intelligentChaserSeeds[gid].length !== numSteps) {
+      intelligentChaserSeeds[gid] = [];
+      for (let i = 0; i < numSteps; i++) intelligentChaserSeeds[gid].push(i);
+      for (let i = numSteps - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [intelligentChaserSeeds[gid][i], intelligentChaserSeeds[gid][j]] = [intelligentChaserSeeds[gid][j], intelligentChaserSeeds[gid][i]];
+      }
+    }
+    effectiveStep = intelligentChaserSeeds[gid][baseStep % numSteps];
+  } else if (mode === "switch") {
+    effectiveStep = baseStep % 2 === 0
+      ? Math.floor(baseStep / 2)
+      : numSteps - 1 - Math.floor(baseStep / 2);
+  }
+
+  return Math.max(0, Math.min(effectiveStep, numSteps - 1));
+}
+
+function chaserEdgeFade(ctx, params) {
+  const deviceCount = Math.max(1, ctx.deviceCount || 1);
+  const deviceIndex = Math.max(0, ctx.deviceIndex || 0);
+  const tMs = ctx.tMs || 0;
+  const groupId = ctx.group?.id || ctx.effect?.id || "chaser";
+
+  const fadeMs = Math.max(0, parseFloat(params.fade ?? 100));
+  const duration = Math.max(0, parseFloat(params.duration ?? 0));
+  const size = Math.max(1, parseInt(params.size ?? 1));
+  const stepSize = Math.max(1, parseInt(params.stepSize ?? 1));
+  const breakStep = parseInt(params.breakStep ?? 0);
+  const breakSize = Math.max(0, parseFloat(params.breakSize ?? 500));
+  const playMode = params.playMode || "Normal";
+
+  const stepDuration = fadeMs + duration + fadeMs;
+  if (stepDuration <= 0) return 0;
+
+  const effectiveSize = Math.min(size, deviceCount);
+  const numSteps = effectiveSize >= deviceCount
+    ? 1
+    : Math.max(1, Math.ceil((deviceCount - effectiveSize + 1) / stepSize));
+
+  const breaksCount = breakStep > 0 ? Math.floor((numSteps - 1) / breakStep) : 0;
+  const totalBreakTime = breaksCount * breakSize;
+  const cycleDuration = (numSteps * stepDuration) + totalBreakTime;
+  if (cycleDuration <= 0) return 0;
+
+  const cycleNum = Math.floor(tMs / cycleDuration);
+  const cycleTime = tMs % cycleDuration;
+
+  let currentStep = 0;
+  let accTime = 0;
+  for (let s = 0; s < numSteps; s++) {
+    const nextTime = accTime + stepDuration;
+    if (cycleTime < nextTime) {
+      currentStep = s;
+      break;
+    }
+    accTime = nextTime;
+    if (breakStep > 0 && (s + 1) % breakStep === 0) {
+      if (cycleTime < accTime + breakSize) return 0;
+      accTime += breakSize;
+    }
+    currentStep = s + 1;
+  }
+  currentStep = Math.min(currentStep, numSteps - 1);
+
+  let stepStartTime = 0;
+  for (let s = 0; s < currentStep; s++) {
+    stepStartTime += stepDuration;
+    if (breakStep > 0 && (s + 1) % breakStep === 0) stepStartTime += breakSize;
+  }
+  const timeInStep = cycleTime - stepStartTime;
+
+  const maxStart = Math.max(0, deviceCount - effectiveSize);
+
+  const startPosFor = (baseStep, cycleOffset = 0) => {
+    const effectiveStep = mapChaserStep(baseStep, numSteps, playMode, cycleNum + cycleOffset, groupId);
+    const startPos = effectiveStep * stepSize;
+    return Math.max(0, Math.min(startPos, maxStart));
+  };
+
+  const isInWindow = (idx, startPos) => idx >= startPos && idx < startPos + effectiveSize;
+
+  const hadBreakBefore = breakStep > 0 && currentStep > 0 && currentStep % breakStep === 0;
+  const breakAfter = breakStep > 0 && (currentStep + 1) % breakStep === 0;
+
+  let prevStep = currentStep - 1;
+  let prevCycleOffset = 0;
+  if (prevStep < 0) {
+    prevStep = numSteps - 1;
+    prevCycleOffset = -1;
+  }
+
+  let nextStep = currentStep + 1;
+  let nextCycleOffset = 0;
+  if (nextStep >= numSteps) {
+    nextStep = 0;
+    nextCycleOffset = 1;
+  }
+
+  const curStart = startPosFor(currentStep);
+  const prevStart = hadBreakBefore ? null : startPosFor(prevStep, prevCycleOffset);
+  const nextStart = breakAfter ? null : startPosFor(nextStep, nextCycleOffset);
+
+  const curOn = isInWindow(deviceIndex, curStart) ? 1 : 0;
+  const prevOn = prevStart == null ? 0 : (isInWindow(deviceIndex, prevStart) ? 1 : 0);
+  const nextOn = nextStart == null ? 0 : (isInWindow(deviceIndex, nextStart) ? 1 : 0);
+
+  if (fadeMs <= 0) return curOn;
+
+  if (timeInStep < fadeMs) {
+    const t = timeInStep / fadeMs;
+    return clamp(prevOn * (1 - t) + curOn * t, 0, 1);
+  }
+
+  if (timeInStep < fadeMs + duration) {
+    return curOn;
+  }
+
+  const t = (timeInStep - (fadeMs + duration)) / fadeMs;
+  return clamp(curOn * (1 - t) + nextOn * t, 0, 1);
+}
+
 const intelligentFxHelpers = {
   clamp,
   lerp: (a, b, t) => a + (b - a) * t,
@@ -1505,6 +1657,26 @@ const intelligentFxHelpers = {
     return Math.sin(2 * Math.PI * frac);
   },
   applyFadeCurve,
+  hsvToRgb: (h, s, v) => {
+    const hh = ((h % 360) + 360) % 360;
+    const ss = clamp(s, 0, 1);
+    const vv = clamp(v, 0, 1);
+    const c = vv * ss;
+    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+    const m = vv - c;
+    let r1 = 0, g1 = 0, b1 = 0;
+    if (hh < 60) { r1 = c; g1 = x; b1 = 0; }
+    else if (hh < 120) { r1 = x; g1 = c; b1 = 0; }
+    else if (hh < 180) { r1 = 0; g1 = c; b1 = x; }
+    else if (hh < 240) { r1 = 0; g1 = x; b1 = c; }
+    else if (hh < 300) { r1 = x; g1 = 0; b1 = c; }
+    else { r1 = c; g1 = 0; b1 = x; }
+    return {
+      r: Math.round((r1 + m) * 255),
+      g: Math.round((g1 + m) * 255),
+      b: Math.round((b1 + m) * 255)
+    };
+  },
   chaserAdvanced: (ctx, params) => {
     const group = {
       ...params,
@@ -1513,7 +1685,8 @@ const intelligentFxHelpers = {
         : Array.from({ length: ctx.deviceCount }, (_, i) => String(i))
     };
     return evalChaserAdvanced(group, ctx.tMs, String(ctx.deviceId));
-  }
+  },
+  chaserEdgeFade: (ctx, params) => chaserEdgeFade(ctx, params)
 };
 
 function formatGroupTargets(group) {

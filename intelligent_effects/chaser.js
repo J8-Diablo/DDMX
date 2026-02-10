@@ -24,11 +24,11 @@
     ],
     apply: (ctx) => {
       const amp = Math.max(0, Math.min(255, Number(ctx.params.amplitude ?? 255)));
-      const on = ctx.helpers.chaserAdvanced(ctx, ctx.params);
+      const on = ctx.helpers.chaserEdgeFade(ctx, ctx.params);
       return Math.round(amp * on);
     },
     preview: (ctx) => {
-      const on = ctx.helpers.chaserAdvanced(ctx, ctx.params);
+      const on = ctx.helpers.chaserEdgeFade(ctx, ctx.params);
       return Math.round(255 * on);
     }
   });
