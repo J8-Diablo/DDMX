@@ -6,6 +6,7 @@ import json
 import time
 import logging
 import logging.handlers
+import re
 import socket
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional
@@ -34,10 +35,28 @@ FIXTURES_DIR = os.path.join(BASE_DIR, "fixtures")
 CUE_DIR = os.path.join(BASE_DIR, "cue")
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
+INTELLIGENT_EFFECTS_DIR = os.path.join(BASE_DIR, "intelligent_effects")
 
 os.makedirs(FIXTURES_DIR, exist_ok=True)
 os.makedirs(CUE_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
+os.makedirs(INTELLIGENT_EFFECTS_DIR, exist_ok=True)
+
+def _safe_effect_filename(name: str) -> Optional[str]:
+    """Allow only safe JS filenames for intelligent effects."""
+    if not isinstance(name, str):
+        return None
+    base = os.path.basename(name)
+    base = re.sub(r"[^a-zA-Z0-9._-]", "_", base)
+    if not base or not base.lower().endswith(".js"):
+        return None
+    return base
+
+def list_intelligent_effect_files() -> List[str]:
+    return sorted(
+        f for f in os.listdir(INTELLIGENT_EFFECTS_DIR)
+        if f.lower().endswith(".js")
+    )
 
 # ---------- SETTINGS ----------
 
@@ -794,6 +813,42 @@ def api_apply_state():
     except Exception as e:
         app.logger.exception("[API] apply_state error")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/intelligent_effects", methods=["GET"])
+def api_intelligent_effects():
+    """List available intelligent effects (JS files)."""
+    return jsonify({"files": list_intelligent_effect_files()})
+
+
+@app.route("/api/intelligent_effects/import", methods=["POST"])
+def api_intelligent_effects_import():
+    """Import one or multiple intelligent effect files (.js)."""
+    if "files" not in request.files:
+        return jsonify({"error": "no files"}), 400
+
+    saved = []
+    for f in request.files.getlist("files"):
+        name = _safe_effect_filename(f.filename or "")
+        if not name:
+            continue
+        path = os.path.join(INTELLIGENT_EFFECTS_DIR, name)
+        try:
+            f.save(path)
+            saved.append(name)
+        except Exception as e:
+            app.logger.exception("[API] intelligent_effects/import failed: %s", e)
+
+    return jsonify({"ok": True, "saved": saved})
+
+
+@app.route("/api/intelligent_effects/<filename>", methods=["GET"])
+def api_intelligent_effects_file(filename: str):
+    """Download a single intelligent effect file (.js)."""
+    name = _safe_effect_filename(filename)
+    if not name:
+        return jsonify({"error": "invalid filename"}), 400
+    return send_from_directory(INTELLIGENT_EFFECTS_DIR, name, mimetype="application/javascript")
 
 
 @app.route("/api/effects", methods=["GET"])

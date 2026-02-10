@@ -9,6 +9,13 @@ let availableEffects = [];
 let activeEffectAttr = "dimmer";
 // NOTE: effectStartEpoch est défini dans core.js sur window.effectStartEpoch
 let effectTickHandle = null;
+let intelligentEffects = [];
+let intelligentEffectsById = {};
+let intelligentEffectsLoaded = false;
+let intelligentEffectsLoading = false;
+let effectsLibraryMode = "legacy";
+let intelligentExportMode = false;
+let intelligentExportSelection = new Set();
 
 ///////////////////////
 // GROUP INDEX HELPER
@@ -58,6 +65,50 @@ function getAttrLabel(key) {
   return entry?.label || key || "Attr";
 }
 
+function normalizeTargets(targets) {
+  const list = Array.isArray(targets) ? targets : [targets];
+  const out = [];
+  for (const raw of list) {
+    if (!raw) continue;
+    const key = String(raw).trim().toLowerCase();
+    if (!key) continue;
+    if (key === "color" || key === "rgb") {
+      out.push("r", "g", "b");
+    } else if (["dimmer", "r", "g", "b", "pan", "tilt"].includes(key)) {
+      out.push(key);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+function getIntelligentEffectDefinition(id) {
+  if (!id) return null;
+  const key = String(id).trim().toLowerCase();
+  return intelligentEffectsById[key] || null;
+}
+window.getIntelligentEffectDefinition = getIntelligentEffectDefinition;
+
+window.registerIntelligentEffect = function registerIntelligentEffect(def) {
+  if (!def || typeof def !== "object") return;
+  const idRaw = def.id || def.name || def.label;
+  const id = String(idRaw || "").trim().toLowerCase();
+  if (!id) return;
+
+  const script = document.currentScript;
+  const file = script?.dataset?.effectFile || script?.getAttribute("data-effect-file") || null;
+  const normalized = {
+    ...def,
+    id,
+    label: def.label || def.name || def.id || id,
+    targets: normalizeTargets(def.targets && def.targets.length ? def.targets : ["dimmer"]),
+    params: Array.isArray(def.params) ? def.params : [],
+    file
+  };
+
+  intelligentEffectsById[id] = normalized;
+  intelligentEffects.push(normalized);
+};
+
 ///////////////////////
 // LOAD EFFECTS
 ///////////////////////
@@ -83,32 +134,409 @@ async function reloadEffectsDefinitions() {
   renderEffectsLibrary();
 }
 
+async function ensureIntelligentEffectsLoaded(forceReload = false) {
+  if (intelligentEffectsLoaded && !forceReload) return;
+  if (intelligentEffectsLoading) return;
+  intelligentEffectsLoading = true;
+  intelligentEffectsLoaded = true;
+  intelligentEffects = [];
+  intelligentEffectsById = {};
+
+  document.querySelectorAll("script[data-intelligent-effect]").forEach(s => s.remove());
+
+  try {
+    const r = await fetch("/api/intelligent_effects?t=" + Date.now());
+    const data = await r.json();
+    const files = Array.isArray(data.files) ? data.files : [];
+
+    for (const file of files) {
+      await loadIntelligentEffectScript(file);
+    }
+
+    intelligentEffects.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+  } catch (e) {
+    console.warn("[FX] Failed to load intelligent effects:", e);
+  } finally {
+    intelligentEffectsLoading = false;
+  }
+}
+
+function loadIntelligentEffectScript(file) {
+  return new Promise((resolve) => {
+    if (!file) return resolve();
+    const script = document.createElement("script");
+    script.src = `/api/intelligent_effects/${encodeURIComponent(file)}?t=${Date.now()}`;
+    script.dataset.intelligentEffect = "1";
+    script.dataset.effectFile = file;
+    script.onload = () => resolve();
+    script.onerror = () => resolve();
+    document.body.appendChild(script);
+  });
+}
+
 function renderEffectsLibrary() {
   const listEl = $id("effects-list");
   if (!listEl) return;
-  listEl.innerHTML = "";
-  
-  if (!availableEffects.length) {
-    listEl.innerHTML = "<div class='muted'>No effects loaded.</div>";
+
+  if (effectsLibraryMode === "intelligent") {
+    if (!intelligentEffectsLoaded && !intelligentEffectsLoading) {
+      listEl.innerHTML = `<div class='muted'>${window.t ? window.t("effects.library.loading", "Loading effects...") : "Loading effects..."}</div>`;
+      ensureIntelligentEffectsLoaded(true).then(() => renderEffectsLibrary());
+      return;
+    }
+    renderIntelligentEffectsLibrary(listEl);
     return;
   }
-  
+
+  renderLegacyEffectsLibrary(listEl);
+}
+
+function renderLegacyEffectsLibrary(listEl) {
+  listEl.innerHTML = "";
+
+  if (!availableEffects.length) {
+    listEl.innerHTML = `<div class='muted'>${window.t ? window.t("effects.library.empty", "No effects loaded.") : "No effects loaded."}</div>`;
+    return;
+  }
+
   for (const eff of availableEffects) {
     const name = eff?.name || String(eff);
     const label = eff?.label || name;
-    
-    const item = document.createElement("div");
-    item.className = "effects-item";
-    item.textContent = label;
-    item.title = "Double-click to apply";
-    
-    item.addEventListener("dblclick", (ev) => {
+    if (String(name).toLowerCase() === "chaser") continue;
+
+    const tile = document.createElement("div");
+    tile.className = "effects-tile";
+    tile.title = window.t ? window.t("effects.library.itemTitle", "Double-click to apply") : "Double-click to apply";
+
+    const preview = document.createElement("div");
+    preview.className = "tile-preview";
+    preview.textContent = "FX";
+
+    const footer = document.createElement("div");
+    footer.className = "tile-footer";
+    footer.textContent = label;
+
+    tile.appendChild(preview);
+    tile.appendChild(footer);
+
+    tile.addEventListener("dblclick", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
       applyEffectToSelection(name);
     });
-    
-    listEl.appendChild(item);
+
+    listEl.appendChild(tile);
+  }
+}
+
+function renderIntelligentEffectsLibrary(listEl) {
+  listEl.innerHTML = "";
+  listEl.classList.toggle("export-mode", intelligentExportMode);
+
+  if (!intelligentEffects.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = window.t ? window.t("effects.library.intelligentEmpty", "No intelligent effects loaded.") : "No intelligent effects loaded.";
+    listEl.appendChild(empty);
+  }
+
+  for (const def of intelligentEffects) {
+    const tile = buildIntelligentEffectTile(def);
+    listEl.appendChild(tile);
+  }
+
+  listEl.appendChild(buildIntelligentImportExportTile());
+}
+
+function buildIntelligentEffectTile(def) {
+  const tile = document.createElement("div");
+  tile.className = "effects-tile";
+  tile.dataset.effectId = def.id;
+  tile.title = window.t ? window.t("effects.library.itemTitle", "Double-click to apply") : "Double-click to apply";
+
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "tile-check";
+  check.checked = intelligentExportSelection.has(def.id);
+  check.addEventListener("click", (ev) => ev.stopPropagation());
+  check.addEventListener("change", () => {
+    if (check.checked) intelligentExportSelection.add(def.id);
+    else intelligentExportSelection.delete(def.id);
+    tile.classList.toggle("selected", check.checked);
+  });
+
+  const preview = document.createElement("div");
+  preview.className = "tile-preview";
+  const canvas = document.createElement("canvas");
+  canvas.width = 6;
+  canvas.height = 6;
+  preview.appendChild(canvas);
+
+  const footer = document.createElement("div");
+  footer.className = "tile-footer";
+  footer.textContent = def.label || def.id;
+
+  tile.appendChild(check);
+  tile.appendChild(preview);
+  tile.appendChild(footer);
+
+  tile.addEventListener("dblclick", (ev) => {
+    if (intelligentExportMode) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    applyIntelligentEffectToSelection(def.id);
+  });
+
+  tile.addEventListener("click", () => {
+    if (!intelligentExportMode) return;
+    const next = !intelligentExportSelection.has(def.id);
+    if (next) intelligentExportSelection.add(def.id);
+    else intelligentExportSelection.delete(def.id);
+    check.checked = next;
+    tile.classList.toggle("selected", next);
+  });
+
+  tile.classList.toggle("selected", intelligentExportSelection.has(def.id));
+
+  renderIntelligentPreviewFrame(canvas, def, 0);
+  attachIntelligentPreview(tile, canvas, def);
+
+  return tile;
+}
+
+function buildIntelligentImportExportTile() {
+  const tile = document.createElement("div");
+  tile.className = "effects-tile effects-tile--action";
+
+  const preview = document.createElement("div");
+  preview.className = "tile-preview";
+  preview.textContent = "⇅";
+
+  const footer = document.createElement("div");
+  footer.className = "tile-footer";
+  footer.textContent = window.t ? window.t("effects.library.importExport", "Import / Export") : "Import / Export";
+
+  const actions = document.createElement("div");
+  actions.className = "tile-actions";
+
+  const importBtn = document.createElement("button");
+  importBtn.type = "button";
+  importBtn.textContent = window.t ? window.t("effects.library.import", "Import") : "Import";
+  importBtn.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    triggerIntelligentImport();
+  };
+
+  const exportBtn = document.createElement("button");
+  exportBtn.type = "button";
+  exportBtn.textContent = intelligentExportMode
+    ? (window.t ? window.t("effects.library.downloadSelected", "Download") : "Download")
+    : (window.t ? window.t("effects.library.export", "Export") : "Export");
+  exportBtn.onclick = async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!intelligentExportMode) {
+      setIntelligentExportMode(true);
+      return;
+    }
+    if (intelligentExportSelection.size > 0) {
+      await downloadSelectedIntelligentEffects();
+    }
+    setIntelligentExportMode(false);
+  };
+
+  actions.appendChild(importBtn);
+  actions.appendChild(exportBtn);
+
+  tile.appendChild(preview);
+  tile.appendChild(footer);
+  tile.appendChild(actions);
+  return tile;
+}
+
+function setIntelligentExportMode(enabled) {
+  intelligentExportMode = Boolean(enabled);
+  if (!intelligentExportMode) intelligentExportSelection.clear();
+  renderEffectsLibrary();
+}
+
+function getIntelligentImportInput() {
+  let input = document.getElementById("intelligent-effects-import");
+  if (input) return input;
+  input = document.createElement("input");
+  input.type = "file";
+  input.id = "intelligent-effects-import";
+  input.accept = ".js";
+  input.multiple = true;
+  input.style.display = "none";
+  input.addEventListener("change", async () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    if (!files.length) return;
+    await uploadIntelligentEffects(files);
+  });
+  document.body.appendChild(input);
+  return input;
+}
+
+function triggerIntelligentImport() {
+  const input = getIntelligentImportInput();
+  input.click();
+}
+
+async function uploadIntelligentEffects(files) {
+  const form = new FormData();
+  files.forEach(f => form.append("files", f));
+  try {
+    const res = await fetch("/api/intelligent_effects/import", {
+      method: "POST",
+      body: form
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      toast(window.t ? window.t("effects.toast.importFailed", "Import failed.") : "Import failed.", "error");
+      return;
+    }
+    await ensureIntelligentEffectsLoaded(true);
+    renderEffectsLibrary();
+    toast(window.t ? window.t("effects.toast.importOk", "Import OK.") : "Import OK.", "success");
+  } catch (e) {
+    console.warn("[FX] import error:", e);
+    toast(window.t ? window.t("effects.toast.importFailed", "Import failed.") : "Import failed.", "error");
+  }
+}
+
+async function downloadSelectedIntelligentEffects() {
+  const ids = Array.from(intelligentExportSelection);
+  const files = ids.map(id => intelligentEffectsById[id]?.file).filter(Boolean);
+  for (const file of files) {
+    await downloadIntelligentEffectFile(file);
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+
+async function downloadIntelligentEffectFile(file) {
+  try {
+    const res = await fetch(`/api/intelligent_effects/${encodeURIComponent(file)}`);
+    if (!res.ok) {
+      toast(window.t ? window.t("effects.toast.exportFailed", "Download failed.") : "Download failed.", "error");
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 200);
+  } catch (e) {
+    console.warn("[FX] download error:", e);
+    toast(window.t ? window.t("effects.toast.exportFailed", "Download failed.") : "Download failed.", "error");
+  }
+}
+
+function attachIntelligentPreview(tile, canvas, def) {
+  let raf = null;
+  let start = 0;
+
+  const tick = (ts) => {
+    if (!start) start = ts;
+    const tMs = ts - start;
+    renderIntelligentPreviewFrame(canvas, def, tMs);
+    raf = requestAnimationFrame(tick);
+  };
+
+  tile.addEventListener("mouseenter", () => {
+    if (raf) return;
+    start = 0;
+    raf = requestAnimationFrame(tick);
+  });
+
+  tile.addEventListener("mouseleave", () => {
+    if (!raf) return;
+    cancelAnimationFrame(raf);
+    raf = null;
+    renderIntelligentPreviewFrame(canvas, def, 0);
+  });
+}
+
+function renderIntelligentPreviewFrame(canvas, def, tMs) {
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const width = canvas.width || 6;
+  const height = canvas.height || 6;
+  const image = ctx.createImageData(width, height);
+
+  const targets = normalizeTargets(def.targets || ["dimmer"]);
+  const hasColor = targets.includes("r") || targets.includes("g") || targets.includes("b");
+  const deviceCount = width * height;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      let r = 0, g = 0, b = 0;
+
+      if (hasColor) {
+        r = evalIntelligentPreviewValue(def, tMs, idx, deviceCount, "r");
+        g = evalIntelligentPreviewValue(def, tMs, idx, deviceCount, "g");
+        b = evalIntelligentPreviewValue(def, tMs, idx, deviceCount, "b");
+      } else {
+        const v = evalIntelligentPreviewValue(def, tMs, idx, deviceCount, targets[0] || "dimmer");
+        r = v; g = v; b = v;
+      }
+
+      const i = (y * width + x) * 4;
+      image.data[i] = r;
+      image.data[i + 1] = g;
+      image.data[i + 2] = b;
+      image.data[i + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(image, 0, 0);
+}
+
+function setEffectsLibraryMode(mode) {
+  const next = mode === "intelligent" ? "intelligent" : "legacy";
+  if (effectsLibraryMode === next) return;
+  effectsLibraryMode = next;
+
+  document.querySelectorAll(".effects-lib-tab").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.lib === next);
+  });
+
+  updateEffectsPanelLabels();
+  renderEffectsTargets();
+  renderEffectsLibrary();
+}
+
+function bindEffectsLibraryTabs() {
+  const tabs = document.querySelectorAll(".effects-lib-tab");
+  if (!tabs.length) return;
+  tabs.forEach(tab => {
+    tab.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      setEffectsLibraryMode(tab.dataset.lib || "legacy");
+    });
+  });
+}
+
+function updateEffectsPanelLabels() {
+  const titleEl = $id("effects-targets-title");
+  const hintEl = $id("effects-hint");
+  if (effectsLibraryMode === "intelligent") {
+    if (titleEl) titleEl.textContent = window.t ? window.t("effects.targetsTitleIntelligent", "Effects") : "Effects";
+    if (hintEl) hintEl.textContent = window.t ? window.t("effects.hintIntelligent", "Double-click to apply. Targets are predefined by the effect.") : "Double-click to apply. Targets are predefined by the effect.";
+  } else {
+    if (titleEl) titleEl.textContent = window.t ? window.t("effects.targetsTitle", "Targets & Effects") : "Targets & Effects";
+    if (hintEl) hintEl.textContent = window.t ? window.t("effects.hint", "Double-click an effect to apply it to the selected devices and attribute.") : "Double-click an effect to apply it to the selected devices and attribute.";
   }
 }
 
@@ -167,19 +595,25 @@ function renderEffectsTargets() {
   const container = $id("effects-targets");
   if (!container) return;
   container.innerHTML = "";
-  
+
+  if (effectsLibraryMode === "intelligent") {
+    renderIntelligentTargets(container);
+    renderActualEffectsPanel();
+    return;
+  }
+
   if (!selectedDeviceOrder.length) {
     container.innerHTML = "<div class='muted'>Select devices in the rig to manage effects.</div>";
     return;
   }
-  
+
   ensureVirtualGroupsRoot();
-  
+
   for (const attr of EFFECT_ATTRS) {
     const row = document.createElement("div");
     row.className = "effects-attr-row";
     if (activeEffectAttr === attr.key) row.classList.add("active");
-    
+
     const header = document.createElement("div");
     header.className = "effects-attr-header";
     header.onclick = () => {
@@ -187,10 +621,10 @@ function renderEffectsTargets() {
       renderEffectsTargets();
       toast(`Attribut actif: ${attr.label}`, "info");
     };
-    
+
     const title = document.createElement("div");
     title.textContent = attr.label;
-    
+
     const groupsForAttr = Object.values(virtualGroups).filter(g => {
       if (g.attrKey !== attr.key) return false;
       if (!isGroupSameAsSelection(g)) return false;
@@ -200,18 +634,18 @@ function renderEffectsTargets() {
       }
       return true;
     });
-    
+
     const badge = document.createElement("span");
     badge.className = "badge";
     badge.textContent = groupsForAttr.length + " group(s)";
-    
+
     header.appendChild(title);
     header.appendChild(badge);
     row.appendChild(header);
-    
+
     if (activeEffectAttr === attr.key) {
       const body = document.createElement("div");
-      
+
       if (!groupsForAttr.length) {
         const none = document.createElement("div");
         none.className = "muted";
@@ -223,14 +657,53 @@ function renderEffectsTargets() {
           body.appendChild(buildEffectGroupCard(group));
         });
       }
-      
+
       row.appendChild(body);
     }
-    
+
     container.appendChild(row);
   }
 
   renderActualEffectsPanel();
+}
+
+function renderIntelligentTargets(container) {
+  if (!container) return;
+  if (!selectedDeviceOrder.length) {
+    container.innerHTML = "<div class='muted'>Select devices in the rig to manage effects.</div>";
+    return;
+  }
+
+  ensureVirtualGroupsRoot();
+  const groups = Object.values(virtualGroups).filter(g => {
+    if (g.mode !== "intelligent") return false;
+    if (!isGroupSameAsSelection(g)) return false;
+    for (const devId of selectedDeviceOrder) {
+      const set = deviceCurrentGroups[devId];
+      if (!set || !set.has(g.id)) return false;
+    }
+    return true;
+  });
+
+  if (!groups.length) {
+    const none = document.createElement("div");
+    none.className = "muted";
+    none.textContent = window.t
+      ? window.t("effects.targets.intelligentEmpty", "No intelligent effects on this selection.")
+      : "No intelligent effects on this selection.";
+    container.appendChild(none);
+    return;
+  }
+
+  groups.forEach(group => {
+    const targets = formatGroupTargets(group);
+    const subtitle = window.t
+      ? window.t("effects.card.subtitleIntelligent", "Targets: {targets} - devices: {devices}")
+          .replace("{targets}", targets)
+          .replace("{devices}", (group.deviceIds || []).join(", "))
+      : `Targets: ${targets} - devices: ${(group.deviceIds || []).join(", ")}`;
+    container.appendChild(buildEffectGroupCard(group, { subtitle }));
+  });
 }
 
 
@@ -259,7 +732,9 @@ function buildEffectGroupCard(group, options = {}) {
   }
 
   // Get effect definition for dynamic params
-  const def = getEffectDefinition(group.type);
+  const def = group.mode === "intelligent"
+    ? getIntelligentEffectDefinition(group.type)
+    : getLegacyEffectDefinition(group.type);
   const params = def?.params || [];
 
   // Build UI for each parameter from definition
@@ -445,8 +920,61 @@ async function applyEffectToSelection(effectName) {
   }
 }
 
+async function applyIntelligentEffectToSelection(effectId) {
+  try {
+    if (!selectedDeviceOrder.length) {
+      toast(window.t ? window.t("effects.toast.selectDevicesFirst", "Select devices first.") : "Select devices first.", "error");
+      return;
+    }
+
+    await ensureIntelligentEffectsLoaded();
+    ensureVirtualGroupsRoot();
+
+    const def = getIntelligentEffectDefinition(effectId);
+    if (!def) {
+      toast(window.t ? window.t("effects.toast.intelligentNotFound", "Intelligent effect not found.") : "Intelligent effect not found.", "error");
+      return;
+    }
+
+    const groupId = allocVirtualGroupId();
+    const group = {
+      id: groupId,
+      mode: "intelligent",
+      type: def.id,
+      targets: def.targets || ["dimmer"],
+      deviceIds: [...selectedDeviceOrder].map(String),
+    };
+
+    const params = Array.isArray(def.params) ? def.params : [];
+    for (const param of params) {
+      group[param.key] = param.default ?? 0;
+    }
+
+    virtualGroups[groupId] = group;
+    cuesObj.virtual_groups = virtualGroups;
+
+    for (const id of group.deviceIds) {
+      if (!deviceCurrentGroups[id]) deviceCurrentGroups[id] = new Set();
+      deviceCurrentGroups[id].add(groupId);
+    }
+
+    renderEffectsTargets();
+    renderActualEffectsPanel();
+    const name = def.label || def.id;
+    const msg = window.t
+      ? window.t("effects.toast.intelligentAdded", "Effect {name} added ({groupId})")
+          .replace("{name}", name)
+          .replace("{groupId}", groupId)
+      : `Effect ${name} added (${groupId})`;
+    toast(msg, "success");
+  } catch (err) {
+    console.error("[FX] intelligent error:", err);
+    toast(window.t ? window.t("effects.toast.intelligentAddFailed", "Failed to add intelligent effect.") : "Failed to add intelligent effect.", "error");
+  }
+}
+
 // Get effect definition by name
-function getEffectDefinition(effectName) {
+function getLegacyEffectDefinition(effectName) {
   return availableEffects.find(e => (e.name || e) === effectName) || null;
 }
 
@@ -600,8 +1128,27 @@ function renderActualEffectsPanel() {
 
   for (const { group, devices } of active) {
     const usage = countGroupUsageInCues(group.id);
-    const subtitle = `Attr: ${getAttrLabel(group.attrKey)} - Devices: ${devices.join(', ') || 'n/a'}`;
-    const metaText = usage ? `Présent dans ${usage} cue(s)` : "Pas dans la cue chargée";
+    const targetsLabel = group.mode === "intelligent"
+      ? formatGroupTargets(group)
+      : getAttrLabel(group.attrKey || "");
+    const subtitle = group.mode === "intelligent"
+      ? (window.t
+          ? window.t("effects.actual.subtitleIntelligent", "Targets: {targets} - Devices: {devices}")
+              .replace("{targets}", targetsLabel)
+              .replace("{devices}", devices.join(", ") || "n/a")
+          : `Targets: ${targetsLabel} - Devices: ${devices.join(", ") || "n/a"}`)
+      : (window.t
+          ? window.t("effects.actual.subtitle", "Attr: {attr} - Devices: {devices}")
+              .replace("{attr}", targetsLabel)
+              .replace("{devices}", devices.join(", ") || "n/a")
+          : `Attr: ${targetsLabel} - Devices: ${devices.join(", ") || "n/a"}`);
+    const metaText = usage
+      ? (window.t
+          ? window.t("effects.actual.presentInCues", "Present in {count} cue(s)").replace("{count}", usage)
+          : `Present in ${usage} cue(s)`)
+      : (window.t
+          ? window.t("effects.actual.notInCue", "Not in current cue")
+          : "Not in current cue");
 
     const card = buildEffectGroupCard(group, {
       subtitle,
@@ -943,6 +1490,131 @@ function evalGroupEffect(group, tMs, deviceId) {
   }
 }
 
+const intelligentFxHelpers = {
+  clamp,
+  lerp: (a, b, t) => a + (b - a) * t,
+  wave: (type, tMs, freq, phaseMs = 0) => {
+    const f = Math.max(0, parseFloat(freq || 0));
+    if (!f) return 0;
+    const w = ((tMs + (parseFloat(phaseMs) || 0)) / 1000) * f;
+    const frac = w - Math.floor(w);
+    const key = String(type || "sinus").toLowerCase();
+    if (key === "triangle") return triWave(frac);
+    if (key === "sawtooth") return sawWave(frac);
+    if (key === "rectangle" || key === "square") return sqrWave(frac);
+    return Math.sin(2 * Math.PI * frac);
+  },
+  applyFadeCurve,
+  chaserAdvanced: (ctx, params) => {
+    const group = {
+      ...params,
+      deviceIds: Array.isArray(ctx.group?.deviceIds)
+        ? ctx.group.deviceIds.map(String)
+        : Array.from({ length: ctx.deviceCount }, (_, i) => String(i))
+    };
+    return evalChaserAdvanced(group, ctx.tMs, String(ctx.deviceId));
+  }
+};
+
+function formatGroupTargets(group) {
+  const def = getIntelligentEffectDefinition(group?.type);
+  const targets = normalizeTargets(group?.targets?.length ? group.targets : def?.targets || []);
+  if (!targets.length) return window.t ? window.t("effects.attr.fallback", "Attr") : "Attr";
+  return targets.map(t => getAttrLabel(t)).join(", ");
+}
+
+function buildIntelligentContext(group, def, devId, deviceIndex, deviceCount, tMs, target) {
+  return {
+    tMs,
+    target,
+    deviceId: String(devId),
+    deviceIndex,
+    deviceCount,
+    group,
+    params: group,
+    helpers: intelligentFxHelpers,
+    isColor: target === "r" || target === "g" || target === "b",
+    effect: def
+  };
+}
+
+function safeApplyIntelligentEffect(def, ctx) {
+  try {
+    if (!def || typeof def.apply !== "function") return 0;
+    const out = def.apply(ctx);
+    const n = Number(out);
+    return Number.isFinite(n) ? n : 0;
+  } catch (e) {
+    console.warn("[FX] intelligent apply error:", e);
+    return 0;
+  }
+}
+
+function applyIntelligentValue(def, base, raw) {
+  const mode = String(def?.mode || "delta").toLowerCase();
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    return clamp(Math.round(base || 0), 0, 255);
+  }
+  if (mode === "absolute") {
+    return clamp(Math.round(n), 0, 255);
+  }
+  return clamp(Math.round((base || 0) + n), 0, 255);
+}
+
+function applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap, options = null) {
+  if (!group || !def || !dev) return;
+  const u = dev.universe || 0;
+  perUniverseMap[u] ||= {};
+  const absMap = getDeviceAttrAbsChannels(dev);
+
+  const order = Array.isArray(group.deviceIds) ? group.deviceIds.map(String) : [];
+  const groupInfo = getDeviceGroupIndex(dev.id, order);
+  const deviceIndex = groupInfo.idx;
+  const deviceCount = groupInfo.total;
+
+  const targets = normalizeTargets(group.targets?.length ? group.targets : def.targets || []);
+  if (!targets.length) return;
+
+  const scale = typeof options?.scale === "number" ? options.scale : 1;
+  const mix = options?.groupMix?.[group.id] != null ? options.groupMix[group.id] : 1;
+  const effScale = scale * mix;
+
+  for (const target of targets) {
+    const absCh = absMap[target];
+    if (absCh == null) continue;
+    const baseVal = perUniverseMap[u][absCh] ?? 0;
+    const ctx = buildIntelligentContext(group, def, dev.id, deviceIndex, deviceCount, tMs, target);
+    const raw = safeApplyIntelligentEffect(def, ctx);
+    let val;
+    if (String(def?.mode || "delta").toLowerCase() === "absolute") {
+      const rawVal = clamp(Math.round(Number(raw) || 0), 0, 255);
+      val = clamp(Math.round(baseVal + (rawVal - baseVal) * effScale), 0, 255);
+    } else {
+      val = applyIntelligentValue(def, baseVal, raw * effScale);
+    }
+    perUniverseMap[u][absCh] = val;
+  }
+}
+
+function evalIntelligentPreviewValue(def, tMs, deviceIndex, deviceCount, target) {
+  const defaults = {};
+  if (Array.isArray(def?.params)) {
+    for (const param of def.params) {
+      defaults[param.key] = param.default ?? 0;
+    }
+  }
+  const previewGroup = {
+    ...defaults,
+    id: "preview",
+    deviceIds: Array.from({ length: deviceCount }, (_, i) => String(i))
+  };
+  const ctx = buildIntelligentContext(previewGroup, def, String(deviceIndex), deviceIndex, deviceCount, tMs, target);
+  const raw = def && typeof def.preview === "function" ? def.preview(ctx) : safeApplyIntelligentEffect(def, ctx);
+  const base = 128;
+  return applyIntelligentValue(def, base, raw);
+}
+
 ///////////////////////
 // RUNNER (AVEC DOUBLE PROTECTION)
 ///////////////////////
@@ -999,11 +1671,18 @@ async function effectTick() {
     for (const gId of devGroups) {
       const group = virtualGroups[gId];
       if (!group) continue;
-      
+
+      if (group.mode === "intelligent") {
+        const def = getIntelligentEffectDefinition(group.type);
+        if (!def) continue;
+        applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap);
+        continue;
+      }
+
       const attr = group.attrKey;
       const absCh = absMap[attr];
       if (absCh == null) continue;
-      
+
       const base = perUniverseMap[u][absCh] ?? 0;
       const delta = evalGroupEffect(group, tMs, dev.id);
       const val = clamp(Math.round(base + delta), 0, 255);
@@ -1049,3 +1728,9 @@ function stopEffectRunner() {
   clearInterval(effectTickHandle);
   effectTickHandle = null;
 }
+
+document.addEventListener("DOMContentLoaded", () => {
+  bindEffectsLibraryTabs();
+  updateEffectsPanelLabels();
+  ensureIntelligentEffectsLoaded();
+});

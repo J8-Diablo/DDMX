@@ -267,14 +267,22 @@
   <div id="tab-effects" class="tab-content">
     <div class="effects-grid">
       <div class="ctrl-box effects-left">
-        <h3 data-i18n="effects.targetsTitle">Targets & Effects</h3>
+        <div class="effects-panel-header">
+          <h3 id="effects-targets-title" data-i18n="effects.targetsTitle">Targets & Effects</h3>
+        </div>
         <div id="effects-targets" class="effects-targets"></div>
       </div>
 
       <div class="ctrl-box effects-right">
-        <h3 data-i18n="effects.libraryTitle">Effect Library</h3>
+        <div class="effects-panel-header effects-library-header">
+          <h3 data-i18n="effects.libraryTitle">Effect Library</h3>
+          <div class="effects-library-tabs">
+            <button class="effects-lib-tab active" data-lib="legacy" data-i18n="effects.libraryTabLegacy">Legacy</button>
+            <button class="effects-lib-tab" data-lib="intelligent" data-i18n="effects.libraryTabIntelligent">Intelligent</button>
+          </div>
+        </div>
         <div id="effects-list" class="effects-list"></div>
-        <div class="muted effects-hint" data-i18n="effects.hint">
+        <div id="effects-hint" class="muted effects-hint" data-i18n="effects.hint">
           Double-click an effect to apply it to the selected devices and attribute.
         </div>
       </div>

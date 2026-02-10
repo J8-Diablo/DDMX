@@ -813,11 +813,47 @@ input[type="range"].vertical.tilt-slider {
   gap: 10px;
 }
 
-.effects-targets,
-.effects-list {
+.effects-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.effects-library-tabs {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.effects-lib-tab {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.effects-lib-tab.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(90, 166, 255, 0.3);
+}
+
+.effects-targets {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.effects-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
   max-height: 280px;
   overflow: auto;
   padding-right: 4px;
@@ -887,6 +923,82 @@ input[type="range"].vertical.tilt-slider {
   align-self: flex-end;
   font-size: 11px;
   padding: 2px 6px;
+}
+
+.effects-tile {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 8px;
+  min-height: 120px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.effects-tile:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(90, 166, 255, 0.3);
+}
+
+.effects-tile.selected {
+  border-color: #29b15f;
+  box-shadow: 0 0 0 2px rgba(41, 177, 95, 0.6);
+}
+
+.effects-tile .tile-preview {
+  width: 60px;
+  height: 60px;
+  border-radius: 8px;
+  background: #0c0f16;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  place-items: center;
+  margin: 0 auto;
+  image-rendering: pixelated;
+}
+
+.effects-tile .tile-preview canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.effects-tile .tile-footer {
+  font-size: 12px;
+  text-align: center;
+  color: var(--text);
+}
+
+.effects-tile .tile-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  display: none;
+}
+
+.effects-list.export-mode .effects-tile .tile-check {
+  display: block;
+}
+
+.effects-tile--action {
+  border-style: dashed;
+}
+
+.effects-tile--action .tile-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+.effects-tile--action button {
+  font-size: 11px;
+  padding: 4px 8px;
 }
 
 /* Dynamic effect parameters */

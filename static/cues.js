@@ -1418,6 +1418,19 @@ async function sendToEngineWithEffects(effectScale, groupMix) {
       const group = virtualGroups[gId];
       if (!group) continue;
 
+      if (group.mode === "intelligent") {
+        const def = window.getIntelligentEffectDefinition
+          ? window.getIntelligentEffectDefinition(group.type)
+          : null;
+        if (def && typeof applyIntelligentGroupToDevice === "function") {
+          applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap, {
+            scale,
+            groupMix: gmForDev
+          });
+        }
+        continue;
+      }
+
       const attr = group.attrKey;
       const absCh = absMap[attr];
       if (absCh == null) continue;
