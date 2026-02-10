@@ -938,10 +938,11 @@ function addPositionControls(container, posMap) {
   posWidgetRef = { xyEl: xy, cursorEl: cursor, panSlider, tiltSlider, panIdx, tiltIdx };
 
   function setFromXYEvent(e) {
-    const { x, y } = elementCoords(e, xy);
-    const w = xy.clientWidth, h = xy.clientHeight;
-    let nx = clamp(x / w, 0, 1);
-    let ny = clamp(y / h, 0, 1);
+    const r = xy.getBoundingClientRect();
+    const denomX = Math.max(1, r.width - 1);
+    const denomY = Math.max(1, r.height - 1);
+    let nx = clamp((e.clientX - r.left) / denomX, 0, 1);
+    let ny = clamp((e.clientY - r.top) / denomY, 0, 1);
 
     const panVal = Math.round(nx * 255);
     const tiltVal = Math.round(ny * 255);
@@ -990,7 +991,8 @@ function addBeamControls(container, funcs) {
 function moveXYCursor(nx, ny) {
   if (!posWidgetRef) return;
   const xy = posWidgetRef.xyEl, cursor = posWidgetRef.cursorEl;
-  const w = xy.clientWidth, h = xy.clientHeight;
+  const w = Math.max(1, xy.clientWidth - 1);
+  const h = Math.max(1, xy.clientHeight - 1);
   cursor.style.left = `${nx * w}px`;
   cursor.style.top = `${ny * h}px`;
 }

@@ -549,6 +549,7 @@ class DMXRenderEngine:
                     self._direct_channels[universe][channel] = v
                     self._smooth_targets.get(universe, {}).pop(channel, None)
                 else:
+                    self._direct_channels[universe].pop(channel, None)
                     self._smooth_targets.setdefault(universe, {})[channel] = v
             else:
                 self._direct_channels[universe][channel] = v
@@ -570,6 +571,7 @@ class DMXRenderEngine:
                         self._direct_channels[universe][ch_int] = v
                         self._smooth_targets.get(universe, {}).pop(ch_int, None)
                     else:
+                        self._direct_channels[universe].pop(ch_int, None)
                         self._smooth_targets.setdefault(universe, {})[ch_int] = v
                 else:
                     self._direct_channels[universe][ch_int] = v
