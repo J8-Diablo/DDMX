@@ -24,7 +24,7 @@
   "cues.loopBadgeTitle": "Groupe loop : {group}, {count}x",
   "cues.loopCount": "Nb de boucles :",
   "cues.path": "/cue/*.json",
-  "cues.placeholderDuration": "ex : 500 ou 100 > 1000",
+  "cues.placeholderDuration": "ex : 500 ou 100 >< 1000",
   "cues.placeholderName": "Nom de la cue",
   "cues.placeholderSleep": "ex : 0 ou 500",
   "cues.playFrom": "Lire depuis",

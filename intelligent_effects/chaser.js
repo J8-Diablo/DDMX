@@ -12,6 +12,7 @@
     targets: ["dimmer"],
     mode: "absolute",
     params: [
+      { key: "phase", label: "Phase (ms)", type: "text", default: "0", hint: "0, 0>500, 0<500, 0><500, 0<>500, 0|500, 0||500, 0?500" },
       { key: "amplitude", label: "Amplitude", type: "number", min: 0, max: 255, default: 255 },
       { key: "duration", label: "Duration (ms)", type: "number", min: 0, max: 60000, default: 200 },
       { key: "fade", label: "Fade (ms)", type: "number", min: 0, max: 10000, default: 100 },
@@ -24,11 +25,15 @@
     ],
     apply: (ctx) => {
       const amp = Math.max(0, Math.min(255, Number(ctx.params.amplitude ?? 255)));
-      const on = ctx.helpers.chaserEdgeFade(ctx, ctx.params);
+      const phase = ctx.helpers.phaseOffsetMs(ctx);
+      const localCtx = { ...ctx, tMs: ctx.tMs + phase };
+      const on = ctx.helpers.chaserEdgeFade(localCtx, ctx.params);
       return Math.round(amp * on);
     },
     preview: (ctx) => {
-      const on = ctx.helpers.chaserEdgeFade(ctx, ctx.params);
+      const phase = ctx.helpers.phaseOffsetMs(ctx);
+      const localCtx = { ...ctx, tMs: ctx.tMs + phase };
+      const on = ctx.helpers.chaserEdgeFade(localCtx, ctx.params);
       return Math.round(255 * on);
     }
   });

@@ -964,12 +964,14 @@ function restoreDeviceGroupsFromStep(step) {
  * Calcule le pattern de fade à partir d'un champ duration.
  * 
  * Exemples :
- *  "500"         -> baseFadeMs=500, totalMs=500, offsets=0
- *  "500 > 5000"  -> baseFadeMs=500, totalMs=5500, offsets selon ordre
- *  "500 < 5000"  -> idem mais ordre inversé
- *  "500 | 5000"  -> extrémités -> centre
- *  "500 || 5000" -> centre -> extrémités
- *  "500 ? 5000"  -> ordre aléatoire
+ *  "500"          -> baseFadeMs=500, totalMs=500, offsets=0
+ *  "500 > 5000"   -> baseFadeMs=500, totalMs=5500, offsets selon ordre
+ *  "500 < 5000"   -> idem mais ordre inversé
+ *  "500 >< 5000"  -> extrémités -> centre
+ *  "500 <> 5000"  -> centre -> extrémités
+ *  "500 | 5000"   -> 1 device sur 2 (alternance)
+ *  "500 || 5000"  -> moitié / moitié
+ *  "500 ? 5000"   -> ordre aléatoire
  */
 function computeFadePattern(fadeField, deviceIds) {
   const ids = deviceIds || [];
@@ -979,11 +981,33 @@ function computeFadePattern(fadeField, deviceIds) {
   let spreadMs = 0;
   let op = null;
 
-  const m = str.match(/^(\d+)\s*([><|?]{1,2})\s*(\d+)$/);
-  if (m) {
-    baseFadeMs = parseInt(m[1], 10) || 0;
-    op = m[2];
-    spreadMs = parseInt(m[3], 10) || 0;
+  let parts = [];
+  if (str.includes("><")) {
+    op = "><";
+    parts = str.split("><");
+  } else if (str.includes("<>")) {
+    op = "<>";
+    parts = str.split("<>");
+  } else if (str.includes("||")) {
+    op = "||";
+    parts = str.split("||");
+  } else if (str.includes("|")) {
+    op = "|";
+    parts = str.split("|");
+  } else if (str.includes(">")) {
+    op = ">";
+    parts = str.split(">");
+  } else if (str.includes("<")) {
+    op = "<";
+    parts = str.split("<");
+  } else if (str.includes("?")) {
+    op = "?";
+    parts = str.split("?");
+  }
+
+  if (op && parts.length >= 2) {
+    baseFadeMs = parseInt(String(parts[0]).trim(), 10) || 0;
+    spreadMs = parseInt(String(parts[1]).trim(), 10) || 0;
   } else if (/^\d+$/.test(str)) {
     baseFadeMs = parseInt(str, 10) || 0;
   } else {
@@ -1003,7 +1027,7 @@ function computeFadePattern(fadeField, deviceIds) {
   if (op === ">" || op === "<") {
     for (let i = 0; i < n; i++) indices.push(i);
     if (op === "<") indices.reverse();
-  } else if (op === "|") {
+  } else if (op === "><") {
     // extrémités -> centre
     let left = 0, right = n - 1;
     while (left <= right) {
@@ -1016,7 +1040,7 @@ function computeFadePattern(fadeField, deviceIds) {
       left++;
       right--;
     }
-  } else if (op === "||") {
+  } else if (op === "<>") {
     // centre -> extrémités
     if (n % 2 === 1) {
       const mid = (n - 1) / 2;
@@ -1034,6 +1058,21 @@ function computeFadePattern(fadeField, deviceIds) {
         if (midRight + step < n) indices.push(midRight + step);
       }
     }
+  } else if (op === "|") {
+    // 1 device sur 2 (alternance)
+    for (let i = 0; i < n; i++) {
+      const devId = ids[i];
+      offsets[devId] = (i % 2 === 0) ? 0 : spreadMs;
+    }
+    return { baseFadeMs, totalMs: baseFadeMs + spreadMs, offsets };
+  } else if (op === "||") {
+    // moitié / moitié
+    const split = Math.ceil(n / 2);
+    for (let i = 0; i < n; i++) {
+      const devId = ids[i];
+      offsets[devId] = i < split ? 0 : spreadMs;
+    }
+    return { baseFadeMs, totalMs: baseFadeMs + spreadMs, offsets };
   } else if (op === "?") {
     for (let i = 0; i < n; i++) indices.push(i);
     // shuffle Fisher-Yates

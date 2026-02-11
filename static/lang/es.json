@@ -24,7 +24,7 @@
   "cues.loopBadgeTitle": "Grupo loop: {group}, {count}x",
   "cues.loopCount": "Cantidad de loops:",
   "cues.path": "/cue/*.json",
-  "cues.placeholderDuration": "ej. 500 o 100 > 1000",
+  "cues.placeholderDuration": "ej. 500 o 100 >< 1000",
   "cues.placeholderName": "Nombre de la cue",
   "cues.placeholderSleep": "ej. 0 o 500",
   "cues.playFrom": "Reproducir desde",

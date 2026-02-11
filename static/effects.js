@@ -739,6 +739,9 @@ function buildEffectGroupCard(group, options = {}) {
 
   // Build UI for each parameter from definition
   for (const param of params) {
+    if (param.key === "mode" || param.key === "target" || param.key === "targets") {
+      continue;
+    }
     const row = document.createElement("div");
     row.className = "effect-param-row";
 
@@ -809,7 +812,13 @@ function buildEffectGroupCard(group, options = {}) {
 
   // Fallback: show any extra params not in definition
   const definedKeys = new Set(params.map(p => p.key));
-  definedKeys.add("id"); definedKeys.add("attrKey"); definedKeys.add("type"); definedKeys.add("deviceIds");
+  definedKeys.add("id");
+  definedKeys.add("attrKey");
+  definedKeys.add("type");
+  definedKeys.add("deviceIds");
+  definedKeys.add("mode");
+  definedKeys.add("target");
+  definedKeys.add("targets");
 
   for (const [k, v] of Object.entries(group)) {
     if (definedKeys.has(k)) continue;
@@ -1178,8 +1187,10 @@ function renderActualEffectsPanel() {
  *  - "100"           -> fixed 100ms offset for all devices
  *  - "0 > 500"       -> spread 0-500ms in selection order
  *  - "0 < 500"       -> spread 0-500ms in reverse order
- *  - "0 | 500"       -> spread from edges to center
- *  - "0 || 500"      -> spread from center to edges
+ *  - "0 >< 500"      -> spread from edges to center
+ *  - "0 <> 500"      -> spread from center to edges
+ *  - "0 | 500"       -> alternating devices (even/odd)
+ *  - "0 || 500"      -> split in halves (first/second half)
  *  - "0 ? 500"       -> random spread between 0-500ms
  */
 function phaseOffsetForDevice(group, deviceId) {
@@ -1191,11 +1202,17 @@ function phaseOffsetForDevice(group, deviceId) {
   const idx = groupInfo.idx;
   const n = groupInfo.total;
 
-  // Detect operator: ||, |, >, <, ?
+  // Detect operator: ><, <>, ||, |, >, <, ?
   let op = null;
   let parts = [];
 
-  if (ph.includes("||")) {
+  if (ph.includes("><")) {
+    op = "><";
+    parts = ph.split("><").map(s => parseFloat(s.trim()) || 0);
+  } else if (ph.includes("<>")) {
+    op = "<>";
+    parts = ph.split("<>").map(s => parseFloat(s.trim()) || 0);
+  } else if (ph.includes("||")) {
     op = "||";
     parts = ph.split("||").map(s => parseFloat(s.trim()) || 0);
   } else if (ph.includes("|")) {
@@ -1225,7 +1242,7 @@ function phaseOffsetForDevice(group, deviceId) {
 
   // Compute rank based on operator
   let rank;
-  const denom = Math.max(n - 1, 1);
+  let denom = Math.max(n - 1, 1);
 
   switch (op) {
     case ">":
@@ -1236,21 +1253,26 @@ function phaseOffsetForDevice(group, deviceId) {
       // Last to first (reverse)
       rank = n - 1 - idx;
       break;
-    case "|":
+    case "><":
       // Edges to center
       rank = idx < n / 2 ? idx : (n - 1 - idx);
       break;
-    case "||":
+    case "<>":
       // Center to edges
-      rank = Math.abs(idx - Math.floor((n - 1) / 2));
-      if (n % 2 === 0 && idx >= n / 2) rank = Math.abs(idx - Math.floor(n / 2));
-      rank = Math.floor((n - 1) / 2) - Math.abs(idx - Math.floor((n - 1) / 2));
-      rank = Math.max(0, rank);
-      // Re-calculate for center-out
       const mid = (n - 1) / 2;
       const distFromCenter = Math.abs(idx - mid);
       const maxDist = mid;
       rank = maxDist > 0 ? Math.round((1 - distFromCenter / maxDist) * (n - 1)) : 0;
+      break;
+    case "|":
+      // Alternating devices (even/odd)
+      rank = idx % 2;
+      denom = 1;
+      break;
+    case "||":
+      // Split in halves (first/second)
+      rank = idx < n / 2 ? 0 : 1;
+      denom = 1;
       break;
     case "?":
       // Random (but deterministic per device)
@@ -1644,9 +1666,48 @@ function chaserEdgeFade(ctx, params) {
   return clamp(curOn * (1 - t) + nextOn * t, 0, 1);
 }
 
+function hsvToRgb(h, s, v) {
+  const hh = ((h % 360) + 360) % 360;
+  const ss = clamp(s, 0, 1);
+  const vv = clamp(v, 0, 1);
+  const c = vv * ss;
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = vv - c;
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (hh < 60) { r1 = c; g1 = x; b1 = 0; }
+  else if (hh < 120) { r1 = x; g1 = c; b1 = 0; }
+  else if (hh < 180) { r1 = 0; g1 = c; b1 = x; }
+  else if (hh < 240) { r1 = 0; g1 = x; b1 = c; }
+  else if (hh < 300) { r1 = x; g1 = 0; b1 = c; }
+  else { r1 = c; g1 = 0; b1 = x; }
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+
+function hueToRgbWithBW(h, s, v) {
+  const hh = Number(h);
+  const ss = clamp(s, 0, 1);
+  const vv = clamp(v, 0, 1);
+  if (!Number.isFinite(hh)) return { r: 0, g: 0, b: 0 };
+  if (hh <= 0) return { r: 0, g: 0, b: 0 };
+  if (hh >= 360) {
+    const w = Math.round(255 * vv);
+    return { r: w, g: w, b: w };
+  }
+  return hsvToRgb(hh, ss, vv);
+}
+
 const intelligentFxHelpers = {
   clamp,
   lerp: (a, b, t) => a + (b - a) * t,
+  phaseOffsetMs: (ctx) => {
+    const group = ctx?.group;
+    if (!group || !group.phase) return 0;
+    return phaseOffsetForDevice(group, ctx.deviceId);
+  },
   wave: (type, tMs, freq, phaseMs = 0) => {
     const f = Math.max(0, parseFloat(freq || 0));
     if (!f) return 0;
@@ -1659,26 +1720,8 @@ const intelligentFxHelpers = {
     return Math.sin(2 * Math.PI * frac);
   },
   applyFadeCurve,
-  hsvToRgb: (h, s, v) => {
-    const hh = ((h % 360) + 360) % 360;
-    const ss = clamp(s, 0, 1);
-    const vv = clamp(v, 0, 1);
-    const c = vv * ss;
-    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
-    const m = vv - c;
-    let r1 = 0, g1 = 0, b1 = 0;
-    if (hh < 60) { r1 = c; g1 = x; b1 = 0; }
-    else if (hh < 120) { r1 = x; g1 = c; b1 = 0; }
-    else if (hh < 180) { r1 = 0; g1 = c; b1 = x; }
-    else if (hh < 240) { r1 = 0; g1 = x; b1 = c; }
-    else if (hh < 300) { r1 = x; g1 = 0; b1 = c; }
-    else { r1 = c; g1 = 0; b1 = x; }
-    return {
-      r: Math.round((r1 + m) * 255),
-      g: Math.round((g1 + m) * 255),
-      b: Math.round((b1 + m) * 255)
-    };
-  },
+  hsvToRgb,
+  hueToRgb: hueToRgbWithBW,
   chaserAdvanced: (ctx, params) => {
     const group = {
       ...params,

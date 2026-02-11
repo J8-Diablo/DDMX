@@ -8,6 +8,7 @@
     targets: ["color", "dimmer"],
     mode: "absolute",
     params: [
+      { key: "phase", label: "Phase (ms)", type: "text", default: "0", hint: "0, 0>500, 0<500, 0><500, 0<>500, 0|500, 0||500, 0?500" },
       { key: "speed", label: "Speed (cycles/s)", type: "range", min: 0, max: 3, step: 0.05, default: 0.6 },
       { key: "width", label: "Width (devices)", type: "range", min: 1, max: 20, step: 1, default: 5 },
       { key: "softness", label: "Softness", type: "range", min: 0, max: 1, step: 0.05, default: 0.4 },
@@ -17,6 +18,8 @@
     ],
     apply: (ctx) => {
       const count = Math.max(1, ctx.deviceCount || 1);
+      const phase = ctx.helpers.phaseOffsetMs(ctx);
+      const tMs = ctx.tMs + phase;
       const speed = Number(ctx.params.speed || 0);
       const width = Math.max(1, Number(ctx.params.width || 1));
       const softness = ctx.helpers.clamp(Number(ctx.params.softness || 0), 0, 1);
@@ -24,7 +27,7 @@
       const sat = ctx.helpers.clamp(Number(ctx.params.saturation || 0), 0, 1);
       const intensity = ctx.helpers.clamp(Number(ctx.params.intensity || 0), 0, 255);
 
-      const head = (ctx.tMs / 1000) * speed * count;
+      const head = (tMs / 1000) * speed * count;
       const pos = head % count;
       const half = width / 2;
       const dist = Math.abs(((ctx.deviceIndex - pos + count / 2) % count) - count / 2);
@@ -35,7 +38,7 @@
       }
 
       const val = (intensity / 255) * level;
-      const rgb = ctx.helpers.hsvToRgb(hue, sat, val);
+      const rgb = ctx.helpers.hueToRgb(hue, sat, val);
 
       if (ctx.target === "r") return rgb.r;
       if (ctx.target === "g") return rgb.g;

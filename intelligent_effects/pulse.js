@@ -8,6 +8,7 @@
     targets: ["color", "dimmer"],
     mode: "absolute",
     params: [
+      { key: "phase", label: "Phase (ms)", type: "text", default: "0", hint: "0, 0>500, 0<500, 0><500, 0<>500, 0|500, 0||500, 0?500" },
       { key: "speed", label: "Speed (Hz)", type: "range", min: 0, max: 5, step: 0.05, default: 1 },
       { key: "duty", label: "Duty", type: "range", min: 0.05, max: 0.95, step: 0.05, default: 0.5 },
       { key: "hue", label: "Hue", type: "range", min: 0, max: 360, step: 1, default: 0 },
@@ -15,16 +16,18 @@
       { key: "intensity", label: "Intensity", type: "range", min: 0, max: 255, step: 1, default: 255 }
     ],
     apply: (ctx) => {
+      const phase = ctx.helpers.phaseOffsetMs(ctx);
+      const tMs = ctx.tMs + phase;
       const speed = Number(ctx.params.speed || 0);
       const duty = ctx.helpers.clamp(Number(ctx.params.duty || 0.5), 0.05, 0.95);
       const hue = Number(ctx.params.hue || 0);
       const sat = ctx.helpers.clamp(Number(ctx.params.saturation || 0), 0, 1);
       const intensity = ctx.helpers.clamp(Number(ctx.params.intensity || 0), 0, 255);
 
-      const w = ctx.helpers.wave("rectangle", ctx.tMs, speed);
+      const w = ctx.helpers.wave("rectangle", tMs, speed);
       const on = w > (1 - 2 * duty) ? 1 : 0;
       const val = (intensity / 255) * on;
-      const rgb = ctx.helpers.hsvToRgb(hue, sat, val);
+      const rgb = ctx.helpers.hueToRgb(hue, sat, val);
 
       if (ctx.target === "r") return rgb.r;
       if (ctx.target === "g") return rgb.g;

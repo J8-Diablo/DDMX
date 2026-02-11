@@ -24,7 +24,7 @@
   "cues.loopBadgeTitle": "Loopgroep: {group}, {count}x",
   "cues.loopCount": "Loop aantal:",
   "cues.path": "/cue/*.json",
-  "cues.placeholderDuration": "bijv. 500 of 100 > 1000",
+  "cues.placeholderDuration": "bijv. 500 of 100 >< 1000",
   "cues.placeholderName": "Cue naam",
   "cues.placeholderSleep": "bijv. 0 of 500",
   "cues.playFrom": "Afspelen vanaf",
