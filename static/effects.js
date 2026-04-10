@@ -88,6 +88,79 @@ function getIntelligentEffectDefinition(id) {
 }
 window.getIntelligentEffectDefinition = getIntelligentEffectDefinition;
 
+function getIntelligentParamDefault(def, key, fallback = 0) {
+  const params = Array.isArray(def?.params) ? def.params : [];
+  const match = params.find(param => String(param?.key || "") === String(key || ""));
+  return match?.default ?? fallback;
+}
+
+function buildRuntimeIntelligentApply(def) {
+  const runtime = def?.runtime;
+  const kind = String(runtime?.kind || "").trim().toLowerCase();
+  if (!kind) return null;
+
+  if (kind === "split_toggle") {
+    return (ctx) => {
+      const allowedTargets = normalizeTargets(runtime?.targets?.length ? runtime.targets : def.targets || ["dimmer"]);
+      if (!allowedTargets.includes(ctx.target)) return 0;
+
+      const intensityKey = String(runtime?.intensity_param || "dimmer");
+      const ratioKey = String(runtime?.ratio_param || "ratio");
+      const onKey = String(runtime?.on_param || "on_ms");
+      const offKey = String(runtime?.off_param || "off_ms");
+
+      const intensity = ctx.helpers.clamp(Number(ctx.params?.[intensityKey] ?? getIntelligentParamDefault(def, intensityKey, 255)), 0, 255);
+      const ratio = ctx.helpers.clamp(Number(ctx.params?.[ratioKey] ?? getIntelligentParamDefault(def, ratioKey, 0.5)), 0, 1);
+      const onMs = Math.max(0, Number(ctx.params?.[onKey] ?? getIntelligentParamDefault(def, onKey, 500)) || 0);
+      const offMs = Math.max(0, Number(ctx.params?.[offKey] ?? getIntelligentParamDefault(def, offKey, 500)) || 0);
+      const cycleMs = onMs + offMs;
+
+      if (ctx.deviceCount <= 1) {
+        if (cycleMs <= 0) return Math.round(intensity);
+        return (ctx.tMs % cycleMs) < onMs ? Math.round(intensity) : 0;
+      }
+
+      const splitCount = Math.max(0, Math.min(ctx.deviceCount, Math.round(ctx.deviceCount * ratio)));
+      const isTopGroup = ctx.deviceIndex < splitCount;
+      if (cycleMs <= 0) {
+        return isTopGroup ? Math.round(intensity) : 0;
+      }
+
+      const cyclePos = ctx.tMs % cycleMs;
+      const topActive = onMs > 0 ? cyclePos < onMs : false;
+      const bottomActive = cyclePos >= onMs;
+      const active = isTopGroup ? topActive : bottomActive;
+      return active ? Math.round(intensity) : 0;
+    };
+  }
+
+  if (kind === "pulse_toggle") {
+    return (ctx) => {
+      const allowedTargets = normalizeTargets(runtime?.targets?.length ? runtime.targets : def.targets || ["dimmer"]);
+      if (!allowedTargets.includes(ctx.target)) return 0;
+
+      const intensityKey = String(runtime?.intensity_param || "dimmer");
+      const ratioKey = String(runtime?.ratio_param || "ratio");
+      const onKey = String(runtime?.on_param || "on_ms");
+      const offKey = String(runtime?.off_param || "off_ms");
+
+      const highLevel = ctx.helpers.clamp(Number(ctx.params?.[intensityKey] ?? getIntelligentParamDefault(def, intensityKey, 255)), 0, 255);
+      const lowRatio = ctx.helpers.clamp(Number(ctx.params?.[ratioKey] ?? getIntelligentParamDefault(def, ratioKey, 0)), 0, 1);
+      const onMs = Math.max(0, Number(ctx.params?.[onKey] ?? getIntelligentParamDefault(def, onKey, 500)) || 0);
+      const offMs = Math.max(0, Number(ctx.params?.[offKey] ?? getIntelligentParamDefault(def, offKey, 500)) || 0);
+      const lowLevel = Math.round(highLevel * lowRatio);
+      const cycleMs = onMs + offMs;
+
+      if (cycleMs <= 0) return Math.round(highLevel);
+      const cyclePos = ctx.tMs % cycleMs;
+      const isHigh = onMs > 0 ? cyclePos < onMs : false;
+      return isHigh ? Math.round(highLevel) : lowLevel;
+    };
+  }
+
+  return null;
+}
+
 window.registerIntelligentEffect = function registerIntelligentEffect(def) {
   if (!def || typeof def !== "object") return;
   const idRaw = def.id || def.name || def.label;
@@ -95,7 +168,7 @@ window.registerIntelligentEffect = function registerIntelligentEffect(def) {
   if (!id) return;
 
   const script = document.currentScript;
-  const file = script?.dataset?.effectFile || script?.getAttribute("data-effect-file") || null;
+  const file = def.file || script?.dataset?.effectFile || script?.getAttribute("data-effect-file") || null;
   const normalized = {
     ...def,
     id,
@@ -104,6 +177,13 @@ window.registerIntelligentEffect = function registerIntelligentEffect(def) {
     params: Array.isArray(def.params) ? def.params : [],
     file
   };
+
+  if (typeof normalized.apply !== "function") {
+    normalized.apply = buildRuntimeIntelligentApply(normalized);
+  }
+
+  const prevIndex = intelligentEffects.findIndex(effect => effect?.id === id);
+  if (prevIndex >= 0) intelligentEffects.splice(prevIndex, 1);
 
   intelligentEffectsById[id] = normalized;
   intelligentEffects.push(normalized);
@@ -150,7 +230,7 @@ async function ensureIntelligentEffectsLoaded(forceReload = false) {
     const files = Array.isArray(data.files) ? data.files : [];
 
     for (const file of files) {
-      await loadIntelligentEffectScript(file);
+      await loadIntelligentEffectFile(file);
     }
 
     intelligentEffects.sort((a, b) => String(a.label).localeCompare(String(b.label)));
@@ -159,6 +239,14 @@ async function ensureIntelligentEffectsLoaded(forceReload = false) {
   } finally {
     intelligentEffectsLoading = false;
   }
+}
+
+function loadIntelligentEffectFile(file) {
+  const lower = String(file || "").toLowerCase();
+  if (lower.endsWith(".json")) {
+    return loadIntelligentEffectJson(file);
+  }
+  return loadIntelligentEffectScript(file);
 }
 
 function loadIntelligentEffectScript(file) {
@@ -172,6 +260,22 @@ function loadIntelligentEffectScript(file) {
     script.onerror = () => resolve();
     document.body.appendChild(script);
   });
+}
+
+async function loadIntelligentEffectJson(file) {
+  if (!file) return;
+  try {
+    const res = await fetch(`/api/intelligent_effects/${encodeURIComponent(file)}?t=${Date.now()}`);
+    if (!res.ok) return;
+    const def = await res.json();
+    if (!def || typeof def !== "object") return;
+    window.registerIntelligentEffect({
+      ...def,
+      file,
+    });
+  } catch (e) {
+    console.warn("[FX] Failed to load intelligent effect JSON:", file, e);
+  }
 }
 
 function renderEffectsLibrary() {
@@ -367,7 +471,7 @@ function getIntelligentImportInput() {
   input = document.createElement("input");
   input.type = "file";
   input.id = "intelligent-effects-import";
-  input.accept = ".js";
+  input.accept = ".js,.json";
   input.multiple = true;
   input.style.display = "none";
   input.addEventListener("change", async () => {
@@ -875,6 +979,7 @@ function removeEffectGroupFromCurrentSelection(group) {
   toast(`Group ${group.id} removed.`, "info");
   renderEffectsTargets();
   renderActualEffectsPanel();
+  syncBackendLiveGroups();
 }
 
 ///////////////////////
@@ -906,6 +1011,9 @@ async function applyEffectToSelection(effectName) {
       type: effectName,
       deviceIds: [...selectedDeviceOrder].map(String),
     };
+    if (Array.isArray(window.selectionGroups) && window.selectionGroups.length) {
+      group.selection_groups = window.selectionGroups.map(g => Array.isArray(g) ? g.map(String) : []);
+    }
 
     // Apply default values from effect definition
     for (const param of params) {
@@ -923,6 +1031,7 @@ async function applyEffectToSelection(effectName) {
     renderEffectsTargets();
     renderActualEffectsPanel();
     toast(`Effet ${effectName} ajouté (${groupId}) sur ${attrKey}`, "success");
+    syncBackendLiveGroups();
   } catch (err) {
     console.error("[FX] error:", err);
     toast("Ajout d'effet échoué.", "error");
@@ -953,6 +1062,9 @@ async function applyIntelligentEffectToSelection(effectId) {
       targets: def.targets || ["dimmer"],
       deviceIds: [...selectedDeviceOrder].map(String),
     };
+    if (Array.isArray(window.selectionGroups) && window.selectionGroups.length) {
+      group.selection_groups = window.selectionGroups.map(g => Array.isArray(g) ? g.map(String) : []);
+    }
 
     const params = Array.isArray(def.params) ? def.params : [];
     for (const param of params) {
@@ -976,6 +1088,7 @@ async function applyIntelligentEffectToSelection(effectId) {
           .replace("{groupId}", groupId)
       : `Effect ${name} added (${groupId})`;
     toast(msg, "success");
+    syncBackendLiveGroups();
   } catch (err) {
     console.error("[FX] intelligent error:", err);
     toast(window.t ? window.t("effects.toast.intelligentAddFailed", "Failed to add intelligent effect.") : "Failed to add intelligent effect.", "error");
@@ -1010,6 +1123,47 @@ function gatherActiveEffectGroups() {
     group: entry.group,
     devices: Array.from(entry.devices).sort(),
   }));
+}
+
+function normalizeGroupForBackend(group) {
+  if (!group || typeof group !== "object") return null;
+  const out = { ...group };
+  out.id = String(out.id || "");
+  out.mode = String(out.mode || "legacy").toLowerCase() === "intelligent" ? "intelligent" : "legacy";
+  if (Array.isArray(out.deviceIds)) {
+    out.deviceIds = out.deviceIds.map(String);
+  } else if (Array.isArray(out.device_ids)) {
+    out.deviceIds = out.device_ids.map(String);
+  } else {
+    out.deviceIds = [];
+  }
+  if (Array.isArray(out.selection_groups)) {
+    out.selection_groups = out.selection_groups.map(g => Array.isArray(g) ? g.map(String) : []);
+  }
+  if (out.mode === "intelligent") {
+    const def = getIntelligentEffectDefinition(out.type);
+    out.targets = normalizeTargets(out.targets?.length ? out.targets : def?.targets || ["dimmer"]);
+  }
+  return out;
+}
+
+async function syncBackendLiveGroups() {
+  if (typeof window.isBackendMode !== "function" || !window.isBackendMode()) return;
+  if (window.playbackActive) return;
+  const active = gatherActiveEffectGroups();
+  const groups = active.map(entry => normalizeGroupForBackend(entry.group)).filter(Boolean);
+  try {
+    await fetch("/api/live/effects/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set", groups })
+    });
+  } catch (e) {
+    console.warn("[FX] backend group sync failed:", e);
+    if (typeof window.fallbackToUiMode === "function") {
+      window.fallbackToUiMode("Backend unavailable, fallback to UI render mode.");
+    }
+  }
 }
 
 function countGroupUsageInCues(groupId) {
@@ -1066,6 +1220,7 @@ function disableGroupOnRig(groupId) {
     if (typeof sendToEngineWithEffects === "function" && (window.playbackActive || window.dmxLocked)) {
       sendToEngineWithEffects(1.0);
     }
+    syncBackendLiveGroups();
   }
 }
 
@@ -1110,6 +1265,7 @@ function removeEffectGroupCompletely(groupId) {
   if (typeof sendToEngineWithEffects === "function") {
     sendToEngineWithEffects(1.0);
   }
+  syncBackendLiveGroups();
 
   if (removedFromCues || removedLive) {
     toast(`Effet ${groupId} supprimé.`, "info");
@@ -1924,10 +2080,12 @@ async function effectTick() {
   }
   
   // Envoyer (seulement si des données)
-  for (const [uStr, chMap] of Object.entries(perUniverseMap)) {
-    if (Object.keys(chMap).length === 0) continue;
-    const u = parseInt(uStr, 10) || 0;
-    await applyUniverseState(u, chMap, false, "ui_effect");
+  if (typeof window.isBackendMode !== "function" || !window.isBackendMode()) {
+    for (const [uStr, chMap] of Object.entries(perUniverseMap)) {
+      if (Object.keys(chMap).length === 0) continue;
+      const u = parseInt(uStr, 10) || 0;
+      await applyUniverseState(u, chMap, false, "ui_effect");
+    }
   }
   
   drawRig();
@@ -1952,3 +2110,11 @@ document.addEventListener("DOMContentLoaded", () => {
   updateEffectsPanelLabels();
   ensureIntelligentEffectsLoaded();
 });
+
+if (typeof window.addRenderModeListener === "function") {
+  window.addRenderModeListener((mode) => {
+    if (mode === "backend") {
+      syncBackendLiveGroups();
+    }
+  });
+}

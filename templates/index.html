@@ -17,6 +17,12 @@
 
   <script>
     window.DMX_FORCE_FULL_SEND = {{ 'true' if dmx_force_full_send else 'false' }};
+    window.APP_META = {
+      name: {{ app_name|tojson }},
+      version: {{ app_version|tojson }},
+      licenseCode: {{ app_license_code|tojson }},
+      preferredLanguage: {{ preferred_language|tojson }}
+    };
   </script>
 </head>
 <body>
@@ -48,25 +54,31 @@
       </select>
     </label>
     <button id="open-settings" class="secondary" data-i18n="header.settings">Settings</button>
-    <button id="new-json" data-i18n="header.newJson">New JSON</button>
-    <button id="run-cues" data-i18n="header.play">Play</button>
-    <button id="pause-cues" class="secondary" disabled data-i18n="header.pause">Pause</button>
-    <button id="skip-cue" class="secondary" disabled data-i18n="header.skip">Skip</button>
-    <button id="stop-cues" data-i18n="header.stop">Stop</button>
     <button id="stop-effects" class="secondary" data-i18n="header.stopFx">Stop FX</button>
     <button id="ident-toggle" class="secondary" data-i18n="header.ident">Identify: OFF</button>
   </div>
 </header>
 <!-- Playback status bar -->
-<div id="playback-bar" class="playback-bar hidden">
-  <span id="playback-cue-name">--</span>
+<div id="playback-bar-top" class="playback-bar hidden">
+  <span id="playback-cue-name-top">--</span>
   <div class="playback-timing">
-    <span id="playback-phase">--</span>
-    <span id="playback-countdown">--</span>
-    <button id="wait-minus" title="-100ms">-100ms</button>
-    <button id="wait-plus" title="+100ms">+100ms</button>
+        <span id="playback-phase">--</span>
+        <span id="playback-countdown">--</span>
+        <span id="playback-speed-display" class="muted">1x</span>
+        <button id="wait-minus" title="-100ms">-100ms</button>
+        <button id="wait-plus" title="+100ms">+100ms</button>
     <span id="wait-adjust-display" class="muted">±0ms</span>
   </div>
+</div>
+
+<div id="ctc-bar-top" class="ctc-bar hidden">
+  <div class="ctc-status">
+    <span class="ctc-badge">CTC ACTIVE</span>
+        <span id="ctc-keybind-display">Key: F8</span>
+        <span id="ctc-capture-count">0 cues</span>
+        <span id="ctc-elapsed-display">Split: 0ms</span>
+  </div>
+      <button id="ctc-stop" class="danger ctc-stop-button" type="button">STOP CTC</button>
 </div>
 
 <main class="main-grid">
@@ -130,17 +142,66 @@
       <button id="cue-load-file" data-i18n="cues.load">Load</button>
       <button id="cue-save-file" data-i18n="cues.save">Save</button>
       <button id="cue-save-as" data-i18n="cues.saveAs">Save as</button>
+      <button id="new-json" data-i18n="header.newJson">New JSON</button>
     </div>
 
-    <div class="cue-actions">
-      <button id="cue-add" data-i18n="cues.add">Add Cue</button>
-      <button id="cue-update" data-i18n="cues.update">Update Cue</button>
-      <button id="cue-duplicate" data-i18n="cues.duplicate">Duplicate</button>
-      <button id="cue-play-from" class="secondary" disabled data-i18n="cues.playFrom">Play From</button>
-      <button id="cue-delete" class="danger" data-i18n="cues.delete">Delete Cue</button>
-      <button id="cue-move-up" data-i18n="cues.up">Up</button>
-      <button id="cue-move-down" data-i18n="cues.down">Down</button>
-      <span id="cue-selection-count"></span>
+    <div class="cue-toolbar">
+      <div class="cue-toolbar-group">
+        <div class="cue-toolbar-title">Playback</div>
+        <div class="cue-actions cue-actions-playback">
+          <label class="lang-switch cue-speed-control">
+            <span>Speed</span>
+            <select id="playback-speed-select">
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2x</option>
+            </select>
+          </label>
+          <div class="playback-controls-row">
+            <button id="cue-play-from" class="playback-btn playback-btn-neutral" disabled data-i18n="cues.playFrom">Play From</button>
+            <button id="run-cues" class="playback-btn playback-btn-run" data-i18n="header.play">Play</button>
+            <button id="stop-cues" class="playback-btn playback-btn-stop" disabled data-i18n="header.stop">Stop</button>
+            <button id="skip-cue" class="playback-btn playback-btn-neutral" disabled data-i18n="header.skip">Skip</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="cue-toolbar-group">
+        <div class="cue-toolbar-title">Edit</div>
+        <div class="cue-actions">
+          <button id="cue-add" data-i18n="cues.add">Add Cue</button>
+          <button id="cue-update" data-i18n="cues.update">Update Cue</button>
+          <button id="cue-duplicate" data-i18n="cues.duplicate">Duplicate</button>
+          <button id="cue-delete" class="danger" data-i18n="cues.delete">Delete Cue</button>
+          <button id="cue-move-up" data-i18n="cues.up">Up</button>
+          <button id="cue-move-down" data-i18n="cues.down">Down</button>
+          <span id="cue-selection-count"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="playback-bar" class="playback-bar hidden">
+      <span id="playback-cue-name">--</span>
+      <div class="playback-timing">
+    <span id="playback-phase-top">--</span>
+    <span id="playback-countdown-top">--</span>
+    <span id="playback-speed-display-top" class="muted">1x</span>
+    <button id="wait-minus-top" title="-100ms">-100ms</button>
+    <button id="wait-plus-top" title="+100ms">+100ms</button>
+    <span id="wait-adjust-display-top" class="muted">Â±0ms</span>
+      </div>
+    </div>
+
+    <div id="ctc-bar" class="ctc-bar hidden">
+      <div class="ctc-status">
+        <span class="ctc-badge">CTC ACTIVE</span>
+    <span id="ctc-keybind-display-top">Key: F8</span>
+    <span id="ctc-capture-count-top">0 cues</span>
+    <span id="ctc-elapsed-display-top">Split: 0ms</span>
+      </div>
+  <button id="ctc-stop-top" class="danger ctc-stop-button" type="button">STOP CTC</button>
     </div>
 
     <div id="sync-video-section" class="sync-video-section is-hidden">
@@ -309,6 +370,7 @@
 <script src="{{ url_for('static', filename='effects.js') }}"></script>
 <script src="{{ url_for('static', filename='cues.js') }}"></script>
 <script src="{{ url_for('static', filename='sync_video.js') }}"></script>
+<script src="{{ url_for('static', filename='whats_new.js') }}"></script>
 <script src="{{ url_for('static', filename='popup.js') }}"></script>
 
 </body>

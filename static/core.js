@@ -62,9 +62,163 @@ let devicePreviewDimmer = {};
 // SYSTÈME DE VERROU DMX
 // ========================================
 window.playbackActive = false;
+window.backendPlaybackOwned = false;
 window.uiFollowStopFlag = false;
 window.uiFollowRunId = 0;
 window.effectStartEpoch = performance.now();
+
+// Render mode: "ui" (default) or "backend"
+window.renderMode = "ui";
+window._renderModeListeners = [];
+window.addRenderModeListener = (fn) => {
+  if (typeof fn === "function") window._renderModeListeners.push(fn);
+};
+window.setRenderMode = (mode) => {
+  const next = String(mode || "ui").toLowerCase() === "backend" ? "backend" : "ui";
+  window.renderMode = next;
+  if (typeof window.onRenderModeChanged === "function") {
+    window.onRenderModeChanged(next);
+  }
+  if (Array.isArray(window._renderModeListeners)) {
+    window._renderModeListeners.forEach((fn) => {
+      try {
+        fn(next);
+      } catch (err) {
+        console.warn("[RenderMode] listener error:", err);
+      }
+    });
+  }
+};
+
+window.DMX_PLAYBACK_UI_FPS = Number(window.DMX_PLAYBACK_UI_FPS || 12);
+window.setPlaybackUiFps = (fps) => {
+  const raw = Number.parseFloat(String(fps ?? "12"));
+  if (!Number.isFinite(raw)) return;
+  window.DMX_PLAYBACK_UI_FPS = Math.max(1, Math.min(30, raw));
+};
+
+let enginePreviewFrameScheduled = false;
+let enginePreviewLastDrawTs = 0;
+
+function refreshEnginePreviewFrame() {
+  enginePreviewFrameScheduled = false;
+  enginePreviewLastDrawTs = performance.now();
+
+  if (window.backendPlaybackOwned) {
+    devicePreviewRGB = {};
+    devicePreviewDimmer = {};
+
+    for (const dev of Object.values(rigDevices || {})) {
+      if (!dev) continue;
+      const fi = fixtures[dev.fixture] || {};
+      const funcs = fi.functions || {};
+      const universe = parseInt(dev.universe, 10) || 0;
+      const frame = lastDmxFrames[universe];
+      if (!Array.isArray(frame)) continue;
+
+      if (funcs.rgb) {
+        const rAbs = dev.address + (parseInt(funcs.rgb.red, 10) || 0);
+        const gAbs = dev.address + (parseInt(funcs.rgb.green, 10) || 0);
+        const bAbs = dev.address + (parseInt(funcs.rgb.blue, 10) || 0);
+        devicePreviewRGB[dev.id] = {
+          r: (rAbs >= 0 && rAbs < 512) ? (frame[rAbs] ?? 0) : 0,
+          g: (gAbs >= 0 && gAbs < 512) ? (frame[gAbs] ?? 0) : 0,
+          b: (bAbs >= 0 && bAbs < 512) ? (frame[bAbs] ?? 0) : 0,
+        };
+      }
+
+      if (funcs.dimmer && funcs.dimmer.channel != null) {
+        const dAbs = dev.address + (parseInt(funcs.dimmer.channel, 10) || 0);
+        if (dAbs >= 0 && dAbs < 512) {
+          devicePreviewDimmer[dev.id] = frame[dAbs] ?? 0;
+        }
+      }
+    }
+  }
+
+  if (typeof drawRig === "function") {
+    drawRig();
+  }
+}
+
+function scheduleEnginePreviewRefresh(force = false) {
+  if (enginePreviewFrameScheduled) return;
+  const fps = Math.max(1, Number(window.DMX_PLAYBACK_UI_FPS || 12));
+  const minIntervalMs = 1000 / fps;
+  const now = performance.now();
+  const delay = force ? 0 : Math.max(0, minIntervalMs - (now - enginePreviewLastDrawTs));
+  enginePreviewFrameScheduled = true;
+  window.setTimeout(() => {
+    window.requestAnimationFrame(refreshEnginePreviewFrame);
+  }, delay);
+}
+window.isBackendMode = () => window.renderMode === "backend";
+
+window.fallbackToUiMode = (reason) => {
+  if (window.renderMode !== "ui") {
+    window.renderMode = "ui";
+    if (typeof window.onRenderModeChanged === "function") {
+      window.onRenderModeChanged("ui");
+    }
+    if (reason && typeof window.toast === "function") {
+      window.toast(reason, "warning");
+    }
+  }
+};
+
+// Global JS error reporting (helps diagnose silent crashes)
+(function initJsErrorReporting() {
+  if (window.__jsErrorReporting) return;
+  window.__jsErrorReporting = true;
+
+  let lastReportTs = 0;
+  const REPORT_THROTTLE_MS = 1000;
+
+  function reportJsError(payload) {
+    const now = Date.now();
+    if (now - lastReportTs < REPORT_THROTTLE_MS) return;
+    lastReportTs = now;
+    try {
+      fetch("/api/js_log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {})
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  window.addEventListener("error", (event) => {
+    const err = event.error || {};
+    const payload = {
+      level: "error",
+      message: String(event.message || err.message || "JS error"),
+      source: event.filename || "",
+      line: event.lineno || 0,
+      column: event.colno || 0,
+      stack: String(err.stack || "")
+    };
+    reportJsError(payload);
+    if (typeof window.toast === "function") {
+      window.toast("JS error: " + payload.message, "error");
+    }
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason || {};
+    const payload = {
+      level: "error",
+      message: String(reason.message || reason || "Unhandled rejection"),
+      source: "unhandledrejection",
+      line: 0,
+      column: 0,
+      stack: String(reason.stack || "")
+    };
+    reportJsError(payload);
+    if (typeof window.toast === "function") {
+      window.toast("Unhandled error: " + payload.message, "error");
+    }
+  });
+})();
 
 // Quand dmxLocked = true, SEULE la cue peut envoyer des données
 // L'UI est BLOQUÉE
@@ -352,6 +506,8 @@ const dmxUniverseBuffers = {};
 async function applyUniverseState(universe, channels, bypassLock = false, deviceId = "ui_live") {
   // UI lock check (for visual feedback only now)
   if (window.dmxLocked && !bypassLock) return;
+  if (window.backendPlaybackOwned) return;
+  if (window.renderMode === "backend" && (deviceId === "ui_effect" || deviceId === "ui_cue")) return;
 
   if (!channels || typeof channels !== "object") return;
   const keys = Object.keys(channels);
@@ -510,6 +666,8 @@ function connectSSE() {
 }
 
 function handleEngineState(state) {
+  let needsPreviewRefresh = false;
+
   // Update local state from engine for visualization ONLY
   // DO NOT update dmxLocked - that's controlled by JS fade logic
   if (state.universes) {
@@ -518,20 +676,28 @@ function handleEngineState(state) {
       // Store for visualization only (don't feed back into pending!)
       lastDmxFrames[u] = Array.isArray(values) ? values.slice(0, 512) : [];
     }
+    needsPreviewRefresh = Boolean(
+      window.backendPlaybackOwned ||
+      window.identMode ||
+      (typeof window.isBackendMode === "function" && window.isBackendMode())
+    );
   }
 
   // Update identify indicator from Python (Python controls identify)
   if (state.identify_active !== undefined) {
     window.identMode = state.identify_active;
+    needsPreviewRefresh = true;
   }
 
   // NOTE: DO NOT update window.dmxLocked from Python!
   // JS controls dmxLocked during cue transitions.
   // Python's fade_active is for server-side fades which we don't use.
 
-  // Trigger rig redraw if needed (for visualization)
-  if (typeof drawRig === "function") {
-    drawRig();
+  if (state.playback && typeof window.applyBackendPlaybackState === "function") {
+    window.applyBackendPlaybackState(state.playback);
+  }
+  if (needsPreviewRefresh) {
+    scheduleEnginePreviewRefresh(false);
   }
 }
 

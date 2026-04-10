@@ -47,6 +47,425 @@
     return String(url || "").trim().replace(/\/+$/, "");
   }
 
+  function isGuiWebView() {
+    try {
+      const ua = navigator.userAgent || "";
+      if (ua.includes("QtWebEngine") || ua.includes("QtWebKit")) return true;
+      const params = new URLSearchParams(window.location.search || "");
+      if (params.get("gui") === "1") return true;
+    } catch (err) {
+      return false;
+    }
+    return false;
+  }
+
+  function bindSwitchVisuals(root) {
+    const scope = root || document;
+    const switches = scope.querySelectorAll(".switch");
+    switches.forEach((sw) => {
+      if (!(sw instanceof HTMLElement)) return;
+      const input = sw.querySelector("input[type='checkbox']");
+      if (!(input instanceof HTMLInputElement)) return;
+
+      const syncState = () => {
+        sw.classList.toggle("is-checked", !!input.checked);
+        sw.classList.toggle("is-disabled", !!input.disabled);
+      };
+
+      syncState();
+      if (sw.dataset.switchBound === "1") return;
+      sw.dataset.switchBound = "1";
+
+      input.addEventListener("change", syncState);
+      input.addEventListener("input", syncState);
+      input.addEventListener("click", () => {
+        window.requestAnimationFrame(syncState);
+      });
+    });
+  }
+  window.bindSwitchVisuals = bindSwitchVisuals;
+
+  const SETTINGS_ADVANCED_STORAGE_KEY = "dmx_settings_advanced";
+
+  function getAppMeta() {
+    const meta = window.APP_META || {};
+    return {
+      name: String(meta.name || "DDMX"),
+      version: String(meta.version || "0.0.0"),
+      licenseCode: String(meta.licenseCode || "CC BY-NC-SA 4.0"),
+    };
+  }
+
+  function isAdvancedSettingsEnabled() {
+    try {
+      const raw = window.localStorage?.getItem(SETTINGS_ADVANCED_STORAGE_KEY);
+      if (raw == null) return false;
+      return raw !== "0";
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function setAdvancedSettingsEnabled(enabled) {
+    const next = !!enabled;
+    try {
+      window.localStorage?.setItem(SETTINGS_ADVANCED_STORAGE_KEY, next ? "1" : "0");
+    } catch (err) {
+      console.warn("[SETTINGS] advanced persist failed:", err);
+    }
+    return next;
+  }
+
+  function markAdvancedSettingsSections(root) {
+    const scope = root || document;
+    const sections = Array.from(scope.querySelectorAll(".dmx-settings-form .dmx-settings-section"));
+    sections.forEach((section, index) => {
+      section.dataset.advanced = index >= 3 ? "true" : "false";
+    });
+  }
+
+  function applyAdvancedSettingsVisibility(root, enabled) {
+    const scope = root || document;
+    scope.querySelectorAll(".dmx-settings-section[data-advanced='true']").forEach((section) => {
+      section.classList.toggle("settings-hidden", !enabled);
+    });
+  }
+
+  function buildSettingsFooterInfo(enabled) {
+    const meta = getAppMeta();
+    const wrap = document.createElement("div");
+    wrap.className = "settings-footer-info";
+    wrap.innerHTML = `
+      <label class="settings-footer-toggle">
+        <strong>Advanced</strong>
+        <span class="switch">
+          <input id="settings-advanced-toggle" type="checkbox" ${enabled ? "checked" : ""}>
+          <span class="slider"></span>
+        </span>
+      </label>
+      <div class="settings-footer-meta">
+        <span class="settings-footer-version">${escapeHtml(meta.name)} ${escapeHtml(meta.version)}</span>
+        <span class="settings-footer-license">${escapeHtml(meta.licenseCode)}</span>
+      </div>
+    `;
+    return wrap;
+  }
+
+  function upgradeSettingsCheckboxes(root) {
+    const scope = root || document;
+    const ids = [
+      "sync-video-enabled",
+      "ctc-enabled",
+      "ctc-capture-release",
+      "rt-smooth-predict",
+      "rt-smooth-disable",
+    ];
+    ids.forEach((id) => {
+      const input = scope.querySelector(`#${id}`);
+      if (!(input instanceof HTMLInputElement)) return;
+      if (input.closest(".switch")) return;
+
+      const slider = document.createElement("span");
+      slider.className = "slider";
+      const switchWrap = document.createElement("span");
+      switchWrap.className = "switch";
+      input.replaceWith(switchWrap);
+      switchWrap.appendChild(input);
+      switchWrap.appendChild(slider);
+    });
+  }
+
+  function mountAdvancedSettingsToggle(root, footerActions) {
+    const scope = root || document;
+    markAdvancedSettingsSections(scope);
+    upgradeSettingsCheckboxes(scope);
+    bindSwitchVisuals(scope);
+    applyAdvancedSettingsVisibility(scope, isAdvancedSettingsEnabled());
+
+    const footer = footerActions || scope.querySelector(".dmx-modal-actions, .swal2-actions");
+    if (!footer || footer.querySelector("#settings-advanced-toggle")) return;
+
+    const control = buildSettingsFooterInfo(isAdvancedSettingsEnabled());
+    footer.prepend(control);
+    bindSwitchVisuals(footer);
+
+    control.querySelector("#settings-advanced-toggle")?.addEventListener("change", (ev) => {
+      const next = setAdvancedSettingsEnabled(!!ev.target?.checked);
+      applyAdvancedSettingsVisibility(scope, next);
+      bindSwitchVisuals(footer);
+    });
+  }
+
+  function bindRuntimeRangeListeners() {
+    bindSwitchVisuals(document);
+
+    const maxSend = document.getElementById("rt-max-send-hz");
+    const maxSendValue = document.getElementById("rt-max-send-hz-value");
+    if (maxSend && maxSendValue) {
+      maxSend.addEventListener("input", () => {
+        maxSendValue.textContent = `${maxSend.value} Hz`;
+      });
+    }
+
+    const heartbeat = document.getElementById("rt-heartbeat-sec");
+    const heartbeatValue = document.getElementById("rt-heartbeat-sec-value");
+    if (heartbeat && heartbeatValue) {
+      heartbeat.addEventListener("input", () => {
+        heartbeatValue.textContent = `${Number(heartbeat.value).toFixed(2)} s`;
+      });
+    }
+
+    const smooth = document.getElementById("rt-smooth-step");
+    const smoothValue = document.getElementById("rt-smooth-step-value");
+    if (smooth && smoothValue) {
+      smooth.addEventListener("input", () => {
+        smoothValue.textContent = `${smooth.value}`;
+      });
+    }
+
+    const dead = document.getElementById("rt-deadband");
+    const deadValue = document.getElementById("rt-deadband-value");
+    if (dead && deadValue) {
+      dead.addEventListener("input", () => {
+        deadValue.textContent = `${dead.value}`;
+      });
+    }
+
+    const quant = document.getElementById("rt-quantize");
+    const quantValue = document.getElementById("rt-quantize-value");
+    if (quant && quantValue) {
+      quant.addEventListener("input", () => {
+        quantValue.textContent = `${quant.value}`;
+      });
+    }
+
+    const playbackUiFps = document.getElementById("rt-playback-ui-fps");
+    const playbackUiFpsValue = document.getElementById("rt-playback-ui-fps-value");
+    if (playbackUiFps && playbackUiFpsValue) {
+      playbackUiFps.addEventListener("input", () => {
+        playbackUiFpsValue.textContent = `${playbackUiFps.value} fps`;
+      });
+    }
+
+    const playbackEngineHz = document.getElementById("rt-playback-engine-hz");
+    const playbackEngineHzValue = document.getElementById("rt-playback-engine-hz-value");
+    if (playbackEngineHz && playbackEngineHzValue) {
+      playbackEngineHz.addEventListener("input", () => {
+        playbackEngineHzValue.textContent = `${playbackEngineHz.value} Hz`;
+      });
+    }
+
+    const smoothDisable = document.getElementById("rt-smooth-disable");
+    const smoothPredict = document.getElementById("rt-smooth-predict");
+    const smoothStep = document.getElementById("rt-smooth-step");
+    const smoothValueEl = document.getElementById("rt-smooth-step-value");
+
+    const updateSmoothState = () => {
+      if (!smoothDisable || !smoothStep) return;
+      const off = smoothDisable.checked;
+      smoothStep.disabled = off;
+      if (smoothValueEl) smoothValueEl.classList.toggle("muted", off);
+      if (smoothPredict) {
+        smoothPredict.disabled = off;
+        if (off) smoothPredict.checked = false;
+      }
+      bindSwitchVisuals(document);
+    };
+
+    if (smoothDisable) smoothDisable.addEventListener("change", updateSmoothState);
+    updateSmoothState();
+  }
+
+  function readSettingsForm(showValidation) {
+    const dmxTargetIp = document.getElementById("dmx-target-ip")?.value.trim();
+    const enabled = document.getElementById("sync-video-enabled")?.checked || false;
+    const baseUrl = normalizeBaseUrl(document.getElementById("sync-video-url")?.value || "");
+    const token = document.getElementById("sync-video-token")?.value.trim() || "";
+    const whatsNewShowOnStartup = document.getElementById("whats-new-startup-enabled")?.checked ?? true;
+    const autoUpdateCheckOnStartup = document.getElementById("auto-update-startup-enabled")?.checked ?? true;
+    const ctcEnabled = document.getElementById("ctc-enabled")?.checked || false;
+    const ctcCaptureRelease = document.getElementById("ctc-capture-release")?.checked || false;
+    const ctcKeybindInput = document.getElementById("ctc-keybind");
+    const ctcKeybindRaw = ctcKeybindInput?.dataset?.keybind || ctcKeybindInput?.value || "F8";
+    const ctcKeybind = typeof window.normalizeCtcKeybindValue === "function"
+      ? window.normalizeCtcKeybindValue(ctcKeybindRaw)
+      : String(ctcKeybindRaw || "F8").trim() || "F8";
+
+    const runtimeSettings = {
+      render_mode: document.getElementById("rt-render-mode")?.value || "ui",
+      playback_clock_mode: document.getElementById("rt-playback-clock-mode")?.value || "timeline",
+      playback_engine_hz: parseFloat(document.getElementById("rt-playback-engine-hz")?.value || "120"),
+      playback_ui_fps: parseFloat(document.getElementById("rt-playback-ui-fps")?.value || "12"),
+      artnet_diff: document.getElementById("rt-artnet-diff")?.checked || false,
+      artnet_heartbeat_full: document.getElementById("rt-artnet-heartbeat-full")?.checked || false,
+      dummy_enabled: document.getElementById("rt-dummy")?.checked || false,
+      continuous: document.getElementById("rt-continuous")?.checked || false,
+      ui_force_full_send: document.getElementById("rt-ui-force-full")?.checked || false,
+      max_send_hz: parseFloat(document.getElementById("rt-max-send-hz")?.value || "40"),
+      heartbeat_sec: parseFloat(document.getElementById("rt-heartbeat-sec")?.value || "0.1"),
+      smooth_step: parseInt(document.getElementById("rt-smooth-step")?.value || "2", 10),
+      smooth_predict: document.getElementById("rt-smooth-predict")?.checked || false,
+      smooth_disable: document.getElementById("rt-smooth-disable")?.checked || false,
+      deadband: parseInt(document.getElementById("rt-deadband")?.value || "0", 10),
+      quantize: parseInt(document.getElementById("rt-quantize")?.value || "1", 10),
+      log_ui: document.getElementById("rt-log-ui")?.checked || false,
+      log_ui_full: document.getElementById("rt-log-ui-full")?.checked || false,
+      log_dmx: document.getElementById("rt-log-dmx")?.checked || false,
+      log_dmx_full: document.getElementById("rt-log-dmx-full")?.checked || false,
+      log_artnet: document.getElementById("rt-log-artnet")?.checked || false,
+      log_artnet_full: document.getElementById("rt-log-artnet-full")?.checked || false,
+      profile_runner: document.getElementById("rt-profile-runner")?.checked || false,
+    };
+
+    if (!dmxTargetIp) {
+      if (typeof showValidation === "function") {
+        showValidation(t("settings.dmxIpRequired", "DMX target IP required"));
+      }
+      return null;
+    }
+    if (enabled && !baseUrl) {
+      if (typeof showValidation === "function") {
+        showValidation(t("settings.urlRequired", "URL required when Sync Video enabled"));
+      }
+      return null;
+    }
+    if (runtimeSettings.smooth_disable) {
+      runtimeSettings.smooth_predict = false;
+    }
+    return {
+      enabled,
+      baseUrl,
+      token,
+      dmxTargetIp,
+      whatsNewSettings: {
+        show_on_startup: whatsNewShowOnStartup,
+      },
+      autoUpdateSettings: {
+        check_on_startup: autoUpdateCheckOnStartup,
+      },
+      runtimeSettings,
+      ctcSettings: {
+        enabled: ctcEnabled,
+        keybind: ctcKeybind,
+        capture_release: ctcCaptureRelease,
+      }
+    };
+  }
+
+  async function applySettingsResult(result) {
+    if (!result) return;
+    const { enabled, baseUrl, token, dmxTargetIp, runtimeSettings, ctcSettings, whatsNewSettings, autoUpdateSettings } = result;
+    const ok = await saveDmxSettings(dmxTargetIp, { enabled, baseUrl, token }, runtimeSettings, ctcSettings, whatsNewSettings, autoUpdateSettings);
+    if (!ok) return;
+    setConfig({ enabled, baseUrl, token });
+    if (runtimeSettings && typeof runtimeSettings.ui_force_full_send === "boolean") {
+      window.DMX_FORCE_FULL_SEND = runtimeSettings.ui_force_full_send;
+    }
+    if (runtimeSettings && typeof window.setRenderMode === "function") {
+      window.setRenderMode(runtimeSettings.render_mode || "ui");
+    }
+    if (runtimeSettings && typeof window.setPlaybackUiFps === "function") {
+      window.setPlaybackUiFps(runtimeSettings.playback_ui_fps);
+    }
+    if (ctcSettings && typeof window.setCtcSettings === "function") {
+      window.setCtcSettings(ctcSettings);
+    }
+  }
+
+  function formatCtcKeybind(code) {
+    if (typeof window.formatCtcKeybindDisplay === "function") {
+      return window.formatCtcKeybindDisplay(code);
+    }
+    return String(code || "F8").trim() || "F8";
+  }
+
+  function bindCtcKeybindInput(root) {
+    const scope = root || document;
+    const input = scope.querySelector("#ctc-keybind");
+    if (!input || input.dataset.bound === "1") return;
+    input.dataset.bound = "1";
+
+    const assignKeybind = (raw) => {
+      const normalized = typeof window.normalizeCtcKeybindValue === "function"
+        ? window.normalizeCtcKeybindValue(raw)
+        : String(raw || "F8").trim() || "F8";
+      input.dataset.keybind = normalized;
+      input.value = formatCtcKeybind(normalized);
+    };
+
+    if (!input.dataset.keybind) {
+      assignKeybind(input.value || "F8");
+    }
+
+    input.addEventListener("keydown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      if (ev.key === "Backspace" || ev.key === "Delete") {
+        assignKeybind("F8");
+        return;
+      }
+
+      assignKeybind(ev.code || ev.key || "F8");
+    });
+
+    input.addEventListener("focus", () => {
+      input.select();
+    });
+  }
+
+  function openSettingsModalGui(title, html) {
+    const existing = document.getElementById("dmx-settings-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "dmx-settings-overlay";
+    overlay.className = "dmx-modal-overlay";
+    overlay.innerHTML = `
+      <div class="dmx-modal">
+        <div class="dmx-modal-header">
+          <div class="dmx-modal-title">${escapeHtml(title)}</div>
+          <button class="dmx-modal-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div class="dmx-modal-body"></div>
+        <div class="dmx-modal-actions">
+          <div class="dmx-modal-actions-right">
+            <button class="secondary dmx-modal-cancel" type="button">${t("settings.cancel", "Cancel")}</button>
+            <button class="primary dmx-modal-save" type="button">${t("settings.save", "Save")}</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const body = overlay.querySelector(".dmx-modal-body");
+    if (body) body.innerHTML = html;
+
+    bindRuntimeRangeListeners();
+    bindCtcKeybindInput(overlay);
+    mountAdvancedSettingsToggle(overlay, overlay.querySelector(".dmx-modal-actions"));
+    bindAppUpdateControls(overlay);
+    fetchAppUpdateStatus({ root: overlay });
+
+    const close = () => {
+      overlay.remove();
+    };
+
+    overlay.addEventListener("click", (ev) => {
+      if (ev.target === overlay) close();
+    });
+
+    overlay.querySelector(".dmx-modal-close")?.addEventListener("click", close);
+    overlay.querySelector(".dmx-modal-cancel")?.addEventListener("click", close);
+
+    overlay.querySelector(".dmx-modal-save")?.addEventListener("click", async () => {
+      const result = readSettingsForm((msg) => toast(msg, "error"));
+      if (!result) return;
+      await applySettingsResult(result);
+      close();
+    });
+  }
+
   function loadConfig() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -74,6 +493,8 @@
   let dmxSettingsCache = null;
   let lastDisabledWarnTs = 0;
   const DISABLED_WARN_INTERVAL_MS = 60000;
+  let appUpdateStatusCache = null;
+  let appUpdateRequest = null;
 
   function updateSyncVideoSection() {
     const section = document.getElementById("sync-video-section");
@@ -115,13 +536,245 @@
           token: sync.token || ""
         });
       }
+      if (data && typeof data === "object") {
+        const runtime = data.dmx_runtime || {};
+        if (typeof window.setRenderMode === "function") {
+          window.setRenderMode(runtime.render_mode || "ui");
+        }
+        if (typeof window.setPlaybackUiFps === "function") {
+          window.setPlaybackUiFps(runtime.playback_ui_fps);
+        }
+        if (typeof runtime.ui_force_full_send === "boolean") {
+          window.DMX_FORCE_FULL_SEND = runtime.ui_force_full_send;
+        }
+        if (typeof window.setCtcSettings === "function") {
+          window.setCtcSettings(data.ctc || {});
+        }
+      }
       return data;
     } catch (err) {
       return dmxSettingsCache || {};
     }
   }
 
-  async function saveDmxSettings(dmxTargetIp, syncVideo, runtime) {
+  function describeAppUpdateStatus(status) {
+    const meta = getAppMeta();
+    if (!status || typeof status !== "object") {
+      return tfmt("settings.autoUpdateStatusCurrent", "Current version: {version}", { version: meta.version });
+    }
+    if (status.checking) {
+      return t("settings.autoUpdateStatusChecking", "Checking for updates...");
+    }
+    if (status.error) {
+      return tfmt("settings.autoUpdateStatusError", "Update check failed: {error}", { error: status.error });
+    }
+    if (status.available) {
+      return tfmt(
+        "settings.autoUpdateStatusAvailable",
+        "Update available: {current} -> {latest}",
+        {
+          current: status.current_version || meta.version,
+          latest: status.latest_version || "?",
+        }
+      );
+    }
+    if (status.last_checked_at) {
+      return tfmt(
+        "settings.autoUpdateStatusUpToDate",
+        "You're up to date: {version}",
+        { version: status.current_version || meta.version }
+      );
+    }
+    return tfmt("settings.autoUpdateStatusCurrent", "Current version: {version}", { version: status.current_version || meta.version });
+  }
+
+  function renderAppUpdateStatus(root, status) {
+    const scope = root || document;
+    const current = status && typeof status === "object" ? status : (appUpdateStatusCache || {});
+    const statusText = scope.querySelector("#app-update-status-text");
+    const checkBtn = scope.querySelector("#app-update-check-now");
+    const installBtn = scope.querySelector("#app-update-install");
+    const releaseLink = scope.querySelector("#app-update-release-link");
+    const supported = current.supported !== false;
+    const installSupported = !!current.install_supported;
+    const available = !!current.available;
+    const installReady = installSupported && available && !!String(current.download_url || "").trim();
+    const checking = !!current.checking;
+    const installing = !!current.installing;
+
+    if (statusText) {
+      statusText.textContent = supported
+        ? describeAppUpdateStatus(current)
+        : t("settings.autoUpdateUnsupported", "Auto-update is unavailable in this mode.");
+    }
+    if (checkBtn instanceof HTMLButtonElement) {
+      checkBtn.disabled = checking || installing || !supported;
+      checkBtn.textContent = checking
+        ? t("settings.autoUpdateCheckingButton", "Checking...")
+        : t("settings.autoUpdateCheckNow", "Check now");
+    }
+    if (installBtn instanceof HTMLButtonElement) {
+      installBtn.disabled = checking || installing || !installReady;
+      installBtn.textContent = installing
+        ? t("settings.autoUpdateInstalling", "Installing...")
+        : t("settings.autoUpdateInstall", "Install update");
+      installBtn.hidden = !installSupported;
+    }
+    if (releaseLink instanceof HTMLAnchorElement) {
+      const href = String(current.release_url || "").trim();
+      releaseLink.href = href || "#";
+      releaseLink.hidden = !href;
+    }
+  }
+
+  async function fetchAppUpdateStatus(options) {
+    const opts = options || {};
+    const root = opts.root || document;
+    const forceCheck = !!opts.forceCheck;
+    const manual = !!opts.manual;
+
+    if (appUpdateRequest) {
+      const status = await appUpdateRequest.catch(() => appUpdateStatusCache || {});
+      renderAppUpdateStatus(root, status);
+      return status;
+    }
+
+    if (!forceCheck) {
+      try {
+        const res = await fetch("/api/update/status", { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        appUpdateStatusCache = data;
+        renderAppUpdateStatus(root, data);
+        return data;
+      } catch (err) {
+        const next = {
+          supported: false,
+          install_supported: false,
+          current_version: getAppMeta().version,
+          error: err?.message || "status request failed",
+        };
+        appUpdateStatusCache = next;
+        renderAppUpdateStatus(root, next);
+        return next;
+      }
+    }
+
+    appUpdateStatusCache = {
+      ...(appUpdateStatusCache || {}),
+      checking: true,
+      error: "",
+      supported: true,
+      current_version: getAppMeta().version,
+    };
+    renderAppUpdateStatus(root, appUpdateStatusCache);
+    appUpdateRequest = fetch("/api/update/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manual }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || "update check failed");
+        }
+        return data;
+      })
+      .finally(() => {
+        appUpdateRequest = null;
+      });
+
+    try {
+      const data = await appUpdateRequest;
+      appUpdateStatusCache = data;
+      renderAppUpdateStatus(root, data);
+      if (manual) {
+        if (data.error) {
+          toast(data.error, "error");
+        } else if (data.available) {
+          toast(
+            tfmt("settings.autoUpdateToastAvailable", "Update {version} is available.", {
+              version: data.latest_version || "?",
+            }),
+            "success"
+          );
+        } else {
+          toast(
+            tfmt("settings.autoUpdateToastUpToDate", "You're already on {version}.", {
+              version: data.current_version || getAppMeta().version,
+            }),
+            "info"
+          );
+        }
+      }
+      return data;
+    } catch (err) {
+      const next = {
+        ...(appUpdateStatusCache || {}),
+        checking: false,
+        error: err?.message || "update check failed",
+      };
+      appUpdateStatusCache = next;
+      renderAppUpdateStatus(root, next);
+      if (manual) toast(next.error, "error");
+      return next;
+    }
+  }
+
+  async function installAppUpdate(root) {
+    const scope = root || document;
+    try {
+      const res = await fetch("/api/update/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "install failed");
+      }
+      appUpdateStatusCache = data;
+      renderAppUpdateStatus(scope, data);
+      if (data.error) {
+        toast(data.error, "error");
+      } else if (data.installing) {
+        toast(t("settings.autoUpdateToastInstalling", "Update downloaded. The app will restart."), "success");
+      } else {
+        toast(t("settings.autoUpdateToastInstallUnavailable", "Install update is unavailable in this mode."), "warning");
+      }
+      return data;
+    } catch (err) {
+      const next = {
+        ...(appUpdateStatusCache || {}),
+        error: err?.message || "install failed",
+      };
+      appUpdateStatusCache = next;
+      renderAppUpdateStatus(scope, next);
+      toast(next.error, "error");
+      return next;
+    }
+  }
+
+  function bindAppUpdateControls(root) {
+    const scope = root || document;
+    const checkBtn = scope.querySelector("#app-update-check-now");
+    const installBtn = scope.querySelector("#app-update-install");
+
+    if (checkBtn instanceof HTMLButtonElement && checkBtn.dataset.bound !== "1") {
+      checkBtn.dataset.bound = "1";
+      checkBtn.addEventListener("click", () => {
+        fetchAppUpdateStatus({ root: scope, forceCheck: true, manual: true });
+      });
+    }
+    if (installBtn instanceof HTMLButtonElement && installBtn.dataset.bound !== "1") {
+      installBtn.dataset.bound = "1";
+      installBtn.addEventListener("click", () => {
+        installAppUpdate(scope);
+      });
+    }
+    renderAppUpdateStatus(scope, appUpdateStatusCache);
+  }
+
+  async function saveDmxSettings(dmxTargetIp, syncVideo, runtime, ctc, whatsNew, autoUpdate) {
     try {
       const payload = {
         dmx_target_ip: dmxTargetIp
@@ -135,6 +788,23 @@
       }
       if (runtime && typeof runtime === "object") {
         payload.dmx_runtime = runtime;
+      }
+      if (ctc && typeof ctc === "object") {
+        payload.ctc = {
+          enabled: Boolean(ctc.enabled),
+          keybind: String(ctc.keybind || "F8").trim() || "F8",
+          capture_release: Boolean(ctc.capture_release),
+        };
+      }
+      if (whatsNew && typeof whatsNew === "object") {
+        payload.whats_new = {
+          show_on_startup: Boolean(whatsNew.show_on_startup),
+        };
+      }
+      if (autoUpdate && typeof autoUpdate === "object") {
+        payload.auto_update = {
+          check_on_startup: Boolean(autoUpdate.check_on_startup),
+        };
       }
       const res = await fetch("/api/settings", {
         method: "POST",
@@ -276,6 +946,8 @@
     const dmxIpValue = dmxSettings.dmx_target_ip || dmxSettings.local_ip || "";
     const localIpHint = dmxSettings.local_ip ? `(${dmxSettings.local_ip})` : "";
     const runtime = dmxSettings.dmx_runtime || {};
+    const ctc = dmxSettings.ctc || {};
+    const autoUpdate = dmxSettings.auto_update || {};
 
     if (!window.Swal || !window.Swal.fire) {
       const dmxTargetIp = window.prompt(
@@ -320,9 +992,22 @@
 
     const maxSendHz = Number(runtime.max_send_hz ?? 40);
     const heartbeatSec = Number(runtime.heartbeat_sec ?? 0.1);
-    const smoothStep = Number(runtime.smooth_step ?? 2);
+        const smoothStep = Number(runtime.smooth_step ?? 2);
+        const smoothPredict = Boolean(runtime.smooth_predict);
+        const smoothDisable = Boolean(runtime.smooth_disable);
     const deadband = Number(runtime.deadband ?? 0);
     const quantize = Number(runtime.quantize ?? 1);
+    const renderMode = String(runtime.render_mode || "ui");
+    const playbackClockMode = String(runtime.playback_clock_mode || "timeline");
+    const playbackEngineHz = Number(runtime.playback_engine_hz ?? 120);
+    const playbackUiFps = Number(runtime.playback_ui_fps ?? 12);
+    const ctcEnabled = Boolean(ctc.enabled);
+    const ctcCaptureRelease = Boolean(ctc.capture_release);
+    const whatsNewShowOnStartup = Boolean((dmxSettings.whats_new || {}).show_on_startup !== false);
+    const autoUpdateCheckOnStartup = Boolean(autoUpdate.check_on_startup !== false);
+    const ctcKeybind = typeof window.normalizeCtcKeybindValue === "function"
+      ? window.normalizeCtcKeybindValue(ctc.keybind)
+      : String(ctc.keybind || "F8").trim() || "F8";
 
     const html = `
       <div class="dmx-settings-form">
@@ -330,6 +1015,31 @@
           <div class="dmx-settings-section-title">${t("settings.generalTitle", "General")}</div>
           <label for="dmx-target-ip">${t("settings.dmxTargetIp", "DMX target IP")} ${localIpHint}</label>
           <input id="dmx-target-ip" type="text" value="${escapeHtml(dmxIpValue)}" placeholder="${escapeHtml(dmxSettings.local_ip || '127.0.0.1')}">
+          <div class="dmx-settings-row">
+            <input id="whats-new-startup-enabled" type="checkbox" ${whatsNewShowOnStartup ? "checked" : ""}>
+            <label for="whats-new-startup-enabled">${t("settings.whatsNewOnStartup", "Show What's New on startup")}</label>
+          </div>
+          <div class="dmx-settings-row">
+            <input id="auto-update-startup-enabled" type="checkbox" ${autoUpdateCheckOnStartup ? "checked" : ""}>
+            <label for="auto-update-startup-enabled">${t("settings.autoUpdateOnStartup", "Check for app updates on startup")}</label>
+          </div>
+          <div class="dmx-settings-row align-start spread">
+            <div class="dmx-toggle-text">
+              <div class="dmx-settings-label">${t("settings.autoUpdateTitle", "Application update")}</div>
+              <div id="app-update-status-text" class="dmx-settings-desc">${tfmt("settings.autoUpdateStatusCurrent", "Current version: {version}", { version: getAppMeta().version })}</div>
+              <a
+                id="app-update-release-link"
+                class="dmx-settings-link"
+                href="#"
+                target="_blank"
+                rel="noreferrer noopener"
+              >${t("settings.autoUpdateOpenReleases", "Open releases page")}</a>
+            </div>
+            <div class="dmx-settings-actions">
+              <button id="app-update-check-now" type="button" class="secondary">${t("settings.autoUpdateCheckNow", "Check now")}</button>
+              <button id="app-update-install" type="button" class="primary">${t("settings.autoUpdateInstall", "Install update")}</button>
+            </div>
+          </div>
         </div>
         <div class="dmx-settings-section">
           <div class="dmx-settings-section-title">${t("settings.syncVideoTitle", "Sync Video")}</div>
@@ -347,7 +1057,72 @@
           </div>
         </div>
         <div class="dmx-settings-section">
+          <div class="dmx-settings-section-title">CTC</div>
+          <div class="dmx-settings-row">
+            <input id="ctc-enabled" type="checkbox" ${ctcEnabled ? "checked" : ""}>
+            <label for="ctc-enabled">Enable Cue Time Creator</label>
+          </div>
+          <div class="dmx-settings-row">
+            <input id="ctc-capture-release" type="checkbox" ${ctcCaptureRelease ? "checked" : ""}>
+            <label for="ctc-capture-release">Capture release</label>
+          </div>
+          <div>
+            <label for="ctc-keybind">CTC keybind</label>
+            <input
+              id="ctc-keybind"
+              type="text"
+              inputmode="none"
+              autocomplete="off"
+              data-keybind="${escapeHtml(ctcKeybind)}"
+              value="${escapeHtml(formatCtcKeybind(ctcKeybind))}"
+              placeholder="Press a key"
+            >
+          </div>
+          <div class="dmx-settings-desc">Pressing the bound key during CTC appends an empty cue with the captured sleep time.</div>
+          <div class="dmx-settings-desc">Capture release: press creates one cue, release creates another cue, holding the key does nothing in between.</div>
+        </div>
+        <div class="dmx-settings-section">
           <div class="dmx-settings-section-title">${t("settings.dmxRuntimeTitle", "DMX Runtime")}</div>
+
+          <div class="dmx-settings-row">
+            <div>
+              <div class="dmx-settings-label">${t("settings.renderMode", "Render mode")}</div>
+              <div class="dmx-settings-desc">${t("settings.renderModeDesc", "UI = browser renders DMX, Backend = Python renders DMX")}</div>
+            </div>
+            <select id="rt-render-mode">
+              <option value="ui" ${renderMode === "ui" ? "selected" : ""}>UI</option>
+              <option value="backend" ${renderMode === "backend" ? "selected" : ""}>Backend</option>
+            </select>
+          </div>
+
+          <div class="dmx-settings-row">
+            <div>
+              <div class="dmx-settings-label">${t("settings.playbackClockMode", "Playback clock")}</div>
+              <div class="dmx-settings-desc">${t("settings.playbackClockModeDesc", "Timeline = chain phases normally, Absolute clock = launch each cue on host clock from the precomputed plan")}</div>
+            </div>
+            <select id="rt-playback-clock-mode">
+              <option value="timeline" ${playbackClockMode === "timeline" ? "selected" : ""}>Timeline</option>
+              <option value="absolute_clock" ${playbackClockMode === "absolute_clock" ? "selected" : ""}>Absolute clock</option>
+            </select>
+          </div>
+
+          <div class="dmx-settings-slider">
+            <label for="rt-playback-engine-hz">Playback engine rate</label>
+            <div class="dmx-settings-range">
+              <input id="rt-playback-engine-hz" type="range" min="40" max="240" step="1" value="${playbackEngineHz}">
+              <span id="rt-playback-engine-hz-value">${playbackEngineHz} Hz</span>
+            </div>
+            <div class="dmx-settings-desc">Backend render/send cadence during cue-list playback. Higher helps short sleeps and short fades.</div>
+          </div>
+
+          <div class="dmx-settings-slider">
+            <label for="rt-playback-ui-fps">Playback UI FPS</label>
+            <div class="dmx-settings-range">
+              <input id="rt-playback-ui-fps" type="range" min="1" max="30" step="1" value="${playbackUiFps}">
+              <span id="rt-playback-ui-fps-value">${playbackUiFps} fps</span>
+            </div>
+            <div class="dmx-settings-desc">Limit visual playback refreshes while the backend runner stays authoritative.</div>
+          </div>
 
           <div class="dmx-settings-row">
             <label class="switch">
@@ -427,6 +1202,14 @@
             <div class="dmx-settings-range">
               <input id="rt-smooth-step" type="range" min="1" max="32" step="1" value="${smoothStep}">
               <span id="rt-smooth-step-value">${smoothStep}</span>
+              <label class="dmx-inline-toggle">
+                <input id="rt-smooth-predict" type="checkbox" ${smoothPredict ? "checked" : ""}>
+                <span>${t("settings.smoothPredict", "Predict")}</span>
+              </label>
+              <label class="dmx-inline-toggle">
+                <input id="rt-smooth-disable" type="checkbox" ${smoothDisable ? "checked" : ""}>
+                <span>${t("settings.smoothDisable", "Disable")}</span>
+              </label>
             </div>
             <div class="dmx-settings-desc">${t("settings.smoothStepDesc", "Step size for pan/tilt smoothing")}</div>
           </div>
@@ -517,9 +1300,25 @@
               <div class="dmx-settings-desc">${t("settings.logArtnetFullDesc", "Verbose ArtNet logs (large)")}</div>
             </div>
           </div>
+
+          <div class="dmx-settings-row">
+            <label class="switch">
+              <input id="rt-profile-runner" type="checkbox" ${runtime.profile_runner ? "checked" : ""}>
+              <span class="slider"></span>
+            </label>
+            <div>
+              <div class="dmx-settings-label">Profile runner</div>
+              <div class="dmx-settings-desc">Log backend render, send and state push timings every second.</div>
+            </div>
+          </div>
         </div>
       </div>
     `;
+
+    if (isGuiWebView()) {
+      openSettingsModalGui(t("settings.title", "General Settings"), html);
+      return;
+    }
 
     window.Swal.fire({
       title: t("settings.title", "General Settings"),
@@ -531,89 +1330,20 @@
       heightAuto: false,
       customClass: { popup: "dmx-settings-modal" },
       didOpen: () => {
-        const maxSend = document.getElementById("rt-max-send-hz");
-        const maxSendValue = document.getElementById("rt-max-send-hz-value");
-        if (maxSend && maxSendValue) {
-          maxSend.addEventListener("input", () => {
-            maxSendValue.textContent = `${maxSend.value} Hz`;
-          });
-        }
-
-        const heartbeat = document.getElementById("rt-heartbeat-sec");
-        const heartbeatValue = document.getElementById("rt-heartbeat-sec-value");
-        if (heartbeat && heartbeatValue) {
-          heartbeat.addEventListener("input", () => {
-            heartbeatValue.textContent = `${Number(heartbeat.value).toFixed(2)} s`;
-          });
-        }
-
-        const smooth = document.getElementById("rt-smooth-step");
-        const smoothValue = document.getElementById("rt-smooth-step-value");
-        if (smooth && smoothValue) {
-          smooth.addEventListener("input", () => {
-            smoothValue.textContent = `${smooth.value}`;
-          });
-        }
-
-        const dead = document.getElementById("rt-deadband");
-        const deadValue = document.getElementById("rt-deadband-value");
-        if (dead && deadValue) {
-          dead.addEventListener("input", () => {
-            deadValue.textContent = `${dead.value}`;
-          });
-        }
-
-        const quant = document.getElementById("rt-quantize");
-        const quantValue = document.getElementById("rt-quantize-value");
-        if (quant && quantValue) {
-          quant.addEventListener("input", () => {
-            quantValue.textContent = `${quant.value}`;
-          });
-        }
+        bindRuntimeRangeListeners();
+        bindCtcKeybindInput(document);
+        mountAdvancedSettingsToggle(document, document.querySelector(".swal2-actions"));
+        bindAppUpdateControls(document);
+        fetchAppUpdateStatus({ root: document });
       },
       preConfirm: () => {
-        const dmxTargetIp = document.getElementById("dmx-target-ip")?.value.trim();
-        const enabled = document.getElementById("sync-video-enabled")?.checked || false;
-        const baseUrl = normalizeBaseUrl(document.getElementById("sync-video-url")?.value || "");
-        const token = document.getElementById("sync-video-token")?.value.trim() || "";
-
-        const runtimeSettings = {
-          artnet_diff: document.getElementById("rt-artnet-diff")?.checked || false,
-          artnet_heartbeat_full: document.getElementById("rt-artnet-heartbeat-full")?.checked || false,
-          dummy_enabled: document.getElementById("rt-dummy")?.checked || false,
-          continuous: document.getElementById("rt-continuous")?.checked || false,
-          ui_force_full_send: document.getElementById("rt-ui-force-full")?.checked || false,
-          max_send_hz: parseFloat(document.getElementById("rt-max-send-hz")?.value || "40"),
-          heartbeat_sec: parseFloat(document.getElementById("rt-heartbeat-sec")?.value || "0.1"),
-          smooth_step: parseInt(document.getElementById("rt-smooth-step")?.value || "2", 10),
-          deadband: parseInt(document.getElementById("rt-deadband")?.value || "0", 10),
-          quantize: parseInt(document.getElementById("rt-quantize")?.value || "1", 10),
-          log_ui: document.getElementById("rt-log-ui")?.checked || false,
-          log_ui_full: document.getElementById("rt-log-ui-full")?.checked || false,
-          log_dmx: document.getElementById("rt-log-dmx")?.checked || false,
-          log_dmx_full: document.getElementById("rt-log-dmx-full")?.checked || false,
-          log_artnet: document.getElementById("rt-log-artnet")?.checked || false,
-          log_artnet_full: document.getElementById("rt-log-artnet-full")?.checked || false,
-        };
-
-        if (!dmxTargetIp) {
-          window.Swal.showValidationMessage(t("settings.dmxIpRequired", "DMX target IP required"));
-          return false;
-        }
-        if (enabled && !baseUrl) {
-          window.Swal.showValidationMessage(t("settings.urlRequired", "URL required when Sync Video enabled"));
-          return false;
-        }
-        return { enabled, baseUrl, token, dmxTargetIp, runtimeSettings };
+        const result = readSettingsForm((msg) => window.Swal.showValidationMessage(msg));
+        if (!result) return false;
+        return result;
       }
     }).then((result) => {
       if (!result.isConfirmed || !result.value) return;
-      const { enabled, baseUrl, token, dmxTargetIp, runtimeSettings } = result.value;
-      saveDmxSettings(dmxTargetIp, { enabled, baseUrl, token }, runtimeSettings);
-      setConfig({ enabled, baseUrl, token });
-      if (runtimeSettings && typeof runtimeSettings.ui_force_full_send === "boolean") {
-        window.DMX_FORCE_FULL_SEND = runtimeSettings.ui_force_full_send;
-      }
+      applySettingsResult(result.value);
     });
   }
 
