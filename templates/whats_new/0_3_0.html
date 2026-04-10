@@ -1,0 +1,89 @@
+<div class="whats-new-wrap whats-new-focus-start" tabindex="-1">
+  <section class="whats-new-hero">
+    <div class="whats-new-card">
+      <div class="whats-new-kicker">{{ app_name }} {{ app_version }}</div>
+      <h2 class="whats-new-title" data-i18n="whatsNew.0_3_0.heroTitle">Backend playback, CTC workflow, smarter FX and a cleaner GUI bootstrap.</h2>
+      <p class="whats-new-copy whats-new-lead" data-i18n="whatsNew.0_3_0.heroCopy">
+        This release groups the biggest local changes since the last Git snapshot: cue-list playback is now backend-driven,
+        the GUI startup is more robust, intelligent effects can be described in JSON for both JS and Python, and the settings/UI workflow
+        has been reorganized around show operation.
+      </p>
+      <div class="whats-new-pills">
+        <span class="whats-new-pill" data-i18n="whatsNew.0_3_0.heroBadge1">Smoother playback</span>
+        <span class="whats-new-pill" data-i18n="whatsNew.0_3_0.heroBadge2">Faster cue building</span>
+        <span class="whats-new-pill" data-i18n="whatsNew.0_3_0.heroBadge3">Cleaner desktop app</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="whats-new-grid">
+    <article class="whats-new-card whats-new-card-wide">
+      <h4 data-i18n="whatsNew.0_3_0.ctcTitle">CTC grew into a real timing tool</h4>
+      <p data-i18n="whatsNew.0_3_0.ctcCopy">CTC is now meant to capture show timing, not just append blank cues.</p>
+      <ul>
+        <li data-i18n="whatsNew.0_3_0.ctcBullet1">Dedicated settings, keybind capture and visible runtime indicator.</li>
+        <li data-i18n="whatsNew.0_3_0.ctcBullet2">Optional capture-on-release mode for press/release timing workflows.</li>
+        <li data-i18n="whatsNew.0_3_0.ctcBullet3">Split reset logic tied to cue starts, fade ends and cue captures.</li>
+        <li data-i18n="whatsNew.0_3_0.ctcBullet4">Continues after cue-list playback until you explicitly stop it.</li>
+      </ul>
+    </article>
+
+    <article class="whats-new-card">
+      <h4 data-i18n="whatsNew.0_3_0.playbackTitle">Playback engine overhaul</h4>
+      <p data-i18n="whatsNew.0_3_0.playbackCopy">Long cue lists now rely on a Python-owned timeline instead of chained browser timers.</p>
+      <ul>
+        <li data-i18n="whatsNew.0_3_0.playbackBullet1">Backend cue-list scheduler with pause, skip, wait adjust and play-from support.</li>
+        <li data-i18n="whatsNew.0_3_0.playbackBullet2">Playback clock modes for normal timeline mode and host absolute clock mode.</li>
+        <li data-i18n="whatsNew.0_3_0.playbackBullet3">Playback speed presets that affect both the cue timeline and intelligent effects.</li>
+        <li data-i18n="whatsNew.0_3_0.playbackBullet4">Backend-side profiling and throttled UI refresh for smoother long runs.</li>
+      </ul>
+    </article>
+
+    <article class="whats-new-card">
+      <h4 data-i18n="whatsNew.0_3_0.uiTitle">UI and GUI quality pass</h4>
+      <p data-i18n="whatsNew.0_3_0.uiCopy">The operator-facing workflow is more structured and the desktop wrapper behaves better.</p>
+      <ul>
+        <li data-i18n="whatsNew.0_3_0.uiBullet1">Playback controls moved into the cue-list panel and grouped by function.</li>
+        <li data-i18n="whatsNew.0_3_0.uiBullet2">Advanced settings toggle with a simpler default settings view.</li>
+        <li data-i18n="whatsNew.0_3_0.uiBullet3">Custom GUI-safe modals instead of fragile popup fallbacks.</li>
+        <li data-i18n="whatsNew.0_3_0.uiBullet4">Desktop startup splash, delayed handoff, cache-busted reload and better popup reintegration.</li>
+      </ul>
+    </article>
+
+    <article class="whats-new-card whats-new-card-wide">
+      <h4 data-i18n="whatsNew.0_3_0.fxTitle">Intelligent effects import is no longer UI-only</h4>
+      <p data-i18n="whatsNew.0_3_0.fxCopy">Declarative effect files can now be imported once and executed by both runtimes.</p>
+      <ul>
+        <li data-i18n="whatsNew.0_3_0.fxBullet1">New shared JSON effect format for backend-compatible imports.</li>
+        <li data-i18n="whatsNew.0_3_0.fxBullet2">Runtime interpreter in JS and Python for importable intelligent effects.</li>
+        <li data-i18n="whatsNew.0_3_0.fxBullet3">Haut/Bas migrated to the new format and corrected as a true high/low pulse effect.</li>
+      </ul>
+    </article>
+  </section>
+
+  <section class="whats-new-card whats-new-note">
+    <h4 data-i18n="whatsNew.0_3_0.otherTitle">Other notable changes</h4>
+    <p data-i18n="whatsNew.0_3_0.otherCopy">
+      Under the hood, playback timing and desktop startup have also been tightened up so the app feels more stable during long sessions.
+    </p>
+    <ul>
+      <li data-i18n="whatsNew.0_3_0.otherBullet1">Settings footer now exposes version and license code.</li>
+      <li data-i18n="whatsNew.0_3_0.otherBullet2">Playback status, speed display and cue highlighting are driven more cleanly from backend state.</li>
+      <li data-i18n="whatsNew.0_3_0.otherBullet3">Multi-selection cue moves behave more consistently across buttons and drag actions.</li>
+    </ul>
+  </section>
+
+  <section class="whats-new-footer">
+    <div class="whats-new-meta">
+      <span>{{ app_name }} {{ app_version }}</span>
+      <span>{{ app_license_code }}</span>
+    </div>
+    <label class="whats-new-startup-toggle">
+      <strong data-i18n="whatsNew.showOnStartup">Show on startup</strong>
+      <span class="switch">
+        <input id="whats-new-startup-toggle" type="checkbox" checked>
+        <span class="slider"></span>
+      </span>
+    </label>
+  </section>
+</div>

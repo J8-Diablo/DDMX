@@ -1,0 +1,22 @@
+{
+  "format": "ddmx.intelligent_effect",
+  "version": 1,
+  "id": "haut_bas",
+  "label": "Haut/Bas",
+  "targets": ["dimmer"],
+  "mode": "absolute",
+  "params": [
+    { "key": "dimmer", "label": "Dimmer", "type": "range", "min": 0, "max": 255, "step": 1, "default": 255 },
+    { "key": "ratio", "label": "Ratio Bas", "type": "range", "min": 0, "max": 1, "step": 0.05, "default": 0 },
+    { "key": "on_ms", "label": "Temps On (ms)", "type": "number", "min": 0, "max": 60000, "default": 500 },
+    { "key": "off_ms", "label": "Temps Off (ms)", "type": "number", "min": 0, "max": 60000, "default": 500 }
+  ],
+  "runtime": {
+    "kind": "pulse_toggle",
+    "targets": ["dimmer"],
+    "intensity_param": "dimmer",
+    "ratio_param": "ratio",
+    "on_param": "on_ms",
+    "off_param": "off_ms"
+  }
+}

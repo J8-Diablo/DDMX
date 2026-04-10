@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 from queue import Queue
 
 from flask import Flask, render_template, jsonify, request, send_from_directory, Response
+from version import APP_LICENSE_CODE, APP_NAME, APP_UPDATE_RELEASES_URL, APP_VERSION
 
 # New render engine (selectable)
 ENGINE_MODE = os.environ.get("DMX_ENGINE", "render").strip().lower()
@@ -30,6 +31,12 @@ try:
 except ImportError:
     Effect = None
 
+# Intelligent effects (Python)
+try:
+    import intelligent_fx as IntelligentFX
+except ImportError:
+    IntelligentFX = None
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FIXTURES_DIR = os.path.join(BASE_DIR, "fixtures")
 CUE_DIR = os.path.join(BASE_DIR, "cue")
@@ -43,19 +50,19 @@ os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(INTELLIGENT_EFFECTS_DIR, exist_ok=True)
 
 def _safe_effect_filename(name: str) -> Optional[str]:
-    """Allow only safe JS filenames for intelligent effects."""
+    """Allow only safe JS/JSON filenames for intelligent effects."""
     if not isinstance(name, str):
         return None
     base = os.path.basename(name)
     base = re.sub(r"[^a-zA-Z0-9._-]", "_", base)
-    if not base or not base.lower().endswith(".js"):
+    if not base or not base.lower().endswith((".js", ".json")):
         return None
     return base
 
 def list_intelligent_effect_files() -> List[str]:
     return sorted(
         f for f in os.listdir(INTELLIGENT_EFFECTS_DIR)
-        if f.lower().endswith(".js")
+        if f.lower().endswith((".js", ".json"))
     )
 
 # ---------- SETTINGS ----------
@@ -96,13 +103,34 @@ def load_settings() -> Dict[str, Any]:
             "base_url": "http://127.0.0.1:3000",
             "token": ""
         },
+        "ctc": {
+            "enabled": False,
+            "keybind": "F8",
+            "capture_release": False,
+        },
+        "whats_new": {
+            "show_on_startup": True,
+            "last_seen_version": "",
+        },
+        "auto_update": {
+            "check_on_startup": True,
+        },
+        "ui": {
+            "language": "en",
+        },
         "dmx_runtime": {
+            "render_mode": "ui",
+            "playback_clock_mode": os.environ.get("DMX_PLAYBACK_CLOCK_MODE", "timeline").strip().lower(),
+            "playback_engine_hz": _env_float("DMX_PLAYBACK_ENGINE_HZ", 120),
+            "playback_ui_fps": _env_float("DMX_PLAYBACK_UI_FPS", 12),
             "max_send_hz": _env_float("DMX_MAX_SEND_HZ", 40),
             "heartbeat_sec": _env_float("DMX_HEARTBEAT_SEC", 0.1),
             "artnet_diff": _env_bool("DMX_ARTNET_DIFF", False),
             "artnet_heartbeat_full": _env_bool("DMX_ARTNET_HEARTBEAT_FULL", True),
             "dummy_enabled": _env_bool("DMX_DUMMY", True),
             "smooth_step": int(_env_float("DMX_SMOOTH_STEP", 2)),
+            "smooth_predict": _env_bool("DMX_SMOOTH_PREDICT", False),
+            "smooth_disable": _env_bool("DMX_SMOOTH_DISABLE", False),
             "deadband": int(_env_float("DMX_DEADBAND", 0)),
             "quantize": int(_env_float("DMX_QUANTIZE", 1)),
             "continuous": _env_bool("DMX_CONTINUOUS", False),
@@ -113,6 +141,7 @@ def load_settings() -> Dict[str, Any]:
             "log_dmx_full": _env_bool("DMX_LOG_DMX_FULL", False),
             "log_artnet": _env_bool("DMX_LOG_ARTNET", False),
             "log_artnet_full": _env_bool("DMX_LOG_ARTNET_FULL", False),
+            "profile_runner": _env_bool("DMX_PROFILE_RUNNER", False),
         },
     }
     if not os.path.exists(SETTINGS_PATH):
@@ -132,6 +161,31 @@ def load_settings() -> Dict[str, Any]:
                     defaults["sync_video"]["base_url"] = base_url.strip()
                 if isinstance(sync.get("token"), str):
                     defaults["sync_video"]["token"] = sync["token"].strip()
+            ctc = data.get("ctc")
+            if isinstance(ctc, dict):
+                if isinstance(ctc.get("enabled"), bool):
+                    defaults["ctc"]["enabled"] = ctc["enabled"]
+                keybind = ctc.get("keybind")
+                if isinstance(keybind, str) and keybind.strip():
+                    defaults["ctc"]["keybind"] = keybind.strip()
+                if isinstance(ctc.get("capture_release"), bool):
+                    defaults["ctc"]["capture_release"] = ctc["capture_release"]
+            whats_new = data.get("whats_new")
+            if isinstance(whats_new, dict):
+                if isinstance(whats_new.get("show_on_startup"), bool):
+                    defaults["whats_new"]["show_on_startup"] = whats_new["show_on_startup"]
+                last_seen = whats_new.get("last_seen_version")
+                if isinstance(last_seen, str):
+                    defaults["whats_new"]["last_seen_version"] = last_seen.strip()
+            auto_update = data.get("auto_update")
+            if isinstance(auto_update, dict):
+                if isinstance(auto_update.get("check_on_startup"), bool):
+                    defaults["auto_update"]["check_on_startup"] = auto_update["check_on_startup"]
+            ui = data.get("ui")
+            if isinstance(ui, dict):
+                lang = ui.get("language")
+                if isinstance(lang, str) and lang.strip():
+                    defaults["ui"]["language"] = lang.strip().lower()
             runtime = data.get("dmx_runtime")
             if isinstance(runtime, dict):
                 defaults["dmx_runtime"].update(runtime)
@@ -167,12 +221,21 @@ def _normalize_runtime_settings(payload: Any, current: Dict[str, Any]) -> Dict[s
 
     out = dict(current or {})
 
+    mode_raw = str(payload.get("render_mode") or out.get("render_mode") or "ui").strip().lower()
+    out["render_mode"] = "backend" if mode_raw == "backend" else "ui"
+    clock_mode_raw = str(payload.get("playback_clock_mode") or out.get("playback_clock_mode") or "timeline").strip().lower()
+    out["playback_clock_mode"] = "absolute_clock" if clock_mode_raw == "absolute_clock" else "timeline"
+    out["playback_engine_hz"] = _clamp_float(payload.get("playback_engine_hz"), 40.0, 240.0, out.get("playback_engine_hz", 120.0))
+    out["playback_ui_fps"] = _clamp_float(payload.get("playback_ui_fps"), 1.0, 30.0, out.get("playback_ui_fps", 12.0))
+
     out["max_send_hz"] = _clamp_float(payload.get("max_send_hz"), 1.0, 120.0, out.get("max_send_hz", 40))
     out["heartbeat_sec"] = _clamp_float(payload.get("heartbeat_sec"), 0.0, 5.0, out.get("heartbeat_sec", 0.1))
     out["artnet_diff"] = bool(payload.get("artnet_diff", out.get("artnet_diff", False)))
     out["artnet_heartbeat_full"] = bool(payload.get("artnet_heartbeat_full", out.get("artnet_heartbeat_full", True)))
     out["dummy_enabled"] = bool(payload.get("dummy_enabled", out.get("dummy_enabled", True)))
     out["smooth_step"] = _clamp_int(payload.get("smooth_step"), 1, 32, out.get("smooth_step", 2))
+    out["smooth_predict"] = bool(payload.get("smooth_predict", out.get("smooth_predict", False)))
+    out["smooth_disable"] = bool(payload.get("smooth_disable", out.get("smooth_disable", False)))
     out["deadband"] = _clamp_int(payload.get("deadband"), 0, 64, out.get("deadband", 0))
     out["quantize"] = _clamp_int(payload.get("quantize"), 1, 64, out.get("quantize", 1))
     out["continuous"] = bool(payload.get("continuous", out.get("continuous", False)))
@@ -183,7 +246,57 @@ def _normalize_runtime_settings(payload: Any, current: Dict[str, Any]) -> Dict[s
     out["log_dmx_full"] = bool(payload.get("log_dmx_full", out.get("log_dmx_full", False)))
     out["log_artnet"] = bool(payload.get("log_artnet", out.get("log_artnet", False)))
     out["log_artnet_full"] = bool(payload.get("log_artnet_full", out.get("log_artnet_full", False)))
+    out["profile_runner"] = bool(payload.get("profile_runner", out.get("profile_runner", False)))
 
+    return out
+
+
+def _normalize_ctc_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(current or {})
+    if not isinstance(payload, dict):
+        out["enabled"] = bool(out.get("enabled", False))
+        out["keybind"] = str(out.get("keybind") or "F8").strip() or "F8"
+        out["capture_release"] = bool(out.get("capture_release", False))
+        return out
+
+    out["enabled"] = bool(payload.get("enabled", out.get("enabled", False)))
+    keybind = payload.get("keybind", out.get("keybind", "F8"))
+    out["keybind"] = str(keybind or "F8").strip() or "F8"
+    out["capture_release"] = bool(payload.get("capture_release", out.get("capture_release", False)))
+    return out
+
+
+def _normalize_whats_new_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(current or {})
+    if not isinstance(payload, dict):
+        out["show_on_startup"] = bool(out.get("show_on_startup", True))
+        out["last_seen_version"] = str(out.get("last_seen_version") or "").strip()
+        return out
+
+    out["show_on_startup"] = bool(payload.get("show_on_startup", out.get("show_on_startup", True)))
+    if "last_seen_version" in payload:
+        out["last_seen_version"] = str(payload.get("last_seen_version") or "").strip()
+    else:
+        out["last_seen_version"] = str(out.get("last_seen_version") or "").strip()
+    return out
+
+
+def _normalize_ui_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(current or {})
+    if not isinstance(payload, dict):
+        out["language"] = str(out.get("language") or "en").strip().lower() or "en"
+        return out
+    lang = str(payload.get("language") or out.get("language") or "en").strip().lower() or "en"
+    out["language"] = lang
+    return out
+
+
+def _normalize_auto_update_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(current or {})
+    if not isinstance(payload, dict):
+        out["check_on_startup"] = bool(out.get("check_on_startup", True))
+        return out
+    out["check_on_startup"] = bool(payload.get("check_on_startup", out.get("check_on_startup", True)))
     return out
 
 
@@ -207,16 +320,40 @@ def _apply_runtime_settings(engine: Any, runtime: Dict[str, Any]) -> None:
                 engine.set_dummy_channels({})
         if hasattr(engine, "_smooth_step"):
             engine._smooth_step = int(runtime.get("smooth_step", engine._smooth_step))
+        if hasattr(engine, "_smooth_predict"):
+            engine._smooth_predict = bool(runtime.get("smooth_predict", getattr(engine, "_smooth_predict", False)))
+        if hasattr(engine, "_smooth_disabled"):
+            engine._smooth_disabled = bool(runtime.get("smooth_disable", getattr(engine, "_smooth_disabled", False)))
         if hasattr(engine, "_deadband"):
             engine._deadband = int(runtime.get("deadband", engine._deadband))
         if hasattr(engine, "_quantize"):
             engine._quantize = int(runtime.get("quantize", engine._quantize))
         if hasattr(engine, "_force_continuous"):
             engine._force_continuous = bool(runtime.get("continuous", engine._force_continuous))
+        if hasattr(engine, "set_render_mode"):
+            engine.set_render_mode(runtime.get("render_mode", "ui"))
+        elif hasattr(engine, "_render_mode"):
+            engine._render_mode = str(runtime.get("render_mode", "ui")).strip().lower()
+        if hasattr(engine, "set_playback_clock_mode"):
+            engine.set_playback_clock_mode(runtime.get("playback_clock_mode", "timeline"))
+        elif hasattr(engine, "_playback_clock_mode"):
+            engine._playback_clock_mode = str(runtime.get("playback_clock_mode", "timeline")).strip().lower()
+        if hasattr(engine, "set_playback_engine_hz"):
+            engine.set_playback_engine_hz(runtime.get("playback_engine_hz", 120.0))
+        elif hasattr(engine, "_playback_engine_hz"):
+            engine._playback_engine_hz = float(runtime.get("playback_engine_hz", 120.0))
+        if hasattr(engine, "set_playback_ui_fps"):
+            engine.set_playback_ui_fps(runtime.get("playback_ui_fps", 12.0))
+        elif hasattr(engine, "_playback_ui_fps"):
+            engine._playback_ui_fps = float(runtime.get("playback_ui_fps", 12.0))
         if hasattr(engine, "_log_dmx"):
             engine._log_dmx = bool(runtime.get("log_dmx", engine._log_dmx))
         if hasattr(engine, "_log_dmx_full"):
             engine._log_dmx_full = bool(runtime.get("log_dmx_full", engine._log_dmx_full))
+        if hasattr(engine, "set_profile_runner"):
+            engine.set_profile_runner(runtime.get("profile_runner", False))
+        elif hasattr(engine, "_profile_runner"):
+            engine._profile_runner = bool(runtime.get("profile_runner", False))
     except Exception as e:
         app.logger.exception("Failed to apply runtime settings: %s", e)
 
@@ -246,6 +383,9 @@ logging.basicConfig(
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.logger.setLevel(logging.DEBUG)
+app.config["APP_NAME"] = APP_NAME
+app.config["APP_VERSION"] = APP_VERSION
+app.config["APP_LICENSE_CODE"] = APP_LICENSE_CODE
 
 # ---------- DEBUG FLAGS ----------
 LOG_UI_PAYLOADS = os.environ.get("DMX_LOG_UI", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -266,6 +406,11 @@ logging.getLogger().addHandler(file_handler)
 
 # ---------- DMX RENDER ENGINE ----------
 RENDER_ENGINE: Optional[DMXRenderEngine] = None
+UPDATE_CALLBACKS: Dict[str, Any] = {
+    "status": None,
+    "check": None,
+    "install": None,
+}
 
 def init_engine():
     global RENDER_ENGINE
@@ -412,7 +557,96 @@ def save_cue_file(filename: str, data: Dict[str, Any]) -> None:
 def index():
     runtime = SETTINGS.get("dmx_runtime") or {}
     force_full_send = bool(runtime.get("ui_force_full_send"))
-    return render_template("index.html", dmx_force_full_send=force_full_send)
+    return render_template(
+        "index.html",
+        dmx_force_full_send=force_full_send,
+        app_name=APP_NAME,
+        app_version=APP_VERSION,
+        app_license_code=APP_LICENSE_CODE,
+        preferred_language=(SETTINGS.get("ui") or {}).get("language", "en"),
+    )
+
+
+@app.route("/api/meta", methods=["GET"])
+def api_meta():
+    return jsonify({
+        "app_name": APP_NAME,
+        "version": APP_VERSION,
+        "license_code": APP_LICENSE_CODE,
+        "releases_url": APP_UPDATE_RELEASES_URL,
+    })
+
+
+@app.route("/api/whats_new/current", methods=["GET"])
+def api_whats_new_current():
+    version_slug = APP_VERSION.replace(".", "_")
+    template_name = f"whats_new/{version_slug}.html"
+    try:
+        html = render_template(
+            template_name,
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
+            app_license_code=APP_LICENSE_CODE,
+        )
+    except Exception:
+        html = render_template(
+            "whats_new/fallback.html",
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
+            app_license_code=APP_LICENSE_CODE,
+        )
+    return jsonify({
+        "version": APP_VERSION,
+        "title": f"What's New in {APP_VERSION}?",
+        "html": html,
+    })
+
+
+@app.route("/api/update/status", methods=["GET"])
+def api_update_status():
+    fn = UPDATE_CALLBACKS.get("status")
+    if not callable(fn):
+        return jsonify({
+            "supported": False,
+            "install_supported": False,
+            "current_version": APP_VERSION,
+            "error": "Update provider unavailable",
+        })
+    try:
+        return jsonify(fn())
+    except Exception as e:
+        app.logger.exception("[UPDATE] status failed")
+        return jsonify({
+            "supported": False,
+            "install_supported": False,
+            "current_version": APP_VERSION,
+            "error": str(e),
+        }), 500
+
+
+@app.route("/api/update/check", methods=["POST"])
+def api_update_check():
+    fn = UPDATE_CALLBACKS.get("check")
+    if not callable(fn):
+        return jsonify({"error": "Update provider unavailable"}), 503
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(fn(manual=bool(payload.get("manual", True))))
+    except Exception as e:
+        app.logger.exception("[UPDATE] check failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/update/install", methods=["POST"])
+def api_update_install():
+    fn = UPDATE_CALLBACKS.get("install")
+    if not callable(fn):
+        return jsonify({"error": "Update provider unavailable"}), 503
+    try:
+        return jsonify(fn())
+    except Exception as e:
+        app.logger.exception("[UPDATE] install failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/fixtures", methods=["GET"])
@@ -452,6 +686,10 @@ def api_cues_file(filename: str):
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     sync = SETTINGS.get("sync_video") or {}
+    ctc = SETTINGS.get("ctc") or {}
+    whats_new = SETTINGS.get("whats_new") or {}
+    auto_update = SETTINGS.get("auto_update") or {}
+    ui = SETTINGS.get("ui") or {}
     runtime = SETTINGS.get("dmx_runtime") or {}
     return jsonify({
         "dmx_target_ip": SETTINGS.get("dmx_target_ip", "127.0.0.1"),
@@ -460,6 +698,21 @@ def api_settings_get():
             "enabled": bool(sync.get("enabled")),
             "base_url": sync.get("base_url") or "http://127.0.0.1:3000",
             "token": sync.get("token") or ""
+        },
+        "ctc": {
+            "enabled": bool(ctc.get("enabled")),
+            "keybind": str(ctc.get("keybind") or "F8"),
+            "capture_release": bool(ctc.get("capture_release")),
+        },
+        "whats_new": {
+            "show_on_startup": bool(whats_new.get("show_on_startup", True)),
+            "last_seen_version": str(whats_new.get("last_seen_version") or ""),
+        },
+        "auto_update": {
+            "check_on_startup": bool(auto_update.get("check_on_startup", True)),
+        },
+        "ui": {
+            "language": str(ui.get("language") or "en"),
         },
         "dmx_runtime": runtime
     })
@@ -495,6 +748,26 @@ def api_settings_post():
             sync["token"] = token.strip()
         SETTINGS["sync_video"] = sync
 
+    ctc_payload = payload.get("ctc")
+    ctc = SETTINGS.get("ctc") or {}
+    ctc = _normalize_ctc_settings(ctc_payload, ctc)
+    SETTINGS["ctc"] = ctc
+
+    whats_new_payload = payload.get("whats_new")
+    whats_new = SETTINGS.get("whats_new") or {}
+    whats_new = _normalize_whats_new_settings(whats_new_payload, whats_new)
+    SETTINGS["whats_new"] = whats_new
+
+    auto_update_payload = payload.get("auto_update")
+    auto_update = SETTINGS.get("auto_update") or {}
+    auto_update = _normalize_auto_update_settings(auto_update_payload, auto_update)
+    SETTINGS["auto_update"] = auto_update
+
+    ui_payload = payload.get("ui")
+    ui = SETTINGS.get("ui") or {}
+    ui = _normalize_ui_settings(ui_payload, ui)
+    SETTINGS["ui"] = ui
+
     runtime_payload = payload.get("dmx_runtime")
     runtime = SETTINGS.get("dmx_runtime") or {}
     runtime = _normalize_runtime_settings(runtime_payload, runtime)
@@ -510,8 +783,57 @@ def api_settings_post():
         "dmx_target_ip": SETTINGS.get("dmx_target_ip", "127.0.0.1"),
         "engineUpdated": engine_updated,
         "sync_video": SETTINGS.get("sync_video") or {},
+        "ctc": SETTINGS.get("ctc") or {},
+        "whats_new": SETTINGS.get("whats_new") or {},
+        "auto_update": SETTINGS.get("auto_update") or {},
+        "ui": SETTINGS.get("ui") or {},
         "dmx_runtime": SETTINGS.get("dmx_runtime") or {}
     })
+
+
+# ---------- NEW API: JS LOGGING ----------
+
+@app.route("/api/js_log", methods=["POST"])
+def api_js_log():
+    payload = request.get_json() or {}
+    try:
+        level = str(payload.get("level") or "error").lower()
+        msg = str(payload.get("message") or "")
+        src = str(payload.get("source") or "")
+        line = payload.get("line")
+        col = payload.get("column")
+        stack = str(payload.get("stack") or "")
+        extra = {
+            "source": src,
+            "line": line,
+            "column": col
+        }
+        if level == "warn":
+            app.logger.warning("[JS] %s | %s | stack=%s", msg, extra, stack)
+        else:
+            app.logger.error("[JS] %s | %s | stack=%s", msg, extra, stack)
+    except Exception:
+        app.logger.exception("[JS] log error")
+    return jsonify({"ok": True})
+
+
+# ---------- NEW API: RIG REGISTER ----------
+
+@app.route("/api/rig/register", methods=["POST"])
+def api_rig_register():
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+    payload = request.get_json() or {}
+    devices = payload.get("devices")
+    if not isinstance(devices, list):
+        return jsonify({"error": "invalid devices"}), 400
+    try:
+        if hasattr(RENDER_ENGINE, "register_rig_devices"):
+            RENDER_ENGINE.register_rig_devices(devices)
+        return jsonify({"ok": True, "count": len(devices)})
+    except Exception as e:
+        app.logger.exception("[API] rig/register error")
+        return jsonify({"error": str(e)}), 500
 
 
 # ---------- NEW API: LIVE CONTROL ----------
@@ -592,7 +914,52 @@ def api_live_effect_stop():
     return jsonify({"ok": True})
 
 
+# ---------- NEW API: EFFECT GROUPS ----------
+
+@app.route("/api/live/effects/groups", methods=["POST"])
+def api_live_effect_groups():
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+    payload = request.get_json() or {}
+    action = str(payload.get("action") or "set").lower()
+    groups = payload.get("groups") or []
+    group_ids = payload.get("group_ids") or payload.get("groupIds") or []
+    try:
+        if hasattr(RENDER_ENGINE, "set_live_effect_groups"):
+            RENDER_ENGINE.set_live_effect_groups(groups, action=action, group_ids=group_ids)
+        return jsonify({"ok": True})
+    except Exception as e:
+        app.logger.exception("[API] live/effects/groups error")
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------- NEW API: PLAYBACK ----------
+
+@app.route("/api/playback/run", methods=["POST"])
+def api_playback_run():
+    """Execute a full cue sequence in the backend scheduler."""
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+
+    payload = request.get_json()
+    if not payload:
+        return jsonify({"error": "no json"}), 400
+
+    try:
+        sequence = payload.get("sequence") or []
+        start_index = int(payload.get("start_index", 0) or 0)
+        speed = payload.get("speed", 1.0)
+        virtual_groups = payload.get("virtual_groups") or payload.get("virtualGroups") or {}
+        if not isinstance(sequence, list):
+            return jsonify({"error": "invalid sequence"}), 400
+        if not isinstance(virtual_groups, dict):
+            virtual_groups = {}
+        RENDER_ENGINE.run_sequence(sequence, start_index=start_index, virtual_groups=virtual_groups, speed=speed)
+        return jsonify({"ok": True, "count": len(sequence), "start_index": start_index, "speed": speed})
+    except Exception as e:
+        app.logger.exception("[API] playback/run error")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/playback/go", methods=["POST"])
 def api_playback_go():
@@ -612,6 +979,27 @@ def api_playback_go():
         return jsonify({"ok": True})
     except Exception as e:
         app.logger.exception("[API] playback/go error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/playback/control", methods=["POST"])
+def api_playback_control():
+    """Control backend playback state."""
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+
+    payload = request.get_json() or {}
+    action = str(payload.get("action") or "").strip().lower()
+    delta_ms = int(payload.get("delta_ms", 0) or 0)
+    if not action:
+        return jsonify({"error": "missing action"}), 400
+
+    try:
+        if hasattr(RENDER_ENGINE, "playback_control"):
+            RENDER_ENGINE.playback_control(action, delta_ms=delta_ms)
+        return jsonify({"ok": True})
+    except Exception as e:
+        app.logger.exception("[API] playback/control error")
         return jsonify({"error": str(e)}), 500
 
 
@@ -817,13 +1205,13 @@ def api_apply_state():
 
 @app.route("/api/intelligent_effects", methods=["GET"])
 def api_intelligent_effects():
-    """List available intelligent effects (JS files)."""
+    """List available intelligent effect files."""
     return jsonify({"files": list_intelligent_effect_files()})
 
 
 @app.route("/api/intelligent_effects/import", methods=["POST"])
 def api_intelligent_effects_import():
-    """Import one or multiple intelligent effect files (.js)."""
+    """Import one or multiple intelligent effect files (.js/.json)."""
     if "files" not in request.files:
         return jsonify({"error": "no files"}), 400
 
@@ -844,11 +1232,23 @@ def api_intelligent_effects_import():
 
 @app.route("/api/intelligent_effects/<filename>", methods=["GET"])
 def api_intelligent_effects_file(filename: str):
-    """Download a single intelligent effect file (.js)."""
+    """Download a single intelligent effect file (.js/.json)."""
     name = _safe_effect_filename(filename)
     if not name:
         return jsonify({"error": "invalid filename"}), 400
-    return send_from_directory(INTELLIGENT_EFFECTS_DIR, name, mimetype="application/javascript")
+    mime = "application/json" if name.lower().endswith(".json") else "application/javascript"
+    return send_from_directory(INTELLIGENT_EFFECTS_DIR, name, mimetype=mime)
+
+
+@app.route("/api/intelligent_effects/definitions", methods=["GET"])
+def api_intelligent_effects_definitions():
+    if IntelligentFX is None:
+        return jsonify({"effects": []})
+    try:
+        return jsonify({"effects": IntelligentFX.list_effects()})
+    except Exception as e:
+        app.logger.debug(f"[API] intelligent effects list error: {e}")
+        return jsonify({"effects": []})
 
 
 @app.route("/api/effects", methods=["GET"])
@@ -874,6 +1274,12 @@ def setup_engine_callbacks():
     """Setup SSE broadcasting from engine"""
     if RENDER_ENGINE is not None:
         RENDER_ENGINE.add_state_callback(broadcast_state)
+
+
+def set_update_callbacks(status_fn=None, check_fn=None, install_fn=None):
+    UPDATE_CALLBACKS["status"] = status_fn
+    UPDATE_CALLBACKS["check"] = check_fn
+    UPDATE_CALLBACKS["install"] = install_fn
 
 
 if __name__ == "__main__":

@@ -31,6 +31,8 @@ let movementSyncTimer = null;
 let lastMovementChannelsPayload = "";
 let dummySyncTimer = null;
 let lastDummyChannelsPayload = "";
+let rigSyncTimer = null;
+let lastRigPayload = "";
 
 const DUMMY_MIN_CHANNELS = 13;
 
@@ -138,6 +140,52 @@ function scheduleDummySync() {
   dummySyncTimer = setTimeout(() => {
     dummySyncTimer = null;
     syncDummyChannelsToEngine();
+  }, 200);
+}
+
+function buildRigRegisterPayload() {
+  const devices = [];
+  for (const dev of Object.values(rigDevices)) {
+    if (!dev) continue;
+    const attrMap = (typeof getDeviceAttrAbsChannels === "function")
+      ? getDeviceAttrAbsChannels(dev)
+      : {};
+    devices.push({
+      device_id: String(dev.id),
+      universe: parseInt(dev.universe, 10) || 0,
+      attr_map: attrMap || {},
+      address: dev.address ?? 0,
+    });
+  }
+  return { devices };
+}
+
+async function syncRigToBackend(force = false) {
+  const backendActive = typeof window.isBackendMode === "function" && window.isBackendMode();
+  if (!force && !backendActive && !window.backendPlaybackOwned) return;
+  const payload = buildRigRegisterPayload();
+  const body = JSON.stringify(payload);
+  if (body === lastRigPayload) return;
+  lastRigPayload = body;
+  try {
+    await fetch("/api/rig/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  } catch (e) {
+    console.warn("[DMX] rig register failed:", e);
+    if (typeof window.fallbackToUiMode === "function") {
+      window.fallbackToUiMode("Backend unavailable, fallback to UI render mode.");
+    }
+  }
+}
+
+function scheduleRigSync() {
+  if (rigSyncTimer) return;
+  rigSyncTimer = setTimeout(() => {
+    rigSyncTimer = null;
+    syncRigToBackend();
   }, 200);
 }
 
@@ -261,6 +309,7 @@ function addDeviceFromUI() {
   initDeviceDefaults(id, fixtureName);
   scheduleMovementSync();
   scheduleDummySync();
+  scheduleRigSync();
 
   if (addrInput) addrInput.value = "";
 
@@ -284,6 +333,7 @@ async function editDeviceDialog(id) {
   rigDevices[id].address = clamp(parseInt(res.address, 10) || 0, 0, 511);
   scheduleMovementSync();
   scheduleDummySync();
+  scheduleRigSync();
 
   drawRig();
   refreshControllerFromSelection();
@@ -305,6 +355,7 @@ async function deleteSelectedDevices() {
   }
   scheduleMovementSync();
   scheduleDummySync();
+  scheduleRigSync();
 
   // Nettoie les steps de la cue list
   for (const step of (cuesObj.sequence || [])) {
@@ -356,6 +407,7 @@ function rebuildRigFromCueFile() {
   if (!defs || typeof defs !== "object" || !Object.keys(defs).length) {
     scheduleMovementSync();
     scheduleDummySync();
+    scheduleRigSync();
     drawRig();
     refreshControllerFromSelection();
     if (typeof renderActualEffectsPanel === "function") {
@@ -400,6 +452,7 @@ function rebuildRigFromCueFile() {
 
   scheduleMovementSync();
   scheduleDummySync();
+  scheduleRigSync();
   drawRig();
   refreshControllerFromSelection();
   if (typeof renderActualEffectsPanel === "function") {
@@ -1521,4 +1574,13 @@ function bindRigCanvasEvents() {
       editDeviceDialog(hitDev.id);
     }
   };
+}
+
+// Hook render mode changes
+if (typeof window.addRenderModeListener === "function") {
+  window.addRenderModeListener((mode) => {
+    if (mode === "backend") {
+      scheduleRigSync();
+    }
+  });
 }

@@ -5,6 +5,34 @@
   // État des popups actives { panelId: { window, placeholder } }
   const activePopups = {};
 
+  function scheduleCloseFromPopup(panelClass) {
+    setTimeout(() => {
+      try {
+        closePopup(panelClass);
+      } catch (err) {
+        console.warn('[POPUP] close failed:', err);
+      }
+    }, 0);
+  }
+
+  function refreshAppLayout() {
+    try {
+      if (typeof window.applyLayoutSplit === 'function') {
+        window.applyLayoutSplit();
+        return;
+      }
+    } catch (err) {}
+
+    try {
+      if (typeof window.updateRigCanvasSize === 'function') {
+        window.updateRigCanvasSize();
+      }
+      if (typeof window.drawRig === 'function') {
+        window.drawRig();
+      }
+    } catch (err) {}
+  }
+
   // Configuration des panneaux
   const PANEL_CONFIG = {
     'rig-panel': { title: 'DMX - Rig', minWidth: 600, minHeight: 400 },
@@ -101,7 +129,23 @@
           #rig-canvas { width: 100% !important; height: auto !important; }
         </style>
       </head>
-      <body></body>
+      <body>
+        <script>
+          (() => {
+            const panelClass = ${JSON.stringify(panelClass)};
+            const notifyParent = () => {
+              try {
+                if (window.opener && window.opener.popupManager && typeof window.opener.popupManager.closePopup === 'function') {
+                  window.opener.popupManager.closePopup(panelClass);
+                }
+              } catch (err) {}
+            };
+            window.addEventListener('beforeunload', notifyParent);
+            window.addEventListener('pagehide', notifyParent);
+            window.addEventListener('unload', notifyParent);
+          })();
+        </script>
+      </body>
       </html>
     `);
     popup.document.close();
@@ -117,10 +161,31 @@
     }
 
     // Enregistre la popup
-    activePopups[panelClass] = { window: popup, placeholder, panel };
+    const closeHandler = () => scheduleCloseFromPopup(panelClass);
+    const closePoll = window.setInterval(() => {
+      if (!activePopups[panelClass]) {
+        window.clearInterval(closePoll);
+        return;
+      }
+      if (!popup || popup.closed) {
+        window.clearInterval(closePoll);
+        scheduleCloseFromPopup(panelClass);
+      }
+    }, 250);
+
+    activePopups[panelClass] = {
+      window: popup,
+      placeholder,
+      panel,
+      closeHandler,
+      closePoll,
+      closing: false
+    };
 
     // Gère la fermeture de la popup
-    popup.onbeforeunload = () => closePopup(panelClass);
+    popup.onbeforeunload = closeHandler;
+    popup.addEventListener('pagehide', closeHandler);
+    popup.addEventListener('unload', closeHandler);
 
     // Redimensionne le canvas si c'est le rig
     if (panelClass === 'rig-panel') {
@@ -129,6 +194,7 @@
     }
 
     updateMainLayout();
+    requestAnimationFrame(refreshAppLayout);
   }
 
 
@@ -137,7 +203,10 @@
     const data = activePopups[panelClass];
     if (!data) return;
 
-    const { window: popup, placeholder, panel } = data;
+    if (data.closing) return;
+    data.closing = true;
+
+    const { window: popup, placeholder, panel, closeHandler, closePoll } = data;
 
     // Retourne le panneau à la fenêtre principale
     if (placeholder && placeholder.parentNode) {
@@ -155,7 +224,15 @@
     // Ferme la fenêtre popup si encore ouverte
     if (popup && !popup.closed) {
       popup.onbeforeunload = null;
+      try {
+        popup.removeEventListener('pagehide', closeHandler);
+        popup.removeEventListener('unload', closeHandler);
+      } catch (err) {}
       popup.close();
+    }
+
+    if (closePoll) {
+      window.clearInterval(closePoll);
     }
 
     delete activePopups[panelClass];
@@ -166,6 +243,7 @@
     }
 
     updateMainLayout();
+    requestAnimationFrame(refreshAppLayout);
   }
 
   // Redimensionne le canvas du rig dans une popup
@@ -177,8 +255,9 @@
     if (!panel) return;
 
     const rect = panel.getBoundingClientRect();
-    const availableWidth = rect.width - 20;
-    const availableHeight = rect.height - 200;
+    const canvasRect = canvas.getBoundingClientRect();
+    const availableWidth = Math.max(400, Math.floor(rect.width - 20));
+    const availableHeight = Math.max(240, Math.floor(popup.innerHeight - canvasRect.top - 24));
 
     const ratio = 900 / 520;
     let newWidth = availableWidth;
@@ -189,7 +268,13 @@
       newWidth = newHeight * ratio;
     }
 
-    canvas.style.width = Math.max(400, newWidth) + 'px';
+    const targetWidth = Math.max(400, Math.round(newWidth));
+    const targetHeight = Math.max(240, Math.round(newHeight));
+
+    canvas.style.width = targetWidth + 'px';
+    canvas.style.height = targetHeight + 'px';
+    if (canvas.width !== targetWidth) canvas.width = targetWidth;
+    if (canvas.height !== targetHeight) canvas.height = targetHeight;
 
     if (typeof drawRig === 'function') {
       drawRig();

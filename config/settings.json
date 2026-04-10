@@ -1,26 +1,48 @@
 {
-  "dmx_target_ip": "192.168.1.74",
+  "dmx_target_ip": "127.0.0.1",
   "sync_video": {
     "enabled": false,
     "base_url": "http://127.0.0.1:3000",
     "token": ""
   },
+  "ctc": {
+    "enabled": true,
+    "keybind": "KeyC",
+    "capture_release": true
+  },
+  "whats_new": {
+    "show_on_startup": true,
+    "last_seen_version": "0.3.0"
+  },
+  "auto_update": {
+    "check_on_startup": true
+  },
+  "ui": {
+    "language": "en"
+  },
   "dmx_runtime": {
+    "render_mode": "ui",
+    "playback_clock_mode": "timeline",
+    "playback_engine_hz": 120.0,
+    "playback_ui_fps": 30.0,
     "max_send_hz": 120.0,
     "heartbeat_sec": 1.0,
     "artnet_diff": false,
     "artnet_heartbeat_full": false,
     "dummy_enabled": false,
-    "smooth_step": 8,
+    "smooth_step": 32,
+    "smooth_predict": false,
+    "smooth_disable": true,
     "deadband": 0,
     "quantize": 1,
     "continuous": false,
     "ui_force_full_send": false,
     "log_ui": false,
     "log_ui_full": false,
-    "log_dmx": true,
-    "log_dmx_full": true,
-    "log_artnet": true,
-    "log_artnet_full": true
+    "log_dmx": false,
+    "log_dmx_full": false,
+    "log_artnet": false,
+    "log_artnet_full": false,
+    "profile_runner": false
   }
 }
