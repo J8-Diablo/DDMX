@@ -211,9 +211,12 @@ class MusicBrain:
                 return RELEASE
             return DROP  # still peaking
 
-        # Anticipation: rising energy approaching a phrase boundary.
-        if (not self._soft) and building and bars_to_end <= self.build_lead_bars \
-                and level >= 2 and rms_ratio >= 1.02:
+        # Anticipation: enter BUILD either when the grid flags an energy rise
+        # approaching a phrase boundary, OR when the audio itself is clearly
+        # ramping (a riser/snare-roll). The latter keeps anticipation working
+        # even when the detected phrase grid isn't aligned to the song.
+        ramping = rms_ratio >= 1.08 and level >= 3
+        if (not self._soft) and (building or ramping) and level >= 2 and rms_ratio >= 1.0:
             return BUILD
 
         # Stay in RELEASE briefly to let the peak breathe out.

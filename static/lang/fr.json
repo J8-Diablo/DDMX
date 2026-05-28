@@ -368,5 +368,12 @@
   "project.loaded": "Projet chargé",
   "project.loadFailed": "Échec du chargement",
   "project.imported": "Projet importé",
-  "project.importFailed": "Échec de l'import"
+  "project.importFailed": "Échec de l'import",
+  "autolight.guardrails": "Garde-fous",
+  "autolight.ceiling": "Plafond d'intensité",
+  "autolight.contrast": "Contraste",
+  "autolight.smallVenue": "Petit lieu",
+  "autolight.allowStrobe": "Stroboscope",
+  "autolight.metadata": "Métadonnées en ligne",
+  "autolight.phrase": "phrase"
 }

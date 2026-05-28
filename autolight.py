@@ -14,6 +14,10 @@ from autolight_effects import EffectContext, EffectScheduler, all_mood_tags, lis
 from autolight_topology import TopologySnapshot, compute_topology
 from autolight_training import TrainingService
 from music_sources import MusicContext
+# AutoLight 2.0 pipeline (see AUTOLIGHT-REWRITE-DESIGN.md).
+from autolight_beatgrid import BeatGrid
+from autolight_brain import MusicBrain
+from autolight_show import ShowRenderer
 
 
 log = logging.getLogger(__name__)
@@ -124,6 +128,20 @@ DEFAULT_AUTOLIGHT_SETTINGS: Dict[str, Any] = {
     # director runs purely on live audio. UI doesn't expose a toggle in
     # this milestone — set via API only.
     "structural_prior_mode": "auto",
+    # --- AutoLight 2.0 (DJ engine) controls ----------------------------------
+    # Global cap on overall intensity (0.05–1.0). The mini guardrails panel
+    # exposes this for live correction.
+    "intensity_ceiling": 1.0,
+    # How hard calm↔peak are spread (0–1). User default: very contrasted.
+    "contrast": 1.0,
+    # Sober preset for small venues (reduces movement + intensity).
+    "small_venue": False,
+    # Global strobe permission (the brain still only strobes on build/drop).
+    "allow_strobe": True,
+    # Online metadata lookup (genre/BPM/key) via Deezer/MusicBrainz/GetSongBPM.
+    "metadata_enabled": True,
+    # Optional GetSongBPM API key (opt-in source; keyless sources work without).
+    "getsongbpm_key": "",
 }
 
 _ALLOWED_RENDER_MODES = {"director", "effects", "off"}
@@ -294,6 +312,14 @@ def normalize_autolight_settings(payload: Any, current: Optional[Dict[str, Any]]
     out["memory_persistence"] = bool(out.get("memory_persistence", False))
     spm = str(out.get("structural_prior_mode") or "auto").strip().lower()
     out["structural_prior_mode"] = spm if spm in _ALLOWED_STRUCTURAL_PRIOR_MODES else "auto"
+
+    # AutoLight 2.0 (DJ engine) controls.
+    out["intensity_ceiling"] = _clamp_float(out.get("intensity_ceiling"), 0.05, 1.0, 1.0)
+    out["contrast"] = _clamp_float(out.get("contrast"), 0.0, 1.0, 1.0)
+    out["small_venue"] = bool(out.get("small_venue", False))
+    out["allow_strobe"] = bool(out.get("allow_strobe", True))
+    out["metadata_enabled"] = bool(out.get("metadata_enabled", True))
+    out["getsongbpm_key"] = str(out.get("getsongbpm_key") or "").strip()
     return out
 
 
@@ -528,6 +554,15 @@ class _AutoLightRenderer:
         # analyzer and engine reference; the active one is picked per frame.
         self._director_overlay = DirectorOverlay(audio, service)
 
+        # AutoLight 2.0 pipeline: beat-grid → brain → show. This is the active
+        # renderer for render_mode "director" (and now "effects" too); the
+        # legacy scene/effect engine below is retained only as dead fallback
+        # pending removal.
+        self._grid = BeatGrid()
+        self._brain = MusicBrain()
+        self._show = ShowRenderer()
+        self._dj_diag: Dict[str, Any] = {}
+
         # Scene-engine state.
         self._committed_scene = "SILENT"
         self._pending_scene = "SILENT"
@@ -561,6 +596,11 @@ class _AutoLightRenderer:
             self._director_overlay.on_rig_changed(devices)
         except Exception as exc:
             log.debug("director on_rig_changed failed: %s", exc)
+        # AutoLight 2.0 show renderer needs the role assignment + spatial order.
+        try:
+            self._show.on_rig_changed(devices, self._topology)
+        except Exception as exc:
+            log.debug("show on_rig_changed failed: %s", exc)
 
     def last_snapshot(self) -> Dict[str, Any]:
         topo = self._topology
@@ -617,6 +657,7 @@ class _AutoLightRenderer:
                 "history": [{"ts": t, "name": n} for t, n in sched.history[-10:]],
             },
             "director": self._director_overlay.last_snapshot(),
+            "dj": dict(self._dj_diag),
         }
 
     def __call__(self, universes: Dict[int, List[int]], now: float) -> None:
@@ -654,10 +695,10 @@ class _AutoLightRenderer:
             self._diag_last_frame_ts = int(time.time() * 1000)
             return
 
-        # Director pipeline: per-fixture agents, no scene engine, no effect
-        # roulette. Falls through to the legacy code path only when the user
-        # has selected render_mode="effects".
-        if render_mode == "director":
+        # AutoLight 2.0 pipeline (beat-grid → brain → show) is now the active
+        # renderer for both "director" and the formerly-legacy "effects" mode.
+        # The old scene/effect engine below is retained as dead fallback only.
+        if render_mode in ("director", "effects"):
             if not enabled or mode == "off" or not audio.get("available"):
                 self._release_owned_channels(universes)
                 try:
@@ -671,15 +712,7 @@ class _AutoLightRenderer:
                 self._diag_last_frame_mode = mode
                 self._diag_last_frame_ts = int(time.time() * 1000)
                 return
-            # Sync the director's memory toggle with current settings.
-            self._director_overlay.set_memory_enabled(bool(settings.get("memory_persistence")))
-            # Track metadata helps the director recognise replays.
-            track_meta = self._service._media_probe_best_track()
-            wrote = self._director_overlay.tick(universes, now, mode, track_meta=track_meta)
-            self._diag_last_frame_wrote = wrote
-            self._diag_last_frame_mode = mode
-            self._diag_last_frame_ts = int(time.time() * 1000)
-            self._diag_skipped_by_fade = 0
+            self._render_dj(universes, now, settings, audio, mode)
             return
 
         if not enabled or mode == "off" or not audio.get("available"):
@@ -995,6 +1028,110 @@ class _AutoLightRenderer:
         self._diag_last_frame_ts = int(time.time() * 1000)
         self._diag_skipped_by_fade = skipped_by_fade
 
+    def _render_dj(self, universes: Dict[int, List[int]], now: float,
+                   settings: Dict[str, Any], audio: Dict[str, Any], mode: str) -> None:
+        """AutoLight 2.0 frame: beat-grid → brain → show → DMX writes."""
+        # Guardrails / behaviour from settings.
+        self._brain.configure(
+            intensity_ceiling=settings.get("intensity_ceiling", 1.0),
+            small_venue=settings.get("small_venue", False),
+            contrast=settings.get("contrast", 1.0),
+            allow_strobe_global=settings.get("allow_strobe", True),
+        )
+
+        # Metadata (genre / official BPM / key) feeds the brain + grid.
+        meta: Optional[Dict[str, Any]] = None
+        try:
+            mobj = self._service._music.metadata_for_current()
+        except Exception:
+            mobj = None
+        if mobj is not None:
+            meta = {"genre": mobj.genre, "musical_key": mobj.musical_key}
+            if mobj.bpm:
+                audio = dict(audio)
+                audio["db_bpm"] = mobj.bpm
+        genre_preset = str(settings.get("genre_preset") or "auto").lower()
+        if genre_preset and genre_preset != "auto":
+            self._brain.set_genre(genre_preset)
+
+        grid_state = self._grid.observe(now, audio)
+        directive = self._brain.decide(now, grid_state, audio, meta)
+
+        devices = self._service._engine_devices_snapshot_locked()
+        self._diag_devices_seen = len(devices)
+        self._diag_devices_controllable = sum(
+            1 for d in devices.values()
+            if (getattr(d, "capabilities", None) or {}).get("has_dimmer")
+            or (getattr(d, "capabilities", None) or {}).get("has_color")
+            or (getattr(d, "capabilities", None) or {}).get("has_movement")
+        )
+
+        writes = self._show.render(now, directive, devices, self._topology)
+
+        # Fixtures currently under a manual cue fade keep manual priority.
+        engine = getattr(self._service, "_engine", None)
+        skip: Dict[int, set] = {}
+        write_enabled = mode in ("live", "assist")
+        if engine is not None and write_enabled:
+            for dev_id, dev in devices.items():
+                try:
+                    if engine.has_active_fade_for(dev_id) or self._service.is_identifying(dev_id):
+                        u = int(getattr(dev, "universe", 0) or 0)
+                        caps = getattr(dev, "capabilities", None) or {}
+                        s = skip.setdefault(u, set())
+                        for role in ("dimmer_channel", "red_channel", "green_channel",
+                                     "blue_channel", "pan_channel", "tilt_channel"):
+                            c = caps.get(role)
+                            if c is not None:
+                                s.add(int(c))
+                except Exception:
+                    pass
+
+        previously_owned = {uni: set(chs) for uni, chs in self._owned_channels.items()}
+        self._owned_channels = {}
+        wrote = 0
+        for uni_num, chans in writes.items():
+            uni = universes.get(uni_num)
+            if uni is None:
+                continue
+            owned = self._owned_channels.setdefault(uni_num, set())
+            skip_set = skip.get(uni_num, set())
+            for ch, val in chans.items():
+                if not (0 <= ch < len(uni)) or ch in skip_set:
+                    continue
+                if write_enabled:
+                    uni[ch] = val
+                owned.add(ch)
+                wrote += 1
+
+        # Zero channels we owned last frame but no longer drive.
+        if previously_owned:
+            for uni_num, prev in previously_owned.items():
+                uni = universes.get(uni_num)
+                if uni is None:
+                    continue
+                cur = self._owned_channels.get(uni_num, set())
+                for ch in prev - cur:
+                    if 0 <= ch < len(uni):
+                        uni[ch] = 0
+
+        # Diagnostics for the "DJ view" UI (étape 6).
+        self._dj_diag = {
+            "grid": grid_state,
+            "intent": directive.intent,
+            "energy": round(directive.energy, 3),
+            "mode": directive.mode,
+            "build_progress": directive.build_progress,
+            "bars_to_drop": directive.bars_to_drop,
+            "allow_strobe": directive.allow_strobe,
+            "palette": directive.palette,
+            "guardrails": directive.guardrails,
+        }
+        self._diag_last_frame_wrote = wrote
+        self._diag_last_frame_mode = mode
+        self._diag_last_frame_ts = int(time.time() * 1000)
+        self._diag_skipped_by_fade = sum(len(s) for s in skip.values())
+
     def _release_owned_channels(self, universes: Dict[int, List[int]]) -> None:
         if not self._owned_channels:
             return
@@ -1057,6 +1194,8 @@ class AutoLightService:
         self._renderer = _AutoLightRenderer(self._audio, self)
         self._music = MusicContext()
         self._music.set_soundcloud_client_id(self._settings.get("soundcloud_client_id") or None)
+        self._music.set_getsongbpm_key(self._settings.get("getsongbpm_key") or None)
+        self._music.set_metadata_enabled(bool(self._settings.get("metadata_enabled", True)))
         # Training service: library + real-time satisfaction signal pipeline.
         # Uses a callable to fetch the live director instead of capturing a
         # reference, so we never end up writing into a stale director after
@@ -1121,6 +1260,12 @@ class AutoLightService:
             director = self._renderer._director_overlay._director
             director.set_structural_prior_mode(self._settings.get("structural_prior_mode") or "auto")
             director.set_genre_preset(self._settings.get("genre_preset") or "auto")
+        except Exception:
+            pass
+        # AutoLight 2.0: online metadata sources (genre/BPM/key).
+        try:
+            self._music.set_metadata_enabled(bool(self._settings.get("metadata_enabled", True)))
+            self._music.set_getsongbpm_key(self._settings.get("getsongbpm_key") or None)
         except Exception:
             pass
 
@@ -1262,6 +1407,11 @@ class AutoLightService:
                 self._music.set_soundcloud_client_id(new_sc or None)
             except Exception:
                 pass
+        try:
+            self._music.set_getsongbpm_key(result.get("getsongbpm_key") or None)
+            self._music.set_metadata_enabled(bool(result.get("metadata_enabled", True)))
+        except Exception:
+            pass
         try:
             self._renderer._effect_scheduler.set_config(result.get("effect_config") or {})
         except Exception:
@@ -1434,6 +1584,11 @@ class AutoLightService:
                 next_settings["memory_persistence"] = bool(payload.get("memory_persistence"))
             if "structural_prior_mode" in payload:
                 next_settings["structural_prior_mode"] = payload.get("structural_prior_mode")
+            # AutoLight 2.0 guardrails / DJ-engine controls (mini-panel).
+            for key in ("intensity_ceiling", "contrast", "small_venue",
+                        "allow_strobe", "metadata_enabled", "getsongbpm_key"):
+                if key in payload:
+                    next_settings[key] = payload.get(key)
             self._settings = normalize_autolight_settings(next_settings, self._settings)
             self._apply_all_runtime_settings_locked()
             self._status_cache = self._build_status(self._discover_players(), None)
@@ -1656,6 +1811,7 @@ class AutoLightService:
                 "topology": render_snap.get("topology") or {},
                 "effect": render_snap.get("effect") or {},
                 "director": render_snap.get("director") or {},
+                "dj": render_snap.get("dj") or {},
                 "render_mode": str(settings.get("render_mode") or "director"),
                 "memory_persistence": bool(settings.get("memory_persistence", False)),
                 "engine_attached": self._engine is not None,

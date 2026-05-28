@@ -368,5 +368,12 @@
   "project.loaded": "Project loaded",
   "project.loadFailed": "Load failed",
   "project.imported": "Project imported",
-  "project.importFailed": "Import failed"
+  "project.importFailed": "Import failed",
+  "autolight.guardrails": "Guardrails",
+  "autolight.ceiling": "Intensity ceiling",
+  "autolight.contrast": "Contrast",
+  "autolight.smallVenue": "Small venue",
+  "autolight.allowStrobe": "Strobe",
+  "autolight.metadata": "Online metadata",
+  "autolight.phrase": "phrase"
 }

@@ -312,5 +312,12 @@
   "project.loaded": "Proyecto cargado",
   "project.loadFailed": "Error al cargar",
   "project.imported": "Proyecto importado",
-  "project.importFailed": "Error al importar"
+  "project.importFailed": "Error al importar",
+  "autolight.guardrails": "Limites",
+  "autolight.ceiling": "Tope de intensidad",
+  "autolight.contrast": "Contraste",
+  "autolight.smallVenue": "Sala pequeña",
+  "autolight.allowStrobe": "Estrobo",
+  "autolight.metadata": "Metadatos en línea",
+  "autolight.phrase": "frase"
 }

@@ -312,5 +312,12 @@
   "project.loaded": "Project geladen",
   "project.loadFailed": "Laden mislukt",
   "project.imported": "Project geïmporteerd",
-  "project.importFailed": "Importeren mislukt"
+  "project.importFailed": "Importeren mislukt",
+  "autolight.guardrails": "Beveiligingen",
+  "autolight.ceiling": "Intensiteitsplafond",
+  "autolight.contrast": "Contrast",
+  "autolight.smallVenue": "Kleine zaal",
+  "autolight.allowStrobe": "Stroboscoop",
+  "autolight.metadata": "Online metadata",
+  "autolight.phrase": "frase"
 }

@@ -3665,3 +3665,47 @@ input[type="range"].vertical.tilt-slider {
   padding: 4px 10px 8px;
   font-size: 0.82rem;
 }
+
+/* ============================================================
+   AutoLight 2.0 — DJ view + guardrails mini-panel
+   ============================================================ */
+.autolight-dj {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.autolight-dj.is-empty { opacity: 0.45; }
+.dj-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.86rem; }
+.dj-bpm b { font-size: 1.05rem; }
+.dj-counter { opacity: 0.85; }
+.dj-pill {
+  font-size: 0.72rem; padding: 1px 7px; border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1); opacity: 0.7;
+}
+.dj-pill.is-locked { background: rgba(110, 231, 168, 0.22); color: #6ee7a8; opacity: 1; }
+.dj-beat { color: rgba(255, 255, 255, 0.25); font-size: 1.1rem; transition: none; }
+.dj-beat.pulse { animation: dj-beat-pulse 0.18s ease-out; }
+.dj-beat.is-downbeat.pulse { animation: dj-downbeat-pulse 0.22s ease-out; }
+@keyframes dj-beat-pulse { from { color: #6ea8fe; transform: scale(1.5); } to { color: rgba(255,255,255,0.25); transform: scale(1); } }
+@keyframes dj-downbeat-pulse { from { color: #ffd166; transform: scale(1.9); } to { color: rgba(255,255,255,0.25); transform: scale(1); } }
+.dj-intent {
+  font-weight: 700; letter-spacing: 0.06em; font-size: 0.8rem;
+  padding: 2px 8px; border-radius: 6px; background: rgba(255,255,255,0.08);
+}
+.dj-intent-calm, .dj-intent-silence { color: #7aa2f7; }
+.dj-intent-groove { color: #9ece6a; }
+.dj-intent-build { color: #ffd166; }
+.dj-intent-drop { color: #f7768e; background: rgba(247,118,142,0.18); }
+.dj-intent-release { color: #bb9af7; }
+.dj-drop { font-size: 0.78rem; }
+.dj-build { flex: 1; min-width: 60px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
+.dj-build-fill { height: 100%; width: 0; background: linear-gradient(90deg, #ffd166, #f7768e); transition: width 0.1s linear; }
+.autolight-guardrails { margin: 4px 0; font-size: 0.85rem; }
+.autolight-guardrails summary { cursor: pointer; opacity: 0.8; }
+.autolight-guardrails .autolight-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.autolight-guardrails input[type="range"] { flex: 1; }

@@ -551,6 +551,41 @@
         <div id="autolight-effect-line" class="muted autolight-diag">Effect: — | BPM: —</div>
         <div id="autolight-music-line" class="muted autolight-diag">Music DB: —</div>
       </details>
+
+      <!-- AutoLight 2.0 — DJ view: live beat-grid + intent readout -->
+      <div id="autolight-dj" class="autolight-dj">
+        <div class="dj-row">
+          <span class="dj-bpm"><b id="dj-bpm">--</b> BPM</span>
+          <span id="dj-lock" class="dj-pill">—</span>
+          <span class="dj-counter">bar <b id="dj-bar">–</b> · <span data-i18n="autolight.phrase">phrase</span> <b id="dj-phrase">–</b>/<span id="dj-phrase-len">16</span></span>
+          <span id="dj-beat" class="dj-beat" title="Beat">●</span>
+        </div>
+        <div class="dj-row">
+          <span id="dj-intent" class="dj-intent">—</span>
+          <span id="dj-drop" class="dj-drop muted"></span>
+          <div class="dj-build" title="Build progress"><div id="dj-build-fill" class="dj-build-fill"></div></div>
+        </div>
+      </div>
+
+      <!-- AutoLight 2.0 — guardrails mini-panel (live correction) -->
+      <details class="autolight-guardrails">
+        <summary data-i18n="autolight.guardrails">Guardrails</summary>
+        <div class="autolight-row">
+          <label class="autolight-audio-label" for="dj-ceiling" data-i18n="autolight.ceiling">Intensity ceiling</label>
+          <input id="dj-ceiling" type="range" min="5" max="100" step="5" value="100">
+          <span id="dj-ceiling-val" class="muted">100%</span>
+        </div>
+        <div class="autolight-row">
+          <label class="autolight-audio-label" for="dj-contrast" data-i18n="autolight.contrast">Contrast</label>
+          <input id="dj-contrast" type="range" min="0" max="100" step="5" value="100">
+          <span id="dj-contrast-val" class="muted">100%</span>
+        </div>
+        <div class="autolight-row">
+          <label class="autolight-toggle"><input id="dj-small-venue" type="checkbox"><span data-i18n="autolight.smallVenue">Small venue</span></label>
+          <label class="autolight-toggle"><input id="dj-allow-strobe" type="checkbox" checked><span data-i18n="autolight.allowStrobe">Strobe</span></label>
+          <label class="autolight-toggle"><input id="dj-metadata" type="checkbox" checked><span data-i18n="autolight.metadata">Online metadata</span></label>
+        </div>
+      </details>
       <div class="autolight-row autolight-sc-row">
         <label for="autolight-soundcloud-client-id" class="autolight-audio-label">SoundCloud client_id</label>
         <input id="autolight-soundcloud-client-id" type="text" placeholder="paste from devtools" autocomplete="off" spellcheck="false">

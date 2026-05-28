@@ -312,5 +312,12 @@
   "project.loaded": "Projekt geladen",
   "project.loadFailed": "Laden fehlgeschlagen",
   "project.imported": "Projekt importiert",
-  "project.importFailed": "Import fehlgeschlagen"
+  "project.importFailed": "Import fehlgeschlagen",
+  "autolight.guardrails": "Schutzgrenzen",
+  "autolight.ceiling": "Intensitätsgrenze",
+  "autolight.contrast": "Kontrast",
+  "autolight.smallVenue": "Kleiner Saal",
+  "autolight.allowStrobe": "Stroboskop",
+  "autolight.metadata": "Online-Metadaten",
+  "autolight.phrase": "Phrase"
 }

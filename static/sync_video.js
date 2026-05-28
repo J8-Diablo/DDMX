@@ -664,6 +664,10 @@
       : ((dmxSettingsCache && dmxSettingsCache.autolight_status) || autolightStatusCache || {});
     autolightStatusCache = status;
 
+    // AutoLight 2.0 DJ view (beat-grid + intent), if the new pipeline is live.
+    try { updateAutolightDjView((status.render && status.render.dj) || {}); } catch (e) {}
+    try { syncGuardrailControls((dmxSettingsCache && dmxSettingsCache.autolight) || {}); } catch (e) {}
+
     const badge = document.getElementById("autolight-status-badge");
     const summaryLine = document.getElementById("autolight-summary-line");
     const trackLine = document.getElementById("autolight-track-line");
@@ -957,6 +961,88 @@
     { key: "bpm_min",              label: "BPM search min",        min: 30,    max: 120,   step: 1,     fixed: 0 },
     { key: "bpm_max",              label: "BPM search max",        min: 120,   max: 300,   step: 1,     fixed: 0 },
   ];
+
+  // Reflect saved guardrail settings into the mini-panel controls. Skips any
+  // control the user is currently dragging/focusing so we never fight input.
+  function syncGuardrailControls(s) {
+    s = s || {};
+    const focused = document.activeElement;
+    const setRange = (id, valId, ratio) => {
+      const el = document.getElementById(id);
+      if (!el || el === focused) return;
+      const pct = Math.round((Number(ratio)) * 100);
+      el.value = pct;
+      const lbl = document.getElementById(valId);
+      if (lbl) lbl.textContent = `${pct}%`;
+    };
+    const setCheck = (id, v) => {
+      const el = document.getElementById(id);
+      if (el && el !== focused) el.checked = Boolean(v);
+    };
+    if (s.intensity_ceiling != null) setRange("dj-ceiling", "dj-ceiling-val", s.intensity_ceiling);
+    if (s.contrast != null) setRange("dj-contrast", "dj-contrast-val", s.contrast);
+    setCheck("dj-small-venue", s.small_venue);
+    if (s.allow_strobe != null) setCheck("dj-allow-strobe", s.allow_strobe);
+    if (s.metadata_enabled != null) setCheck("dj-metadata", s.metadata_enabled);
+  }
+
+  // AutoLight 2.0 "DJ view": render the beat-grid + intent readout from the
+  // `render.dj` diagnostics block. Degrades quietly when the field is absent
+  // (legacy pipeline / no audio).
+  let _djLastBeat = -1;
+  function updateAutolightDjView(dj) {
+    const wrap = document.getElementById("autolight-dj");
+    if (!wrap) return;
+    dj = dj || {};
+    const grid = dj.grid || {};
+    const has = Object.keys(grid).length > 0 || dj.intent;
+    wrap.classList.toggle("is-empty", !has);
+
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    const bpm = Number(grid.bpm || 0);
+    setText("dj-bpm", bpm > 0 ? bpm.toFixed(1) : "--");
+    setText("dj-bar", grid.bar_index != null ? grid.bar_index : "–");
+    setText("dj-phrase", grid.phrase_index != null ? grid.phrase_index : "–");
+    setText("dj-phrase-len", grid.phrase_len || 16);
+
+    const lock = document.getElementById("dj-lock");
+    if (lock) {
+      const locked = Boolean(grid.locked);
+      const conf = Math.round((Number(grid.confidence) || 0) * 100);
+      lock.textContent = locked ? `locked ${conf}%` : "unlocked";
+      lock.classList.toggle("is-locked", locked);
+    }
+
+    const intentEl = document.getElementById("dj-intent");
+    if (intentEl) {
+      const intent = String(dj.intent || "—");
+      intentEl.textContent = intent.toUpperCase();
+      intentEl.className = "dj-intent dj-intent-" + intent;
+    }
+
+    const drop = document.getElementById("dj-drop");
+    if (drop) {
+      const btd = Number(dj.bars_to_drop);
+      drop.textContent = (dj.intent === "build" && btd >= 0)
+        ? `drop in ${btd} bar${btd === 1 ? "" : "s"}`
+        : "";
+    }
+
+    const buildFill = document.getElementById("dj-build-fill");
+    if (buildFill) {
+      buildFill.style.width = `${Math.round((Number(dj.build_progress) || 0) * 100)}%`;
+    }
+
+    // Flash the beat dot on each new beat.
+    const beat = document.getElementById("dj-beat");
+    if (beat && grid.beat_index != null && grid.beat_index !== _djLastBeat) {
+      _djLastBeat = grid.beat_index;
+      beat.classList.toggle("is-downbeat", Boolean(grid.is_downbeat));
+      beat.classList.remove("pulse");
+      void beat.offsetWidth;  // restart CSS animation
+      beat.classList.add("pulse");
+    }
+  }
 
   // Audio-reactive visuals (meters + beat indicator + drum pills + spectrum).
   // Called from both the slow full-status poll and the fast audio-only poll.
@@ -3909,6 +3995,46 @@
       memoryToggle.addEventListener("blur", () => { memoryToggle.dataset.userInteracting = "0"; });
       memoryToggle.addEventListener("change", () => {
         controlAutolight({ memory_persistence: Boolean(memoryToggle.checked) });
+      });
+    }
+
+    // AutoLight 2.0 guardrails mini-panel.
+    const djCeiling = document.getElementById("dj-ceiling");
+    const djCeilingVal = document.getElementById("dj-ceiling-val");
+    if (djCeiling) {
+      djCeiling.addEventListener("input", () => {
+        if (djCeilingVal) djCeilingVal.textContent = `${djCeiling.value}%`;
+      });
+      djCeiling.addEventListener("change", () => {
+        controlAutolight({ intensity_ceiling: (parseInt(djCeiling.value, 10) || 100) / 100 });
+      });
+    }
+    const djContrast = document.getElementById("dj-contrast");
+    const djContrastVal = document.getElementById("dj-contrast-val");
+    if (djContrast) {
+      djContrast.addEventListener("input", () => {
+        if (djContrastVal) djContrastVal.textContent = `${djContrast.value}%`;
+      });
+      djContrast.addEventListener("change", () => {
+        controlAutolight({ contrast: (parseInt(djContrast.value, 10) || 0) / 100 });
+      });
+    }
+    const djSmallVenue = document.getElementById("dj-small-venue");
+    if (djSmallVenue) {
+      djSmallVenue.addEventListener("change", () => {
+        controlAutolight({ small_venue: Boolean(djSmallVenue.checked) });
+      });
+    }
+    const djAllowStrobe = document.getElementById("dj-allow-strobe");
+    if (djAllowStrobe) {
+      djAllowStrobe.addEventListener("change", () => {
+        controlAutolight({ allow_strobe: Boolean(djAllowStrobe.checked) });
+      });
+    }
+    const djMetadata = document.getElementById("dj-metadata");
+    if (djMetadata) {
+      djMetadata.addEventListener("change", () => {
+        controlAutolight({ metadata_enabled: Boolean(djMetadata.checked) });
       });
     }
 
