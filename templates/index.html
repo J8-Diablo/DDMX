@@ -30,6 +30,27 @@
 <header class="topbar">
   <div class="topbar-left">
     <h1 data-i18n="header.title">DMX Controller ArtNet Engine UI</h1>
+    <div class="project-menu" id="project-menu">
+      <button id="project-menu-btn" class="secondary" type="button">
+        <span data-i18n="project.menu">Project</span>
+        <span id="project-current-label" class="project-current"></span>
+        <span class="project-caret" aria-hidden="true">▾</span>
+      </button>
+      <div id="project-menu-dropdown" class="project-dropdown hidden">
+        <button class="project-item" type="button" data-project-action="new" data-i18n="project.new">New blank project</button>
+        <div class="project-sep"></div>
+        <div class="project-group-label" data-i18n="project.load">Load</div>
+        <div id="project-load-list" class="project-sublist"></div>
+        <div class="project-group-label" data-i18n="project.recent">Recent</div>
+        <div id="project-recent-list" class="project-sublist"></div>
+        <div class="project-sep"></div>
+        <button class="project-item" type="button" data-project-action="save" data-i18n="project.save">Save</button>
+        <button class="project-item" type="button" data-project-action="saveas" data-i18n="project.saveAs">Save as…</button>
+        <button class="project-item" type="button" data-project-action="import" data-i18n="project.import">Import…</button>
+        <button class="project-item" type="button" data-project-action="export" data-i18n="project.export">Export…</button>
+      </div>
+      <input type="file" id="project-import-input" accept=".ddmxproj,application/json,.json" hidden />
+    </div>
   </div>
 
   <div class="topbar-right">
@@ -113,6 +134,13 @@
 
       <button id="add-fixture-btn" data-i18n="rig.addDevice">Add device</button>
       <button id="delete-device-btn" class="danger" data-i18n="rig.deleteSelected">Delete selected</button>
+    </div>
+
+    <!-- DYNAMIC SELECT-BY-TYPE BUTTONS (one per distinct fixture template
+         present in the rig). Populated by renderRigTypeButtons() in rig.js. -->
+    <div class="rig-type-bar" id="rig-type-bar" hidden>
+      <span class="muted" data-i18n="rig.selectByType">Select by type:</span>
+      <div class="rig-type-buttons" id="rig-type-buttons"></div>
     </div>
 
     <!-- NOUVELLE BARRE DE TRI DE LA SÉLECTION -->
@@ -236,6 +264,331 @@
       </div>
     </div>
 
+    <div id="autolight-topology-modal" class="autolight-modal" aria-hidden="true">
+      <div class="autolight-modal-backdrop" data-modal-close="1"></div>
+      <div class="autolight-modal-panel" role="dialog" aria-labelledby="autolight-topology-title">
+        <div class="autolight-modal-header">
+          <h3 id="autolight-topology-title">Rig topology</h3>
+          <div class="autolight-modal-actions">
+            <input id="autolight-topology-search" type="search" placeholder="Filter by id / name / fixture…" autocomplete="off">
+            <button id="autolight-topology-close" class="secondary" type="button" data-modal-close="1">Close</button>
+          </div>
+        </div>
+        <div class="autolight-modal-hint">
+          Each device as the backend sees it. <b>Side</b> is mirror assignment
+          (left / right / —). Click a row's <b>ID</b> to flash that fixture
+          white for 2 s — compare with your stage visualizer to confirm.
+          Click any column header to sort.
+        </div>
+        <div class="autolight-modal-body">
+          <table class="autolight-topology-table" id="autolight-topology-table">
+            <thead>
+              <tr>
+                <th data-sort="device_id">ID</th>
+                <th data-sort="cname">Name</th>
+                <th data-sort="fixture">Fixture</th>
+                <th data-sort="universe">U</th>
+                <th data-sort="address">Addr</th>
+                <th data-sort="x" class="num">x</th>
+                <th data-sort="y" class="num">y</th>
+                <th data-sort="side">Side</th>
+                <th data-sort="pair_id">Pair</th>
+                <th data-sort="cluster">Cluster</th>
+                <th>Caps</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="autolight-tuning-modal" class="autolight-modal" aria-hidden="true">
+      <div class="autolight-modal-backdrop" data-modal-close="1"></div>
+      <div class="autolight-modal-panel" role="dialog" aria-labelledby="autolight-tuning-title">
+        <div class="autolight-modal-header">
+          <h3 id="autolight-tuning-title">Audio tuning</h3>
+          <div class="autolight-modal-actions">
+            <button id="autolight-tuning-reset" class="secondary" type="button">Reset to defaults</button>
+            <button id="autolight-tuning-close" class="secondary" type="button" data-modal-close="1">Close</button>
+            <button id="autolight-tuning-save" class="primary" type="button">Save</button>
+          </div>
+        </div>
+        <div class="autolight-modal-hint">
+          Thresholds and band edges tune the beat detector and scene classifier.
+          Values update live as you drag. Use <b>Calibrate 30s</b> on the main
+          panel to auto-set most of them from observed music.
+        </div>
+        <div class="autolight-modal-body">
+          <div id="autolight-tuning-form" class="autolight-tuning-form"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="autolight-training-modal" class="autolight-modal" aria-hidden="true">
+      <div class="autolight-modal-backdrop" data-modal-close="1"></div>
+      <div class="autolight-modal-panel autolight-training-panel" role="dialog" aria-labelledby="autolight-training-title">
+        <div class="autolight-modal-header">
+          <h3 id="autolight-training-title">AutoLight training</h3>
+          <div class="autolight-modal-actions">
+            <button id="autolight-training-close" class="secondary" type="button" data-modal-close="1">Close</button>
+          </div>
+        </div>
+        <div class="autolight-modal-hint">
+          Pick a folder of audio files (or individual tracks) for the AI to learn from. While "Training" is on, drag the satisfaction slider in real time as the rig reacts — the AI saves your feedback per track and uses it on later listens. Playback can come from the app (via "Play" buttons) or from any external player; the AI listens through the system audio either way.
+        </div>
+
+        <div class="autolight-modal-body autolight-training-body">
+
+          <section class="autolight-training-section">
+            <h4>Library</h4>
+            <div class="autolight-training-row">
+              <input id="autolight-training-path-input" type="text" placeholder="C:\Users\you\Music\EDM" autocomplete="off" spellcheck="false" />
+              <label class="autolight-toggle" title="When checked, sub-folders are walked recursively.">
+                <input id="autolight-training-recursive-toggle" type="checkbox" checked>
+                <span>Recursive</span>
+              </label>
+              <button id="autolight-training-scan" class="primary" type="button">Add</button>
+              <button id="autolight-training-clear" class="secondary" type="button">Clear library</button>
+            </div>
+            <div id="autolight-training-library-status" class="muted">No tracks in library yet.</div>
+            <div class="autolight-training-library-wrap">
+              <table class="autolight-training-library-table" id="autolight-training-library-table">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Artist</th>
+                    <th>Duration</th>
+                    <th>Listens</th>
+                    <th>Satisfaction</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="autolight-training-section">
+            <h4>Live training session</h4>
+            <div class="autolight-training-row">
+              <label class="autolight-toggle autolight-training-toggle-big" title="When on: the satisfaction slider streams to the AI in real time and the rig is the AI's best guess for the current track.">
+                <input id="autolight-training-enabled" type="checkbox">
+                <span>Training</span>
+              </label>
+              <span id="autolight-training-state" class="muted">Disabled</span>
+            </div>
+            <div id="autolight-training-now-playing" class="muted">No track detected.</div>
+            <div id="autolight-training-active-move" class="autolight-training-move muted">No move active — agents driving the rig.</div>
+            <div class="autolight-training-slider-wrap">
+              <span class="autolight-training-slider-label">Awful</span>
+              <input
+                id="autolight-training-slider"
+                class="autolight-training-slider"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.01"
+                value="0"
+                aria-label="Satisfaction"
+              >
+              <span class="autolight-training-slider-label">Perfect</span>
+            </div>
+            <div id="autolight-training-slider-readout" class="muted">Slider: 0.00 · 0 samples this track</div>
+          </section>
+
+          <section class="autolight-training-section">
+            <h4>Camera + spatial calibration</h4>
+            <p class="autolight-training-hint">
+              Bind a webcam, run "Calibrate" once with the rig in view: each fixture flashes in turn so the browser can capture its on-camera position. After that the live video shows where each fixture is — useful while you train so you can see what you're rating.
+            </p>
+            <div class="autolight-training-row">
+              <label class="autolight-row-label" for="autolight-camera-select">Source:</label>
+              <select id="autolight-camera-select" class="autolight-camera-select">
+                <option value="">— no camera detected —</option>
+              </select>
+              <button id="autolight-camera-refresh" class="secondary" type="button" title="Re-enumerate connected cameras (helpful after plugging one in).">↻</button>
+            </div>
+            <div class="autolight-training-row">
+              <button id="autolight-camera-start" class="primary" type="button">Start camera</button>
+              <button id="autolight-camera-stop" class="secondary" type="button" disabled>Stop</button>
+              <button id="autolight-camera-calibrate" class="secondary" type="button" disabled>Calibrate fixtures</button>
+              <button id="autolight-camera-clear-positions" class="secondary" type="button">Clear positions</button>
+              <span id="autolight-camera-status" class="muted">Camera off.</span>
+            </div>
+            <div class="autolight-camera-stage" id="autolight-camera-stage">
+              <video id="autolight-camera-video" autoplay muted playsinline></video>
+              <canvas id="autolight-camera-overlay"></canvas>
+              <canvas id="autolight-camera-grabber" style="display: none;"></canvas>
+            </div>
+            <div id="autolight-camera-calibration-progress" class="autolight-training-hint" style="margin-top: 6px;"></div>
+          </section>
+
+          <section class="autolight-training-section">
+            <h4>Move scores (adaptation)</h4>
+            <p class="autolight-training-hint">
+              Each compositional move ("strobe-only drop", "mono saturated", etc.) tracks the average satisfaction you gave it. Higher score = more likely to be picked again. Scores persist across runs.
+            </p>
+            <div class="autolight-training-move-scores-wrap">
+              <table class="autolight-training-move-scores" id="autolight-training-move-scores">
+                <thead>
+                  <tr>
+                    <th>Move</th>
+                    <th>Score</th>
+                    <th>Samples</th>
+                    <th>Eligible intents</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+
+    <div id="autolight-effects-modal" class="autolight-modal" aria-hidden="true">
+      <div class="autolight-modal-backdrop" data-modal-close="1"></div>
+      <div class="autolight-modal-panel" role="dialog" aria-labelledby="autolight-effects-title">
+        <div class="autolight-modal-header">
+          <h3 id="autolight-effects-title">Customize effects</h3>
+          <div class="autolight-modal-actions">
+            <button id="autolight-effects-tuning" class="secondary" type="button">Audio tuning…</button>
+            <button id="autolight-effects-reset" class="secondary" type="button">Reset all</button>
+            <button id="autolight-effects-close" class="secondary" type="button" data-modal-close="1">Close</button>
+            <button id="autolight-effects-save" class="primary" type="button">Save</button>
+          </div>
+        </div>
+        <div class="autolight-modal-hint">
+          Toggle effects off to remove them from the rotation. Weight biases
+          random selection (0 disables, 2× doubles its odds). Duration and
+          cooldown override the defaults. Force trigger fires the effect now.
+        </div>
+        <div class="autolight-mood-bar" id="autolight-mood-bar"></div>
+        <div class="autolight-modal-body">
+          <table class="autolight-effects-table" id="autolight-effects-table">
+            <thead>
+              <tr>
+                <th>On</th>
+                <th>Effect</th>
+                <th>Scenes</th>
+                <th>BPM</th>
+                <th>Moods</th>
+                <th>Weight</th>
+                <th>Duration (beats)</th>
+                <th>Cooldown (bars)</th>
+                <th>Preview</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="autolight-section" class="autolight-section">
+      <div class="autolight-header">
+        <h3>Auto-Light</h3>
+        <span id="autolight-status-badge" class="autolight-badge">Idle</span>
+        <button id="autolight-quick-enable" class="secondary autolight-quick-enable" type="button" hidden>Enable</button>
+      </div>
+      <div class="autolight-summary">
+        <div id="autolight-summary-line" class="muted">Auto-Light disabled</div>
+        <div id="autolight-track-line" class="muted">Track metadata unavailable</div>
+        <div id="autolight-phase-line" class="muted" title="Where the director thinks the song is structurally. '[learned]' means the director has heard this track before and is using its own previous listen as a prior.">Structure: —</div>
+        <div id="autolight-source-line" class="muted">No media player detected</div>
+      </div>
+      <div class="autolight-meters" id="autolight-meters">
+        <div class="autolight-meter" data-band="bass">
+          <span class="autolight-meter-label">Bass</span>
+          <div class="autolight-meter-bar"><div class="autolight-meter-fill" id="autolight-meter-bass"></div></div>
+        </div>
+        <div class="autolight-meter" data-band="mid">
+          <span class="autolight-meter-label">Mid</span>
+          <div class="autolight-meter-bar"><div class="autolight-meter-fill" id="autolight-meter-mid"></div></div>
+        </div>
+        <div class="autolight-meter" data-band="treble">
+          <span class="autolight-meter-label">Treble</span>
+          <div class="autolight-meter-bar"><div class="autolight-meter-fill" id="autolight-meter-treble"></div></div>
+        </div>
+        <div class="autolight-beat" id="autolight-beat-indicator" title="Beat detector">BEAT</div>
+      </div>
+      <div class="autolight-drums" id="autolight-drums" title="Multi-band onset detection (kick=bass spike, snare=mid flux, hat=high flux)">
+        <span class="autolight-drum-pill" id="autolight-drum-kick" data-drum="kick">K<span class="autolight-drum-count" id="autolight-drum-kick-count">0</span></span>
+        <span class="autolight-drum-pill" id="autolight-drum-snare" data-drum="snare">S<span class="autolight-drum-count" id="autolight-drum-snare-count">0</span></span>
+        <span class="autolight-drum-pill" id="autolight-drum-hat" data-drum="hat">H<span class="autolight-drum-count" id="autolight-drum-hat-count">0</span></span>
+      </div>
+      <canvas id="autolight-spectrum" class="autolight-spectrum" height="44"></canvas>
+      <div class="autolight-row autolight-genre-row">
+        <label class="autolight-audio-label" for="autolight-genre-select">Genre</label>
+        <select id="autolight-genre-select"></select>
+        <button id="autolight-tap-tempo" class="secondary" type="button" title="Tap 4+ times in rhythm">Tap tempo</button>
+        <button id="autolight-tap-reset" class="secondary" type="button" title="Release manual BPM override">Auto BPM</button>
+        <button id="autolight-calibrate" class="secondary" type="button" title="Observe 30 s and auto-set thresholds">Calibrate 30s</button>
+      </div>
+      <div class="autolight-row autolight-scene-lock-row">
+        <span class="autolight-audio-label">Lock scene</span>
+        <button data-scene-lock="SILENT" class="secondary" type="button">Silent</button>
+        <button data-scene-lock="VERSE"  class="secondary" type="button">Verse</button>
+        <button data-scene-lock="CHORUS" class="secondary" type="button">Chorus</button>
+        <button data-scene-lock="HIGH"   class="secondary" type="button">High</button>
+        <button data-scene-lock="DROP"   class="secondary" type="button">Drop</button>
+        <button data-scene-lock=""       class="secondary" type="button" title="Release scene lock">Auto</button>
+        <button id="autolight-topology-btn" class="secondary" type="button" title="Inspect rig positions">Topology…</button>
+      </div>
+      <div class="autolight-row autolight-audio-row">
+        <label for="autolight-audio-device" class="autolight-audio-label">Audio source</label>
+        <select id="autolight-audio-device">
+          <option value="default">Default speaker</option>
+        </select>
+      </div>
+      <details class="autolight-diag-group">
+        <summary>Diagnostics</summary>
+        <div id="autolight-diag-line" class="muted autolight-diag">Rig: — | writes: —</div>
+        <div id="autolight-scene-line" class="muted autolight-diag">Scene: —</div>
+        <div id="autolight-topology-line" class="muted autolight-diag">Topology: —</div>
+        <div id="autolight-effect-line" class="muted autolight-diag">Effect: — | BPM: —</div>
+        <div id="autolight-music-line" class="muted autolight-diag">Music DB: —</div>
+      </details>
+      <div class="autolight-row autolight-sc-row">
+        <label for="autolight-soundcloud-client-id" class="autolight-audio-label">SoundCloud client_id</label>
+        <input id="autolight-soundcloud-client-id" type="text" placeholder="paste from devtools" autocomplete="off" spellcheck="false">
+        <button id="autolight-soundcloud-save" class="secondary" type="button">Save</button>
+      </div>
+      <div class="autolight-controls">
+        <div class="autolight-row">
+          <button id="autolight-mode-off" class="secondary" type="button">Off</button>
+          <button id="autolight-mode-assist" class="secondary" type="button">Assist</button>
+          <button id="autolight-mode-live" class="secondary" type="button">Live</button>
+        </div>
+        <div class="autolight-row" title="Pipeline that controls the rig when AutoLight is live.">
+          <span class="autolight-row-label">Pipeline:</span>
+          <button id="autolight-render-director" class="secondary" type="button" title="Per-fixture intelligent agents driven by a multi-timescale music director. Each fixture has its own role, personality and reactivity.">Director</button>
+          <button id="autolight-render-effects" class="secondary" type="button" title="Legacy scene engine + pre-made effect scheduler.">Effects</button>
+          <button id="autolight-render-off" class="secondary" type="button" title="Bypass AutoLight entirely. The rig is left to manual cues.">None</button>
+          <label class="autolight-toggle" title="Persist learned per-track signatures (BPM, intent transitions) so the director recognises tracks on replay.">
+            <input id="autolight-memory-toggle" type="checkbox">
+            <span>Memory</span>
+          </label>
+        </div>
+        <div class="autolight-row">
+          <button id="autolight-refresh" class="secondary" type="button">Refresh</button>
+          <button id="autolight-snapshot" class="secondary" type="button">Snapshot</button>
+          <button id="autolight-customize" class="secondary" type="button">Customize effects…</button>
+          <button id="autolight-training-open" class="secondary" type="button">Training…</button>
+          <label class="autolight-toggle">
+            <input id="autolight-freeze-toggle" type="checkbox">
+            <span>Freeze</span>
+          </label>
+          <label class="autolight-toggle" title="Only pre-made effects drive the rig. No background scene, no constant movement, dark between effects.">
+            <input id="autolight-effects-only-toggle" type="checkbox">
+            <span>Effects only</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
 
     <div class="cue-loop-actions">
       <button id="cue-create-loop" data-i18n="cues.createLoop">Create Loop Group</button>
@@ -259,6 +612,27 @@
         </thead>
         <tbody id="cue-table-body"></tbody>
       </table>
+    </div>
+
+    <div id="timeline-editor" class="timeline-editor hidden">
+      <div class="timeline-toolbar">
+        <label class="timeline-zoom-control">
+          <span>Zoom X</span>
+          <input id="timeline-zoom-x" type="range" min="20" max="480" step="5" value="120">
+          <span id="timeline-zoom-x-value">120 px/s</span>
+        </label>
+        <label class="timeline-zoom-control">
+          <span>Zoom Y</span>
+          <input id="timeline-zoom-y" type="range" min="48" max="240" step="4" value="88">
+          <span id="timeline-zoom-y-value">88 px</span>
+        </label>
+        <div id="timeline-summary" class="muted timeline-summary">Timeline</div>
+      </div>
+      <div id="timeline-scroll" class="timeline-scroll">
+        <div id="timeline-ruler" class="timeline-ruler"></div>
+        <div id="timeline-canvas" class="timeline-canvas"></div>
+      </div>
+      <div id="timeline-context-menu" class="timeline-context-menu hidden"></div>
     </div>
 
     <div class="cue-props">
@@ -315,8 +689,8 @@
       </div>
 
       <div class="ctrl-box">
-        <h3 data-i18n="controller.beam">Beam</h3>
-        <div id="beam-body"></div>
+        <h3 data-i18n="controller.other">Other</h3>
+        <div id="other-body"></div>
       </div>
     </div>
 
@@ -369,6 +743,8 @@
 <script src="{{ url_for('static', filename='rig.js') }}"></script>
 <script src="{{ url_for('static', filename='effects.js') }}"></script>
 <script src="{{ url_for('static', filename='cues.js') }}"></script>
+<script src="{{ url_for('static', filename='project.js') }}"></script>
+<script src="{{ url_for('static', filename='timeline.js') }}"></script>
 <script src="{{ url_for('static', filename='sync_video.js') }}"></script>
 <script src="{{ url_for('static', filename='whats_new.js') }}"></script>
 <script src="{{ url_for('static', filename='popup.js') }}"></script>

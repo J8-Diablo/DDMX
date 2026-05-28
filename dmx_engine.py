@@ -10,6 +10,7 @@ Thread-based engine that:
 - Manages cue playback with fades
 """
 
+import sys
 import threading
 import time
 import math
@@ -36,6 +37,24 @@ except ImportError:
 log = logging.getLogger("DMXRenderEngine")
 _engine_log_level = os.environ.get("DMX_ENGINE_LOG_LEVEL", "INFO").upper()
 log.setLevel(getattr(logging, _engine_log_level, logging.INFO))
+
+FIXTURE_SHARED_TARGET_SPECS: Dict[Tuple[str, str], Dict[str, Any]] = {
+    ("dimmer", "level"): {"target_key": "family.dimmer.level", "aliases": ["dimmer"]},
+    ("color", "red"): {"target_key": "family.color.red", "aliases": ["r"]},
+    ("color", "green"): {"target_key": "family.color.green", "aliases": ["g"]},
+    ("color", "blue"): {"target_key": "family.color.blue", "aliases": ["b"]},
+    ("position", "pan"): {"target_key": "family.position.pan", "aliases": ["pan"]},
+    ("position", "tilt"): {"target_key": "family.position.tilt", "aliases": ["tilt"]},
+}
+
+ROLE_TO_FAMILY: Dict[str, str] = {
+    "level": "dimmer",
+    "red": "color",
+    "green": "color",
+    "blue": "color",
+    "pan": "position",
+    "tilt": "position",
+}
 
 # ============================================================================
 # DATA STRUCTURES
@@ -69,6 +88,105 @@ class DeviceState:
     channels: Dict[int, int] = field(default_factory=dict)  # {abs_channel: value}
     effects: Dict[int, List[LiveEffect]] = field(default_factory=dict)  # {channel: [effects]}
     attr_map: Dict[str, int] = field(default_factory=dict)  # {attr_key: abs_channel}
+    x: Optional[float] = None
+    y: Optional[float] = None
+    fixture_template: str = ""
+    cname: str = ""
+    capabilities: Dict[str, Any] = field(default_factory=dict)
+    # Per-fixture movement calibration (AutoLight "home / audience" position).
+    # home_pan/home_tilt are DMX values (0-255) the fixture returns to when idle;
+    # invert_pan/invert_tilt flip the axis for fixtures mounted upside-down or
+    # oriented differently. None means "not calibrated" (engine leaves as-is).
+    home_pan: Optional[int] = None
+    home_tilt: Optional[int] = None
+    invert_pan: bool = False
+    invert_tilt: bool = False
+
+def _classify_device_capabilities(attr_map: Dict[str, int], fixture_template: str) -> Dict[str, Any]:
+    """Derive AutoLight-relevant capabilities from a device's channel map.
+
+    Returns flags (``has_dimmer``, ``has_color``, ``has_movement``,
+    ``strobe_friendly``) plus the raw channel indexes that the overlay will
+    drive. Called once at rig registration; results are cached on the device.
+    """
+    dimmer_ch: Optional[int] = None
+    red_ch: Optional[int] = None
+    green_ch: Optional[int] = None
+    blue_ch: Optional[int] = None
+    pan_ch: Optional[int] = None
+    tilt_ch: Optional[int] = None
+    grouped: Dict[str, Dict[str, int]] = {}
+    group_min: Dict[str, int] = {}
+
+    for raw_key, raw_channel in (attr_map or {}).items():
+        key = str(raw_key or "").strip().lower()
+        if not key:
+            continue
+        try:
+            channel = int(raw_channel)
+        except Exception:
+            continue
+        if not (0 <= channel < 512):
+            continue
+        if "." in key:
+            group_id, role = key.rsplit(".", 1)
+        else:
+            group_id, role = "_flat_", key
+        if role in ("level", "dimmer"):
+            canonical = "dimmer"
+        elif role in ("red", "r"):
+            canonical = "red"
+        elif role in ("green", "g"):
+            canonical = "green"
+        elif role in ("blue", "b"):
+            canonical = "blue"
+        elif role == "pan":
+            canonical = "pan"
+        elif role == "tilt":
+            canonical = "tilt"
+        else:
+            continue
+        bucket = grouped.setdefault(group_id, {})
+        bucket[canonical] = channel
+        prev = group_min.get(group_id)
+        if prev is None or channel < prev:
+            group_min[group_id] = channel
+
+    ordered_groups = sorted(grouped.keys(), key=lambda gid: (group_min.get(gid, 0), gid))
+    picked: Dict[str, int] = {}
+    for gid in ordered_groups:
+        for canonical, channel in grouped[gid].items():
+            picked.setdefault(canonical, channel)
+
+    dimmer_ch = picked.get("dimmer")
+    red_ch = picked.get("red")
+    green_ch = picked.get("green")
+    blue_ch = picked.get("blue")
+    pan_ch = picked.get("pan")
+    tilt_ch = picked.get("tilt")
+
+    has_dimmer = dimmer_ch is not None
+    has_color = all(c is not None for c in (red_ch, green_ch, blue_ch))
+    has_movement = pan_ch is not None or tilt_ch is not None
+    template_lower = (fixture_template or "").lower()
+    strobe_friendly = (
+        "strob" in template_lower
+        or (has_dimmer and not has_color and not has_movement)
+    )
+
+    return {
+        "has_dimmer": has_dimmer,
+        "has_color": has_color,
+        "has_movement": has_movement,
+        "strobe_friendly": strobe_friendly,
+        "dimmer_channel": dimmer_ch,
+        "red_channel": red_ch,
+        "green_channel": green_ch,
+        "blue_channel": blue_ch,
+        "pan_channel": pan_ch,
+        "tilt_channel": tilt_ch,
+    }
+
 
 @dataclass
 class PlaybackPlanEntry:
@@ -83,6 +201,22 @@ class PlaybackPlanEntry:
     wait_end_at_ms: int = 0
     fade_start_at_ms: int = 0
     fade_end_at_ms: int = 0
+
+
+@dataclass
+class TimelineBlock:
+    plan_index: int
+    cue_index: int
+    cue_name: str
+    lane: int
+    start_ms: int
+    length_ms: int
+    end_ms: int
+    fade_start_ms: int = 0
+    fade_end_ms: int = 0
+    fade_operator: str = ""
+    cue_payload: Dict[str, Any] = field(default_factory=dict)
+    device_order: List[str] = field(default_factory=list)
 
 # ============================================================================
 # DMX RENDER ENGINE
@@ -114,6 +248,10 @@ class DMXRenderEngine:
 
         # Direct channel values (from live UI edits, stored per universe)
         self._direct_channels: Dict[int, Dict[int, int]] = {}  # {universe: {channel: value}}
+
+        # Optional AutoLight render-pipeline overlay. Callable invoked after the
+        # base render pass with (universes, now_ts); may mutate values in place.
+        self._autolight_overlay: Optional[Any] = None
 
         # Render mode (ui | backend)
         self._render_mode = os.environ.get("DMX_RENDER_MODE", "ui").strip().lower()
@@ -158,6 +296,7 @@ class DMXRenderEngine:
         self._playback_wait_adjust_ms = 0
         self._playback_force_backend_render = False
         self._playback_live_state_backup: Optional[Dict[str, Any]] = None
+        self._timeline_runtime: Optional[Dict[str, Any]] = None
         self._playback_clock_mode = os.environ.get("DMX_PLAYBACK_CLOCK_MODE", "timeline").strip().lower()
         self._playback_speed = 1.0
         self._playback_run_speed = 1.0
@@ -177,11 +316,17 @@ class DMXRenderEngine:
             "speed": 1.0,
         }
         self._tick_hz = max(10.0, min(240.0, self._read_env_float("DMX_TICK_HZ", self.TICK_HZ)))
+        # Idle (non-playback) engine rate. Defaults to 120 Hz so live edits on
+        # multi-universe rigs are quantized to ~8 ms instead of 25 ms (40 Hz).
+        self._idle_engine_hz = max(
+            self._tick_hz,
+            min(240.0, self._read_env_float("DMX_IDLE_ENGINE_HZ", 120.0)),
+        )
         self._playback_engine_hz = max(
             self._tick_hz,
             min(240.0, self._read_env_float("DMX_PLAYBACK_ENGINE_HZ", max(self._tick_hz, 120.0))),
         )
-        self._playback_ui_fps = max(1.0, min(30.0, self._read_env_float("DMX_PLAYBACK_UI_FPS", 12.0)))
+        self._playback_ui_fps = max(1.0, min(60.0, self._read_env_float("DMX_PLAYBACK_UI_FPS", 12.0)))
         self._profile_runner = os.environ.get("DMX_PROFILE_RUNNER", "0").strip().lower() in ("1", "true", "yes", "on")
         self._perf_last_log = time.perf_counter()
         self._perf_stats: Dict[str, float] = {
@@ -215,6 +360,10 @@ class DMXRenderEngine:
         # Send throttling + stats (to reduce unnecessary network spam)
         self._last_sent_universes: Dict[int, List[int]] = {}
         self._last_sent_time: Dict[int, float] = {}
+        # Global gate timestamp for changed-universe sends. Throttling all
+        # changed universes against a single timestamp keeps multi-universe
+        # live edits in lock-step (no per-universe phase drift).
+        self._last_global_send_time: float = 0.0
         self._artnet_diff = os.environ.get("DMX_ARTNET_DIFF", "0").strip().lower() in ("1", "true", "yes", "on")
         self._artnet_heartbeat_full = os.environ.get("DMX_ARTNET_HEARTBEAT_FULL", "1").strip().lower() in ("1", "true", "yes", "on")
         self._packet_count = 0
@@ -278,11 +427,19 @@ class DMXRenderEngine:
         state["wait_adjust_ms"] = int(self._playback_wait_adjust_ms)
         state["clock_mode"] = str(self._playback_clock_mode or "timeline")
         state["speed"] = float(self._playback_run_speed if self._playback_state.get("active") else self._playback_speed)
+        if self._timeline_runtime is not None:
+            state["timeline_elapsed_ms"] = int(self._timeline_elapsed_ms_locked())
+            state["timeline_total_length_ms"] = int(self._timeline_runtime.get("total_length_ms", 0) or 0)
+            state["timeline_priority_mode"] = self._normalize_timeline_priority_mode(self._timeline_runtime.get("priority_mode"))
+        else:
+            state["timeline_elapsed_ms"] = 0
+            state["timeline_total_length_ms"] = 0
+            state["timeline_priority_mode"] = ""
         server_time_ms = int(round(time.time() * 1000.0))
         state["server_time_ms"] = server_time_ms
         phase = str(state.get("phase") or "idle")
         remaining_ms = max(0, int(state.get("phase_remaining_ms", 0) or 0))
-        if state.get("active") and not state.get("paused") and phase in ("waiting", "fading") and remaining_ms > 0:
+        if state.get("active") and not state.get("paused") and phase in ("waiting", "fading", "active") and remaining_ms > 0:
             state["phase_end_host_ms"] = server_time_ms + remaining_ms
         else:
             state["phase_end_host_ms"] = 0
@@ -298,12 +455,20 @@ class DMXRenderEngine:
     def _effective_state_broadcast_sec_locked(self) -> float:
         if self._playback_state.get("active"):
             fps = max(1.0, float(self._playback_ui_fps or 1.0))
-            return max(1.0 / fps, 0.033)
-        return 0.25
+            return max(1.0 / fps, 1.0 / 60.0)
+        # Idle (no cue playback): broadcast at 20Hz so the virtual rig follows
+        # live edits (slider drags, live effect parameter changes) with <50ms
+        # latency. Previously 4Hz (0.25s), which felt laggy in backend mode.
+        # The JS side already skips redraws when universe values are unchanged,
+        # so this costs nothing on a truly idle engine.
+        return 0.05
 
     def _effective_tick_hz_locked(self) -> float:
         if self._playback_state.get("active"):
             return max(self._tick_hz, float(self._playback_engine_hz or self._tick_hz))
+        idle_hz = float(self._idle_engine_hz or 0.0)
+        if idle_hz > 0:
+            return max(10.0, max(float(self._tick_hz or self.TICK_HZ), idle_hz))
         return max(10.0, float(self._tick_hz or self.TICK_HZ))
 
     def _effective_min_send_interval_locked(self) -> float:
@@ -415,6 +580,144 @@ class DMXRenderEngine:
             idx -= 1
         return idx
 
+    @staticmethod
+    def _normalize_timeline_priority_mode(priority_mode: Any) -> str:
+        key = str(priority_mode or "top").strip().lower()
+        return key if key in ("top", "bottom", "merge") else "top"
+
+    @staticmethod
+    def _normalize_timeline_operator(operator: Any) -> str:
+        key = str(operator or "").strip()
+        return key if key in ("|", "<", ">", "<>", "><", "||", "?") else ""
+
+    def _normalize_timeline_blocks(self, blocks: Any) -> List[TimelineBlock]:
+        if not isinstance(blocks, list):
+            return []
+
+        normalized: List[TimelineBlock] = []
+        for raw in blocks:
+            if not isinstance(raw, dict):
+                continue
+            cue_payload = raw.get("cue_payload") or raw.get("cue") or {}
+            if not isinstance(cue_payload, dict):
+                cue_payload = {}
+            try:
+                start_ms = max(0, int(raw.get("start_ms", 0) or 0))
+                length_ms = max(1, int(raw.get("length_ms", 1) or 1))
+                fade_start_ms = max(0, int(raw.get("fade_start_ms", 0) or 0))
+                fade_end_ms = max(fade_start_ms, int(raw.get("fade_end_ms", 0) or 0))
+                lane = max(0, int(raw.get("lane", 0) or 0))
+                plan_index = int(raw.get("plan_index", len(normalized)) or 0)
+                cue_index = int(raw.get("cue_index", -1) or -1)
+            except Exception:
+                continue
+
+            device_order = raw.get("device_order") or cue_payload.get("device_order") or []
+            if not isinstance(device_order, list):
+                device_order = []
+
+            normalized.append(
+                TimelineBlock(
+                    plan_index=plan_index,
+                    cue_index=cue_index,
+                    cue_name=str(raw.get("cue_name") or (f"Cue {cue_index + 1}" if cue_index >= 0 else "Cue")),
+                    lane=lane,
+                    start_ms=start_ms,
+                    length_ms=length_ms,
+                    end_ms=start_ms + length_ms,
+                    fade_start_ms=min(length_ms, fade_start_ms),
+                    fade_end_ms=min(length_ms, fade_end_ms),
+                    fade_operator=self._normalize_timeline_operator(raw.get("fade_operator")),
+                    cue_payload=cue_payload,
+                    device_order=[str(x) for x in device_order],
+                )
+            )
+
+        normalized.sort(key=lambda block: (block.start_ms, block.lane, block.plan_index))
+        return normalized
+
+    def _is_timeline_mode_active_locked(self) -> bool:
+        return isinstance(self._timeline_runtime, dict) and bool(self._timeline_runtime.get("blocks"))
+
+    def _timeline_elapsed_ms_locked(self, now: Optional[float] = None) -> int:
+        runtime = self._timeline_runtime
+        if not runtime:
+            return 0
+        anchor = float(runtime.get("anchor_time") or 0.0)
+        base_offset_ms = float(runtime.get("base_offset_ms") or 0.0)
+        current = float(now if now is not None else time.perf_counter())
+        if self._playback_state.get("paused"):
+            return max(0, int(round(base_offset_ms)))
+        return max(0, int(round(base_offset_ms + max(0.0, current - anchor) * 1000.0)))
+
+    @staticmethod
+    def _timeline_attr_kind(attr_key: Optional[str]) -> str:
+        key = str(attr_key or "").strip().lower()
+        if not key:
+            return "other"
+        if key == "dimmer":
+            return "dimmer"
+        if key in ("red", "green", "blue", "white", "amber", "uv"):
+            return "color"
+        if "color" in key:
+            return "color"
+        return "other"
+
+    def _attr_key_for_channel(self, dev: DeviceState, channel: int) -> str:
+        for attr_key, abs_channel in dev.attr_map.items():
+            try:
+                if int(abs_channel) == int(channel):
+                    return str(attr_key).strip().lower()
+            except Exception:
+                continue
+        return ""
+
+    def _timeline_block_fade_mix(self, block: TimelineBlock, elapsed_ms: int) -> float:
+        local_ms = elapsed_ms - int(block.start_ms)
+        if local_ms < 0:
+            return 0.0
+        fade_start = max(0, int(block.fade_start_ms))
+        fade_end = max(fade_start, int(block.fade_end_ms))
+        if fade_end <= fade_start:
+            return 1.0
+        if local_ms <= fade_start:
+            return 0.0
+        if local_ms >= fade_end:
+            return 1.0
+        return max(0.0, min(1.0, float(local_ms - fade_start) / float(max(1, fade_end - fade_start))))
+
+    def _timeline_active_blocks_locked(self, elapsed_ms: int) -> List[TimelineBlock]:
+        runtime = self._timeline_runtime or {}
+        out: List[TimelineBlock] = []
+        for block in runtime.get("blocks", []):
+            if int(block.start_ms) <= elapsed_ms < int(block.end_ms):
+                out.append(block)
+        return out
+
+    def _timeline_next_blocks_locked(self, elapsed_ms: int) -> List[TimelineBlock]:
+        runtime = self._timeline_runtime or {}
+        blocks = [block for block in runtime.get("blocks", []) if int(block.start_ms) > elapsed_ms]
+        if not blocks:
+            return []
+        next_start = min(int(block.start_ms) for block in blocks)
+        return [block for block in blocks if int(block.start_ms) == next_start]
+
+    def _timeline_sort_blocks_for_render(self, blocks: List[TimelineBlock], priority_mode: str) -> List[TimelineBlock]:
+        if priority_mode == "bottom":
+            return sorted(blocks, key=lambda block: (block.lane, block.start_ms, block.plan_index))
+        if priority_mode == "top":
+            return sorted(blocks, key=lambda block: (-block.lane, block.start_ms, block.plan_index))
+        return sorted(blocks, key=lambda block: (block.start_ms, block.lane, block.plan_index))
+
+    def _timeline_pick_focus_block_locked(self, blocks: List[TimelineBlock], priority_mode: str) -> Optional[TimelineBlock]:
+        if not blocks:
+            return None
+        if priority_mode == "bottom":
+            return sorted(blocks, key=lambda block: (-block.lane, block.start_ms, block.plan_index))[0]
+        if priority_mode == "top":
+            return sorted(blocks, key=lambda block: (block.lane, block.start_ms, block.plan_index))[0]
+        return sorted(blocks, key=lambda block: (block.start_ms, block.lane, block.plan_index))[-1]
+
     def _resolve_effect_groups_for_step(self, step: Dict[str, Any], virtual_groups: Any) -> List[Dict[str, Any]]:
         mapping = step.get("device_groups") or {}
         if not isinstance(mapping, dict) or not isinstance(virtual_groups, dict):
@@ -522,6 +825,7 @@ class DMXRenderEngine:
         out["id"] = gid
         mode = str(out.get("mode") or "legacy").strip().lower()
         out["mode"] = "intelligent" if mode == "intelligent" else "legacy"
+        out["selectionScope"] = "fixture_elements" if str(out.get("selectionScope") or "").strip().lower() == "fixture_elements" else "devices"
 
         dev_ids = out.get("deviceIds") or out.get("device_ids") or out.get("device_ids".lower()) or []
         if isinstance(dev_ids, list):
@@ -562,6 +866,13 @@ class DMXRenderEngine:
 
     @staticmethod
     def _device_group_index(group: Dict[str, Any], device_id: str) -> Tuple[int, int]:
+        effect_members = group.get("effect_member_ids") or group.get("effectMemberIds") or []
+        if isinstance(effect_members, list) and effect_members:
+            order = [str(x) for x in effect_members]
+            dev_key = str(device_id)
+            idx = order.index(dev_key) if dev_key in order else 0
+            return idx, len(order) if order else 1
+
         order = [str(x) for x in (group.get("deviceIds") or [])]
         sel = group.get("selection_groups")
         dev_key = str(device_id)
@@ -575,6 +886,123 @@ class DMXRenderEngine:
         total = len(order) if order else 1
         return idx, total
 
+    @staticmethod
+    def _group_selection_scope(group: Dict[str, Any]) -> str:
+        return "fixture_elements" if str(group.get("selectionScope") or "").strip().lower() == "fixture_elements" else "devices"
+
+    @staticmethod
+    def _group_target_key(group: Dict[str, Any]) -> str:
+        return str(group.get("targetKey") or group.get("attrKey") or group.get("attr") or "").strip().lower()
+
+    @staticmethod
+    def _fixture_elements_for_attr_map(attr_map: Dict[str, int]) -> List[Dict[str, Any]]:
+        if not isinstance(attr_map, dict) or not attr_map:
+            return []
+
+        group_defs: Dict[str, Dict[str, Any]] = {}
+        for raw_key, raw_channel in attr_map.items():
+            key = str(raw_key or "").strip().lower()
+            if not key or key.startswith("family.") or key in ("dimmer", "r", "g", "b", "pan", "tilt"):
+                continue
+            if "." not in key:
+                continue
+            group_id, role = key.rsplit(".", 1)
+            family = ROLE_TO_FAMILY.get(role)
+            if not family:
+                continue
+            try:
+                channel = int(raw_channel)
+            except Exception:
+                continue
+            entry = group_defs.setdefault(group_id, {
+                "family": family,
+                "channels": {},
+                "min_channel": channel,
+            })
+            entry["channels"][role] = channel
+            entry["min_channel"] = min(int(entry.get("min_channel", channel)), channel)
+
+        by_family: Dict[str, List[Dict[str, Any]]] = {}
+        for group_id, entry in group_defs.items():
+            family = str(entry.get("family") or "").strip().lower()
+            if not family:
+                continue
+            item = {
+                "group_id": group_id,
+                "channels": dict(entry.get("channels") or {}),
+                "min_channel": int(entry.get("min_channel") or 0),
+            }
+            by_family.setdefault(family, []).append(item)
+
+        elements: List[Dict[str, Any]] = []
+        for family, groups in by_family.items():
+            groups.sort(key=lambda item: (int(item.get("min_channel") or 0), str(item.get("group_id") or "")))
+            for idx, entry in enumerate(groups):
+                while len(elements) <= idx:
+                    elements.append({"targets": {}})
+                element_targets = elements[idx]["targets"]
+                for role, channel in dict(entry.get("channels") or {}).items():
+                    spec = FIXTURE_SHARED_TARGET_SPECS.get((family, str(role)))
+                    if not spec:
+                        continue
+                    element_targets[str(spec["target_key"])] = int(channel)
+                    for alias in spec.get("aliases") or []:
+                        element_targets[str(alias)] = int(channel)
+
+        return [element for element in elements if isinstance(element.get("targets"), dict) and element["targets"]]
+
+    def _resolve_effect_members(self, group: Dict[str, Any]) -> Dict[str, Any]:
+        scope = self._group_selection_scope(group)
+        device_ids = [str(x) for x in (group.get("deviceIds") or [])]
+        order: List[Dict[str, Any]] = []
+        by_device: Dict[str, List[Dict[str, Any]]] = {}
+
+        for device_id in device_ids:
+            dev = self._devices.get(device_id)
+            if not dev:
+                continue
+            if scope == "fixture_elements":
+                element_defs = self._fixture_elements_for_attr_map(dev.attr_map)
+                members = []
+                for idx, element in enumerate(element_defs):
+                    members.append({
+                        "member_id": f"{device_id}::{idx + 1}",
+                        "device_id": device_id,
+                        "targets": dict(element.get("targets") or {}),
+                    })
+                if not members:
+                    members = [{
+                        "member_id": device_id,
+                        "device_id": device_id,
+                        "targets": dict(dev.attr_map or {}),
+                    }]
+            else:
+                members = [{
+                    "member_id": device_id,
+                    "device_id": device_id,
+                    "targets": dict(dev.attr_map or {}),
+                }]
+
+            device_members: List[Dict[str, Any]] = []
+            for member in members:
+                resolved = dict(member)
+                resolved["index"] = len(order)
+                order.append(resolved)
+                device_members.append(resolved)
+            by_device[device_id] = device_members
+
+        runtime_group = dict(group)
+        if scope == "fixture_elements":
+            runtime_group["effect_member_ids"] = [str(entry.get("member_id") or "") for entry in order]
+
+        return {
+            "scope": scope,
+            "order": order,
+            "count": max(1, len(order)),
+            "by_device": by_device,
+            "runtime_group": runtime_group,
+        }
+
     # -------------------------------------------------------------------------
     # THREAD CONTROL
     # -------------------------------------------------------------------------
@@ -583,6 +1011,17 @@ class DMXRenderEngine:
         """Start the render thread"""
         if self._running:
             return
+        # On Windows, request 1 ms scheduler resolution so time.sleep()
+        # in the render loop matches the requested tick interval (~1 ms jitter
+        # instead of 10-15 ms default).
+        self._win_timer_period_active = False
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                if ctypes.windll.winmm.timeBeginPeriod(1) == 0:
+                    self._win_timer_period_active = True
+            except Exception as e:
+                log.debug("timeBeginPeriod failed: %s", e)
         self._running = True
         self._thread = threading.Thread(target=self._render_loop, daemon=True)
         self._thread.start()
@@ -593,6 +1032,13 @@ class DMXRenderEngine:
         self._running = False
         if self._thread:
             self._thread.join(timeout=1.0)
+        if getattr(self, "_win_timer_period_active", False):
+            try:
+                import ctypes
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
+            self._win_timer_period_active = False
         log.info("Render thread stopped")
 
     def set_artnet_target(self, ip: str) -> bool:
@@ -665,7 +1111,7 @@ class DMXRenderEngine:
                 value = float(fps)
             except Exception:
                 value = 12.0
-            self._playback_ui_fps = max(1.0, min(30.0, value))
+            self._playback_ui_fps = max(1.0, min(60.0, value))
 
     def set_playback_engine_hz(self, hz: Any):
         with self._lock:
@@ -674,6 +1120,16 @@ class DMXRenderEngine:
             except Exception:
                 value = max(self._tick_hz, 120.0)
             self._playback_engine_hz = max(self._tick_hz, min(240.0, value))
+
+    def set_idle_engine_hz(self, hz: Any):
+        """Tick rate used when not in playback. Higher idle Hz reduces the
+        quantization between live edits across multiple universes."""
+        with self._lock:
+            try:
+                value = float(hz)
+            except Exception:
+                value = max(self._tick_hz, 120.0)
+            self._idle_engine_hz = max(self._tick_hz, min(240.0, value))
 
     def set_profile_runner(self, enabled: Any):
         with self._lock:
@@ -730,61 +1186,92 @@ class DMXRenderEngine:
             if self._smooth_targets:
                 self._apply_smoothing()
 
+            # AutoLight overlay: audio-reactive values written on top of the
+            # base render, but below the identify overlay.
+            if self._autolight_overlay is not None:
+                try:
+                    self._autolight_overlay(self._universes, now)
+                except Exception as exc:
+                    log.debug("autolight overlay failed: %s", exc)
+
             # Apply identify overlay (highest priority, overrides everything)
             if self._identify_devices or self._identify_data:
                 self._render_identify(now)
 
-            # Send to ArtNet
+            # Send to ArtNet — two-pass with global throttle gate so all
+            # changed universes go out in the same tight burst (sync across
+            # multi-universe rigs on live edits).
             if self.artnet:
+                changed_batch = []   # [(uni_num, values, heartbeat_due)]
+                heartbeat_only = []  # [(uni_num, values)]
                 for uni_num, values in self._universes.items():
-                    should_send, heartbeat_due = self._should_send_universe(uni_num, values, now)
-                    if not should_send:
+                    last_values = self._last_sent_universes.get(uni_num)
+                    changed = (last_values != values)
+                    last_time = self._last_sent_time.get(uni_num, 0.0)
+                    heartbeat_due = (
+                        self._heartbeat_sec > 0
+                        and (now - last_time) >= self._heartbeat_sec
+                    )
+                    if not changed and not heartbeat_due:
+                        self._stats["frames_skipped"] += 1
                         continue
-                    if self._log_dmx:
-                        if self._log_dmx_full:
-                            log.debug("[DMX] universe=%s values=%s", uni_num, values)
-                        else:
-                            nonzero = [(i, v) for i, v in enumerate(values) if v]
-                            sample = nonzero[:8]
-                            log.debug(
-                                "[DMX] universe=%s nonzero=%s sample=%s",
-                                uni_num, len(nonzero), sample
-                            )
-                    values_to_send = self._apply_dummy_overlay(uni_num, values)
-                    send_start = time.perf_counter()
-                    if self._artnet_diff:
-                        sent = self._send_artnet_diff(uni_num, values_to_send, heartbeat_due=heartbeat_due)
+                    if changed:
+                        changed_batch.append((uni_num, values, heartbeat_due))
                     else:
-                        self.artnet.send_universe(uni_num, values_to_send)
-                        sent = True
-                    self._record_perf("send", (time.perf_counter() - send_start) * 1000.0)
-                    if sent:
-                        self._packet_count += 1
-                        self._last_send_ts = wall_now
-                    self._record_send_stats(uni_num, values_to_send, now)
+                        heartbeat_only.append((uni_num, values))
+
+                # Global gate for the changed batch: send all-or-none to keep
+                # multi-universe edits visually simultaneous.
+                min_send_interval = self._effective_min_send_interval_locked()
+                global_gate_ok = (
+                    min_send_interval <= 0
+                    or (now - self._last_global_send_time) >= min_send_interval
+                )
+
+                if changed_batch and not global_gate_ok:
+                    # Throttled — defer the whole batch to the next tick.
+                    self._stats["frames_skipped"] += len(changed_batch)
+                    changed_batch = []
+
+                send_queue = changed_batch + [(u, v, False) for (u, v) in heartbeat_only]
+                if send_queue:
+                    burst_start = time.perf_counter()
+                    for uni_num, raw_values, heartbeat_due in send_queue:
+                        # Apply dummy overlay only when we're committed to send
+                        # (it has the side effect of toggling dummy state).
+                        values_to_send = self._apply_dummy_overlay(uni_num, raw_values)
+                        if self._log_dmx:
+                            if self._log_dmx_full:
+                                log.debug("[DMX] universe=%s values=%s", uni_num, values_to_send)
+                            else:
+                                nonzero = [(i, v) for i, v in enumerate(values_to_send) if v]
+                                sample = nonzero[:8]
+                                log.debug(
+                                    "[DMX] universe=%s nonzero=%s sample=%s",
+                                    uni_num, len(nonzero), sample
+                                )
+                        if self._artnet_diff:
+                            sent = self._send_artnet_diff(
+                                uni_num, values_to_send, heartbeat_due=heartbeat_due
+                            )
+                        else:
+                            self.artnet.send_universe(uni_num, values_to_send)
+                            sent = True
+                        if sent:
+                            self._packet_count += 1
+                            self._last_send_ts = wall_now
+                        self._record_send_stats(uni_num, values_to_send, now)
+                    self._record_perf(
+                        "send",
+                        (time.perf_counter() - burst_start) * 1000.0,
+                        count=float(len(send_queue)),
+                    )
+                    if changed_batch:
+                        self._last_global_send_time = now
 
         self._maybe_log_stats(now)
         self._record_perf("render", (time.perf_counter() - frame_start) * 1000.0)
         self._maybe_log_perf(now)
-
-    def _should_send_universe(self, universe: int, values: List[int], now: float) -> Tuple[bool, bool]:
-        """Return True if we should send this universe at this tick."""
-        last_values = self._last_sent_universes.get(universe)
-        changed = (last_values != values)
-
-        last_time = self._last_sent_time.get(universe, 0.0)
-        heartbeat_due = (self._heartbeat_sec > 0 and (now - last_time) >= self._heartbeat_sec)
-
-        if not changed and not heartbeat_due:
-            self._stats["frames_skipped"] += 1
-            return False, heartbeat_due
-
-        min_send_interval = self._effective_min_send_interval_locked()
-        if min_send_interval > 0 and (now - last_time) < min_send_interval:
-            self._stats["frames_skipped"] += 1
-            return False, heartbeat_due
-
-        return True, heartbeat_due
 
     def _record_send_stats(self, universe: int, values: List[int], now: float):
         self._last_sent_universes[universe] = values[:]
@@ -932,6 +1419,10 @@ class DMXRenderEngine:
 
     def _render_backend_frame(self, now: float):
         """Backend-render mode: compute base + effects per device."""
+        if self._is_timeline_mode_active_locked():
+            self._render_timeline_frame(now)
+            return
+
         base_map = self._build_base_universe_map(now, apply_fade=True)
 
         # Reuse universe buffers instead of reallocating a new map every tick.
@@ -953,6 +1444,65 @@ class DMXRenderEngine:
             device_ids = list(self._devices.keys())
             for dev_id, dev in self._devices.items():
                 self._apply_effects_for_device(dev, dev_id, t_ms, device_ids, now)
+
+    def _render_timeline_frame(self, now: float):
+        runtime = self._timeline_runtime or {}
+        blocks: List[TimelineBlock] = list(runtime.get("blocks") or [])
+        priority_mode = self._normalize_timeline_priority_mode(runtime.get("priority_mode"))
+        elapsed_ms = self._timeline_elapsed_ms_locked(now)
+        active_blocks = self._timeline_active_blocks_locked(elapsed_ms)
+        render_blocks = self._timeline_sort_blocks_for_render(active_blocks, priority_mode)
+
+        active_devices = set()
+        for block in active_blocks:
+            devices = block.cue_payload.get("devices") or {}
+            if isinstance(devices, dict):
+                active_devices.update(str(dev_id) for dev_id in devices.keys())
+
+        prep_blocks: Dict[str, TimelineBlock] = {}
+        for block in blocks:
+            if block.start_ms <= elapsed_ms:
+                continue
+            devices = block.cue_payload.get("devices") or {}
+            if not isinstance(devices, dict):
+                continue
+            for dev_id in devices.keys():
+                dev_key = str(dev_id)
+                if dev_key in active_devices or dev_key in prep_blocks:
+                    continue
+                prep_blocks[dev_key] = block
+
+        target_universes = set(self._universes.keys())
+        for block in active_blocks:
+            devices = block.cue_payload.get("devices") or {}
+            if isinstance(devices, dict):
+                for dev_spec in devices.values():
+                    if isinstance(dev_spec, dict):
+                        channels = dev_spec.get("channels") or {}
+                        try:
+                            target_universes.add(int(channels.get("Universe", 0) or 0))
+                        except Exception:
+                            continue
+        for block in prep_blocks.values():
+            devices = block.cue_payload.get("devices") or {}
+            if isinstance(devices, dict):
+                for dev_spec in devices.values():
+                    if isinstance(dev_spec, dict):
+                        channels = dev_spec.get("channels") or {}
+                        try:
+                            target_universes.add(int(channels.get("Universe", 0) or 0))
+                        except Exception:
+                            continue
+
+        for uni_num in target_universes:
+            self._ensure_universe(uni_num)
+            self._universes[uni_num][:] = self._zero_universe
+
+        for dev_id, block in prep_blocks.items():
+            self._apply_timeline_prep_block(dev_id, block)
+
+        for block in render_blocks:
+            self._apply_timeline_block(block, elapsed_ms, now)
 
     def _compute_group_mix_for_device(self, dev_id: str, now: float) -> Dict[str, float]:
         """Compute per-group mix for cue groups during fades."""
@@ -1030,6 +1580,78 @@ class DMXRenderEngine:
         delta = (amp / 100.0) * 127.5
         return delta * y
 
+    def _apply_effect_group_to_device(
+        self,
+        group: Dict[str, Any],
+        dev: DeviceState,
+        dev_id: str,
+        uni: List[int],
+        t_ms: float,
+        mix: float,
+    ) -> None:
+        if not group:
+            return
+
+        runtime = self._resolve_effect_members(group)
+        members = runtime.get("by_device", {}).get(dev_id) or []
+        if not members:
+            return
+
+        runtime_group = runtime.get("runtime_group") or group
+        mode = str(group.get("mode") or "legacy").strip().lower()
+
+        if mode == "intelligent" and IntelligentFX:
+            defn = IntelligentFX.get_effect_def(group.get("type"))
+            if not defn:
+                return
+            targets = IntelligentFX.normalize_targets(group.get("targets") or defn.get("targets"))
+            if not targets or mix <= 0:
+                return
+            for member in members:
+                member_id = str(member.get("member_id") or dev_id)
+                member_idx = int(member.get("index") or 0)
+                member_targets = dict(member.get("targets") or {})
+                for target in targets:
+                    channel = member_targets.get(str(target).lower())
+                    if channel is None or not (0 <= int(channel) < 512):
+                        continue
+                    base_val = uni[int(channel)]
+                    ctx = {
+                        "params": runtime_group,
+                        "group": runtime_group,
+                        "t_ms": t_ms,
+                        "device_index": member_idx,
+                        "device_count": int(runtime.get("count") or 1),
+                        "device_id": member_id,
+                        "target": target,
+                        "effect": defn,
+                    }
+                    raw = IntelligentFX.eval_effect(defn["id"], ctx)
+                    uni[int(channel)] = IntelligentFX.apply_effect_value(defn, base_val, raw, scale=mix)
+            return
+
+        target_key = self._group_target_key(group)
+        if not target_key or mix <= 0:
+            return
+
+        scaled_group = dict(runtime_group)
+        amp = float(group.get("amplitude", 0) or 0)
+        scaled_group["amplitude"] = amp * mix
+
+        for member in members:
+            member_targets = dict(member.get("targets") or {})
+            channel = member_targets.get(target_key)
+            if channel is None or not (0 <= int(channel) < 512):
+                continue
+            delta = self._eval_legacy_group_delta(
+                scaled_group,
+                t_ms,
+                str(member.get("member_id") or dev_id),
+                int(member.get("index") or 0),
+                int(runtime.get("count") or 1),
+            )
+            uni[int(channel)] = max(0, min(255, int(round(uni[int(channel)] + delta))))
+
     def _apply_effects_for_device(self, dev: DeviceState, dev_id: str, t_ms: float, device_ids: List[str], now: float):
         """Apply cue/live groups + legacy per-channel effects for a device."""
         uni = self._universes.get(dev.universe)
@@ -1055,51 +1677,7 @@ class DMXRenderEngine:
         def apply_group(gid: str, group: Dict[str, Any], mix: float):
             if not group:
                 return
-            mode = str(group.get("mode") or "legacy").lower()
-            idx, cnt = self._device_group_index(group, dev_id)
-
-            if mode == "intelligent" and IntelligentFX:
-                defn = IntelligentFX.get_effect_def(group.get("type"))
-                if not defn:
-                    return
-                targets = IntelligentFX.normalize_targets(group.get("targets") or defn.get("targets"))
-                if not targets:
-                    return
-                for target in targets:
-                    ch = dev.attr_map.get(str(target).lower())
-                    if ch is None or not (0 <= ch < 512):
-                        continue
-                    base_val = uni[ch]
-                    ctx = {
-                        "params": group,
-                        "group": group,
-                        "t_ms": t_ms,
-                        "device_index": idx,
-                        "device_count": cnt,
-                        "device_id": dev_id,
-                        "target": target,
-                        "effect": defn,
-                    }
-                    raw = IntelligentFX.eval_effect(defn["id"], ctx)
-                    uni[ch] = IntelligentFX.apply_effect_value(defn, base_val, raw, scale=mix)
-                return
-
-            # Legacy group
-            attr = str(group.get("attrKey") or group.get("attr") or "").lower()
-            if not attr:
-                return
-            ch = dev.attr_map.get(attr)
-            if ch is None or not (0 <= ch < 512):
-                return
-
-            if mix <= 0:
-                return
-
-            scaled_group = dict(group)
-            amp = float(group.get("amplitude", 0) or 0)
-            scaled_group["amplitude"] = amp * mix
-            delta = self._eval_legacy_group_delta(scaled_group, t_ms, dev_id, idx, cnt)
-            uni[ch] = max(0, min(255, int(round(uni[ch] + delta))))
+            self._apply_effect_group_to_device(group, dev, dev_id, uni, t_ms, mix)
 
         for gid in cue_group_ids:
             group = group_pool.get(gid)
@@ -1124,6 +1702,156 @@ class DMXRenderEngine:
                     offset = self._eval_effect(eff, now, dev_idx, dev_count)
                     if 0 <= ch < 512:
                         uni[ch] = max(0, min(255, int(uni[ch] + offset * 255)))
+
+    def _apply_timeline_prep_block(self, dev_id: str, block: TimelineBlock) -> None:
+        devices = block.cue_payload.get("devices") or {}
+        dev_spec = devices.get(dev_id)
+        if not isinstance(dev_spec, dict):
+            return
+
+        channels = dev_spec.get("channels") or {}
+        try:
+            universe = int(channels.get("Universe", 0) or 0)
+        except Exception:
+            universe = 0
+        self._ensure_universe(universe)
+        uni = self._universes[universe]
+        dev_state = self._devices.get(str(dev_id))
+
+        for ch_str, raw_val in channels.items():
+            if str(ch_str).lower() == "universe":
+                continue
+            try:
+                channel = int(ch_str)
+                value = max(0, min(255, int(raw_val)))
+            except Exception:
+                continue
+            attr_key = self._attr_key_for_channel(dev_state, channel) if dev_state else ""
+            if self._timeline_attr_kind(attr_key) == "other" and 0 <= channel < 512:
+                uni[channel] = value
+
+    def _apply_timeline_block_effect_groups(
+        self,
+        block: TimelineBlock,
+        dev_state: DeviceState,
+        dev_id: str,
+        elapsed_ms: int,
+        now: float,
+        fade_mix: float,
+    ) -> None:
+        if fade_mix <= 0:
+            return
+        uni = self._universes.get(dev_state.universe)
+        if uni is None:
+            return
+
+        group_defs = block.cue_payload.get("effect_groups") or []
+        if not isinstance(group_defs, list):
+            group_defs = []
+
+        local_ms = max(0.0, float(elapsed_ms - block.start_ms))
+        speed = self._playback_run_speed if self._playback_state.get("active") else 1.0
+        t_ms = local_ms * max(0.01, float(speed or 1.0))
+
+        for group in group_defs:
+            if not isinstance(group, dict):
+                continue
+            targets_devices = group.get("deviceIds") or group.get("device_ids") or []
+            if isinstance(targets_devices, list) and targets_devices:
+                if str(dev_id) not in {str(x) for x in targets_devices}:
+                    continue
+            self._apply_effect_group_to_device(group, dev_state, dev_id, uni, t_ms, fade_mix)
+
+    def _apply_timeline_block_channel_effects(
+        self,
+        block: TimelineBlock,
+        dev_state: DeviceState,
+        dev_id: str,
+        dev_spec: Dict[str, Any],
+        elapsed_ms: int,
+        now: float,
+        fade_mix: float,
+    ) -> None:
+        if fade_mix <= 0 or not EffectModule:
+            return
+        effects_raw = dev_spec.get("effects") or {}
+        if not isinstance(effects_raw, dict):
+            return
+
+        uni = self._universes.get(dev_state.universe)
+        if uni is None:
+            return
+
+        device_ids = [str(x) for x in (block.device_order or list((block.cue_payload.get("devices") or {}).keys()))]
+        dev_count = max(1, len(device_ids))
+        dev_idx = device_ids.index(dev_id) if dev_id in device_ids else 0
+        speed = self._playback_run_speed if self._playback_state.get("active") else 1.0
+        t_s = (max(0.0, float(elapsed_ms - block.start_ms)) / 1000.0) * max(0.01, float(speed or 1.0))
+
+        for ch_str, effect_specs in effects_raw.items():
+            try:
+                channel = int(ch_str)
+            except Exception:
+                continue
+            if not (0 <= channel < 512):
+                continue
+            if not isinstance(effect_specs, list):
+                effect_specs = [effect_specs]
+            for effect_spec in effect_specs:
+                if not isinstance(effect_spec, dict):
+                    continue
+                effect_dict = {
+                    "type": effect_spec.get("type"),
+                    "amplitude": float(effect_spec.get("amplitude", 100) or 100),
+                    "frequency": float(effect_spec.get("frequency", 1) or 1),
+                    "phase": effect_spec.get("phase", 0),
+                    **{k: v for k, v in effect_spec.items() if k not in ("type", "amplitude", "frequency", "phase")},
+                }
+                offset = EffectModule.eval_effects(effect_dict, t_s, idx=dev_idx, count=dev_count)
+                uni[channel] = max(0, min(255, int(round(uni[channel] + (offset * 255.0 * fade_mix)))))
+
+    def _apply_timeline_block(self, block: TimelineBlock, elapsed_ms: int, now: float) -> None:
+        devices = block.cue_payload.get("devices") or {}
+        if not isinstance(devices, dict):
+            return
+
+        fade_mix = self._timeline_block_fade_mix(block, elapsed_ms)
+        for dev_id, dev_spec in devices.items():
+            if not isinstance(dev_spec, dict):
+                continue
+            channels = dev_spec.get("channels") or {}
+            try:
+                universe = int(channels.get("Universe", 0) or 0)
+            except Exception:
+                universe = 0
+            self._ensure_universe(universe)
+            uni = self._universes[universe]
+
+            dev_key = str(dev_id)
+            dev_state = self._devices.get(dev_key)
+            if dev_state is None:
+                dev_state = DeviceState(device_id=dev_key, universe=universe)
+                self._devices[dev_key] = dev_state
+
+            for ch_str, raw_val in channels.items():
+                if str(ch_str).lower() == "universe":
+                    continue
+                try:
+                    channel = int(ch_str)
+                    target_val = max(0, min(255, int(raw_val)))
+                except Exception:
+                    continue
+                if not (0 <= channel < 512):
+                    continue
+                attr_key = self._attr_key_for_channel(dev_state, channel)
+                attr_kind = self._timeline_attr_kind(attr_key)
+                if attr_kind in ("dimmer", "color"):
+                    uni[channel] = max(0, min(255, int(round(float(target_val) * float(fade_mix)))))
+                else:
+                    uni[channel] = target_val
+
+            self._apply_timeline_block_effect_groups(block, dev_state, dev_key, elapsed_ms, now, fade_mix)
+            self._apply_timeline_block_channel_effects(block, dev_state, dev_key, dev_spec, elapsed_ms, now, fade_mix)
 
     def _render_device(self, dev: DeviceState, dev_id: str, now: float):
         """Render a single device's channels"""
@@ -1260,11 +1988,98 @@ class DMXRenderEngine:
                 )
             self._ensure_universe(universe)
 
-    def register_rig_devices(self, devices: List[Any]):
-        """Register/update devices with attr_map from UI rig."""
+    def _calib_value(self, raw: Any) -> Optional[int]:
+        """Coerce a calibration DMX value to an int in [0, 255] or None."""
+        if raw is None or raw == "":
+            return None
+        try:
+            v = int(round(float(raw)))
+        except Exception:
+            return None
+        return max(0, min(255, v))
+
+    def _purge_device_output(self, dev: "DeviceState") -> None:
+        """Zero a device's channels in its universe and clear any live edits.
+
+        Called when a device is removed (rig change / project switch) so its
+        last DMX values do not linger as ghost output on the next frame.
+        Caller must hold ``self._lock``.
+        """
+        universe = int(getattr(dev, "universe", 0) or 0)
+        chans = set(int(c) for c in (dev.channels or {}).keys() if 0 <= int(c) < 512)
+        for ch in (dev.attr_map or {}).values():
+            try:
+                ci = int(ch)
+            except Exception:
+                continue
+            if 0 <= ci < 512:
+                chans.add(ci)
+        uni = self._universes.get(universe)
+        direct = self._direct_channels.get(universe)
+        for ch in chans:
+            if uni is not None:
+                uni[ch] = 0
+            if direct is not None:
+                direct.pop(ch, None)
+            smooth = self._smooth_targets.get(universe)
+            if smooth is not None:
+                smooth.pop(ch, None)
+
+    def reset_rig(self) -> None:
+        """Fully clear the rig and all derived state, zeroing every universe.
+
+        Used when opening a new/blank project so the engine starts from a
+        clean slate (no ghost devices, no residual channel values). The UI is
+        responsible for resetting its own device-id counter back to 1.
+        """
+        with self._lock:
+            self._devices.clear()
+            self._live_effects.clear()
+            self._cue_effects.clear()
+            self._live_effect_groups.clear()
+            self._live_groups_by_device.clear()
+            self._cue_effect_groups.clear()
+            self._cue_groups_by_device.clear()
+            self._fade = None
+            self._fade_effect_groups = None
+            self._direct_channels.clear()
+            self._smooth_targets.clear()
+            self._smooth_last_targets.clear()
+            for uni in self._universes.values():
+                uni[:] = self._zero_universe
+            overlay = self._autolight_overlay
+        if overlay is not None and hasattr(overlay, "on_rig_changed"):
+            try:
+                overlay.on_rig_changed(self._devices)
+            except Exception as exc:
+                log.debug("autolight overlay on_rig_changed failed: %s", exc)
+
+    def register_rig_devices(self, devices: List[Any], replace: bool = False):
+        """Register/update devices with attr_map from UI rig.
+
+        When ``replace`` is True the incoming list is treated as the complete
+        rig: any device currently known but absent from ``devices`` is removed
+        and its channels zeroed. This prevents "ghost" fixtures lingering after
+        loading a cue list / project with fewer devices.
+        """
         if not isinstance(devices, list):
             return
         with self._lock:
+            if replace:
+                incoming_ids = set()
+                for entry in devices:
+                    if not isinstance(entry, dict):
+                        continue
+                    did = str(entry.get("device_id") or entry.get("id") or "").strip()
+                    if did:
+                        incoming_ids.add(did)
+                for stale_id in [d for d in self._devices if d not in incoming_ids]:
+                    self._purge_device_output(self._devices[stale_id])
+                    self._devices.pop(stale_id, None)
+                    self._live_effects.pop(stale_id, None)
+                    self._cue_effects.pop(stale_id, None)
+                    self._live_groups_by_device.pop(stale_id, None)
+                    self._cue_groups_by_device.pop(stale_id, None)
             for entry in devices:
                 if not isinstance(entry, dict):
                     continue
@@ -1287,21 +2102,68 @@ class DMXRenderEngine:
                         if 0 <= ch < 512:
                             attr_map[key] = ch
 
+                x_raw = entry.get("x")
+                y_raw = entry.get("y")
+                try:
+                    x_val = float(x_raw) if x_raw is not None else None
+                except Exception:
+                    x_val = None
+                try:
+                    y_val = float(y_raw) if y_raw is not None else None
+                except Exception:
+                    y_val = None
+                fixture_template = str(entry.get("fixture") or "").strip()
+                cname = str(entry.get("cname") or "").strip()
+                capabilities = _classify_device_capabilities(attr_map, fixture_template)
+                home_pan = self._calib_value(entry.get("home_pan"))
+                home_tilt = self._calib_value(entry.get("home_tilt"))
+                invert_pan = bool(entry.get("invert_pan"))
+                invert_tilt = bool(entry.get("invert_tilt"))
+
                 if dev_id in self._devices:
                     dev = self._devices[dev_id]
                     dev.universe = universe
                     dev.base_address = address
                     if attr_map:
                         dev.attr_map = attr_map
+                    if x_val is not None:
+                        dev.x = x_val
+                    if y_val is not None:
+                        dev.y = y_val
+                    if fixture_template:
+                        dev.fixture_template = fixture_template
+                    if cname:
+                        dev.cname = cname
+                    dev.capabilities = capabilities
+                    dev.home_pan = home_pan
+                    dev.home_tilt = home_tilt
+                    dev.invert_pan = invert_pan
+                    dev.invert_tilt = invert_tilt
                 else:
                     self._devices[dev_id] = DeviceState(
                         device_id=dev_id,
                         universe=universe,
                         base_address=address,
                         channels={},
-                        attr_map=attr_map
+                        attr_map=attr_map,
+                        x=x_val,
+                        y=y_val,
+                        fixture_template=fixture_template,
+                        cname=cname,
+                        capabilities=capabilities,
+                        home_pan=home_pan,
+                        home_tilt=home_tilt,
+                        invert_pan=invert_pan,
+                        invert_tilt=invert_tilt,
                     )
                 self._ensure_universe(universe)
+
+            overlay = self._autolight_overlay
+        if overlay is not None and hasattr(overlay, "on_rig_changed"):
+            try:
+                overlay.on_rig_changed(self._devices)
+            except Exception as exc:
+                log.debug("autolight overlay on_rig_changed failed: %s", exc)
 
     def unregister_device(self, device_id: str):
         """Remove a device"""
@@ -1309,6 +2171,37 @@ class DMXRenderEngine:
             self._devices.pop(device_id, None)
             self._live_effects.pop(device_id, None)
             self._cue_effects.pop(device_id, None)
+
+    def set_autolight_overlay(self, overlay: Optional[Any]) -> None:
+        """Install (or clear) a callable invoked each render tick.
+
+        Signature: ``overlay(universes: Dict[int, List[int]], now: float)``.
+        The callable runs inside the render lock and may mutate universe
+        values in place. Pass ``None`` to remove the overlay.
+        """
+        with self._lock:
+            self._autolight_overlay = overlay
+            devices_snapshot = dict(self._devices) if self._devices else {}
+        if overlay is not None and hasattr(overlay, "on_rig_changed") and devices_snapshot:
+            try:
+                overlay.on_rig_changed(devices_snapshot)
+            except Exception as exc:
+                log.debug("autolight overlay on_rig_changed (install) failed: %s", exc)
+
+    def has_active_fade_for(self, device_id: str) -> bool:
+        """True when a cue fade is currently touching ``device_id``.
+
+        Used by AutoLight to yield a fixture while a manual cue is fading it
+        in/out. Must be called without the engine lock; acquires it briefly.
+        """
+        with self._lock:
+            fade = self._fade
+            if fade is None:
+                return False
+            schedule = getattr(fade, "schedule", None)
+            if not isinstance(schedule, dict) or not schedule:
+                return True
+            return str(device_id) in schedule
 
     def set_channel(self, device_id: str, universe: int, channel: int, value: int):
         """Set a single channel value (from controller) - uses direct channel storage"""
@@ -1373,6 +2266,52 @@ class DMXRenderEngine:
                     for ch, val in channels.items():
                         self._devices[dev_id].channels[ch] = max(0, min(255, val))
 
+    def set_channels_multi(self, device_id: str, updates: Dict[int, Dict[int, int]]):
+        """Atomic write of channels across multiple universes (single lock acquisition).
+
+        `updates` shape: {universe: {channel: value}}. All writes land in the
+        engine state in the same critical section so the next render frame sees
+        them as one consistent snapshot — required for cross-universe sync on
+        live edits."""
+        if not updates:
+            return
+        with self._lock:
+            for uni, channels in updates.items():
+                if not channels:
+                    continue
+                try:
+                    universe = int(uni)
+                except (TypeError, ValueError):
+                    continue
+                if universe not in self._direct_channels:
+                    self._direct_channels[universe] = {}
+                direct = self._direct_channels[universe]
+                for ch, val in channels.items():
+                    try:
+                        ch_int = int(ch) if isinstance(ch, str) else ch
+                    except (TypeError, ValueError):
+                        continue
+                    v = self._filter_value(universe, ch_int, val)
+                    if v is None:
+                        continue
+                    if self._is_smooth_channel(universe, ch_int) and not self._smooth_disabled:
+                        raw_target = v
+                        if self._smooth_predict:
+                            v = self._predict_target(universe, ch_int, raw_target)
+                        self._smooth_last_targets.setdefault(universe, {})[ch_int] = raw_target
+                        self._ensure_universe(universe)
+                        cur = self._universes[universe][ch_int]
+                        if self._should_bypass_smoothing(cur, v):
+                            direct[ch_int] = v
+                            self._smooth_targets.get(universe, {}).pop(ch_int, None)
+                        else:
+                            direct.pop(ch_int, None)
+                            self._smooth_targets.setdefault(universe, {})[ch_int] = v
+                    else:
+                        if self._smooth_disabled:
+                            self._smooth_targets.get(universe, {}).pop(ch_int, None)
+                        direct[ch_int] = v
+
     # -------------------------------------------------------------------------
     # PUBLIC API: LIVE EFFECTS
     # -------------------------------------------------------------------------
@@ -1433,6 +2372,44 @@ class DMXRenderEngine:
                     self._live_effect_groups = normalized
 
             self._live_groups_by_device = self._build_group_device_map(self._live_effect_groups)
+
+    def remove_effect_group_everywhere(self, group_ids: Any) -> int:
+        """Remove the given group id(s) from BOTH live and cue effect state.
+        Used when the UI explicitly deletes a group while a cue is playing,
+        so the effect stops immediately instead of continuing from the cue
+        snapshot until the cue ends ("rémanence" bug).
+        Returns the number of groups actually removed (across both pools).
+        """
+        ids: set = set()
+        if isinstance(group_ids, (list, tuple, set)):
+            for x in group_ids:
+                if x is None:
+                    continue
+                ids.add(str(x))
+        elif group_ids is not None:
+            ids.add(str(group_ids))
+        if not ids:
+            return 0
+
+        removed = 0
+        with self._lock:
+            for gid in ids:
+                if self._live_effect_groups.pop(gid, None) is not None:
+                    removed += 1
+                if self._cue_effect_groups.pop(gid, None) is not None:
+                    removed += 1
+                if self._fade_effect_groups:
+                    pool = self._fade_effect_groups.get("pool") or {}
+                    if isinstance(pool, dict) and pool.pop(gid, None) is not None:
+                        removed += 1
+                    union = self._fade_effect_groups.get("union") or {}
+                    if isinstance(union, dict):
+                        for dev_set in union.values():
+                            if isinstance(dev_set, set):
+                                dev_set.discard(gid)
+            self._live_groups_by_device = self._build_group_device_map(self._live_effect_groups)
+            self._cue_groups_by_device = self._build_group_device_map(self._cue_effect_groups)
+        return removed
 
     # -------------------------------------------------------------------------
     # PUBLIC API: IDENTIFY
@@ -1614,6 +2591,7 @@ class DMXRenderEngine:
             self._playback_stop_event.set()
             self._playback_skip_requested = False
             self._playback_wait_adjust_ms = 0
+            self._timeline_runtime = None
             self._fade = None
             self._cue_effects.clear()
             self._fade_effect_groups = None
@@ -1642,29 +2620,96 @@ class DMXRenderEngine:
         with self._lock:
             if not self._playback_state.get("active"):
                 return
+            if self._timeline_runtime is not None:
+                now = time.perf_counter()
+                self._timeline_runtime["base_offset_ms"] = self._timeline_elapsed_ms_locked(now)
+                self._timeline_runtime["anchor_time"] = now
             self._update_playback_state_locked(paused=bool(paused))
         self._notify_state_change()
 
     def skip_playback_step(self):
+        handled = False
         with self._lock:
             if not self._playback_state.get("active"):
                 return
-            self._playback_skip_requested = True
-            self._fade = None
-            self._update_playback_state_locked(wait_remaining_ms=0)
+            if self._timeline_runtime is not None:
+                now = time.perf_counter()
+                elapsed_ms = self._timeline_elapsed_ms_locked(now)
+                priority_mode = self._normalize_timeline_priority_mode(self._timeline_runtime.get("priority_mode"))
+                active_blocks = self._timeline_active_blocks_locked(elapsed_ms)
+                focus_block = self._timeline_pick_focus_block_locked(active_blocks, priority_mode)
+                if focus_block is not None:
+                    self._timeline_runtime["base_offset_ms"] = int(focus_block.end_ms)
+                else:
+                    next_blocks = self._timeline_next_blocks_locked(elapsed_ms)
+                    next_block = self._timeline_pick_focus_block_locked(next_blocks, priority_mode)
+                    self._timeline_runtime["base_offset_ms"] = int(next_block.start_ms) if next_block is not None else elapsed_ms
+                self._timeline_runtime["anchor_time"] = now
+                self._playback_wait_adjust_ms = 0
+                self._update_playback_state_locked(phase_remaining_ms=0)
+                handled = True
+            if handled:
+                pass
+            else:
+                self._playback_skip_requested = True
+                self._fade = None
+                self._update_playback_state_locked(wait_remaining_ms=0)
         self._notify_state_change()
 
     def adjust_playback_wait(self, delta_ms: int):
+        handled = False
         with self._lock:
             if not self._playback_state.get("active"):
                 return
             if str(self._playback_state.get("phase") or "") != "waiting":
                 return
-            self._playback_wait_adjust_ms += int(delta_ms)
-            self._update_playback_state_locked()
+            if self._timeline_runtime is not None:
+                now = time.perf_counter()
+                self._playback_wait_adjust_ms += int(delta_ms)
+                self._timeline_runtime["base_offset_ms"] = max(
+                    0,
+                    int(self._timeline_elapsed_ms_locked(now) - int(delta_ms))
+                )
+                self._timeline_runtime["anchor_time"] = now
+                self._update_playback_state_locked()
+                handled = True
+            if not handled:
+                self._playback_wait_adjust_ms += int(delta_ms)
+                self._update_playback_state_locked()
         self._notify_state_change()
 
-    def run_sequence(self, sequence: List[Dict[str, Any]], start_index: int = 0, virtual_groups: Any = None, speed: Any = 1.0):
+    def seek_playback(self, seek_ms: int):
+        with self._lock:
+            if not self._playback_state.get("active") or self._timeline_runtime is None:
+                return
+            runtime = self._timeline_runtime
+            total_length_ms = max(0, int(runtime.get("total_length_ms", 0) or 0))
+            resolved_seek_ms = max(0, min(int(seek_ms or 0), total_length_ms))
+            now = time.perf_counter()
+            runtime["base_offset_ms"] = resolved_seek_ms
+            runtime["anchor_time"] = now
+            runtime["last_focus_key"] = None
+            runtime["cue_token"] = 0
+            self._playback_wait_adjust_ms = 0
+            self._update_playback_state_locked(phase_remaining_ms=0)
+        self._notify_state_change()
+
+    def run_sequence(
+        self,
+        sequence: List[Dict[str, Any]],
+        start_index: int = 0,
+        virtual_groups: Any = None,
+        speed: Any = 1.0,
+        mode: str = "classic",
+        timeline: Any = None,
+        priority_mode: str = "top",
+        start_ms: int = 0,
+        paused: bool = False,
+    ):
+        mode_key = str(mode or "classic").strip().lower()
+        if mode_key == "timeline":
+            self._run_timeline(timeline, speed=speed, priority_mode=priority_mode, start_ms=start_ms, paused=paused)
+            return
         if not isinstance(sequence, list):
             raise ValueError("sequence must be a list")
 
@@ -1723,6 +2768,68 @@ class DMXRenderEngine:
                 self._restore_playback_render_locked()
         self._notify_state_change()
 
+    def _run_timeline(
+        self,
+        timeline: Any,
+        speed: Any = 1.0,
+        priority_mode: str = "top",
+        start_ms: int = 0,
+        paused: bool = False,
+    ) -> None:
+        blocks = self._normalize_timeline_blocks(timeline)
+        run_speed = self._normalize_playback_speed(speed if speed is not None else self._playback_speed)
+        resolved_priority = self._normalize_timeline_priority_mode(priority_mode)
+        total_length_ms = max((int(block.end_ms) for block in blocks), default=0)
+        resolved_start_ms = max(0, min(int(start_ms or 0), total_length_ms))
+
+        self.stop_playback()
+
+        with self._lock:
+            self._prepare_playback_render_locked()
+            self._playback_speed = run_speed
+            self._playback_run_speed = run_speed
+            self._effect_epoch = time.perf_counter()
+            self._fade = None
+            self._cue_effects.clear()
+            self._cue_effect_groups = {}
+            self._cue_groups_by_device = {}
+            self._fade_effect_groups = None
+            self._playback_stop_event = threading.Event()
+            self._playback_skip_requested = False
+            self._playback_wait_adjust_ms = 0
+            self._timeline_runtime = {
+                "blocks": blocks,
+                "priority_mode": resolved_priority,
+                "total_length_ms": total_length_ms,
+                "anchor_time": time.perf_counter(),
+                "base_offset_ms": resolved_start_ms,
+                "last_focus_key": None,
+                "cue_token": 0,
+            }
+            self._update_playback_state_locked(
+                active=bool(blocks),
+                paused=bool(paused),
+                phase="idle",
+                cue_index=-1,
+                plan_index=-1,
+                cue_name="",
+                cue_token=0,
+                phase_remaining_ms=0,
+                sequence_length=len(blocks),
+                speed=run_speed,
+            )
+            if blocks:
+                self._playback_thread = threading.Thread(
+                    target=self._play_timeline,
+                    daemon=True,
+                    name="DMXTimelineScheduler",
+                )
+                self._playback_thread.start()
+            else:
+                self._playback_run_speed = self._playback_speed
+                self._restore_playback_render_locked()
+        self._notify_state_change()
+
     def playback_control(self, action: str, delta_ms: int = 0):
         action_key = str(action or "").strip().lower()
         if action_key == "pause":
@@ -1731,12 +2838,128 @@ class DMXRenderEngine:
             self.pause_playback(False)
         elif action_key == "skip":
             self.skip_playback_step()
+        elif action_key == "seek":
+            self.seek_playback(delta_ms)
         elif action_key in ("adjust_wait", "adjust"):
             self.adjust_playback_wait(delta_ms)
         elif action_key == "stop":
             self.stop_playback()
         else:
             raise ValueError(f"unknown playback action: {action}")
+
+    def _play_timeline(self) -> None:
+        stop_event = self._playback_stop_event
+
+        try:
+            while not stop_event.is_set():
+                now = time.perf_counter()
+                with self._lock:
+                    runtime = self._timeline_runtime
+                    if not runtime:
+                        return
+                    paused = bool(self._playback_state.get("paused"))
+                    elapsed_ms = self._timeline_elapsed_ms_locked(now)
+                    total_length_ms = int(runtime.get("total_length_ms", 0) or 0)
+                    priority_mode = self._normalize_timeline_priority_mode(runtime.get("priority_mode"))
+                    active_blocks = self._timeline_active_blocks_locked(elapsed_ms)
+                    next_blocks = self._timeline_next_blocks_locked(elapsed_ms)
+                    focus_block = self._timeline_pick_focus_block_locked(active_blocks, priority_mode)
+                    waiting_block = self._timeline_pick_focus_block_locked(next_blocks, priority_mode)
+
+                    phase = "idle"
+                    phase_remaining_ms = 0
+                    cue_index = -1
+                    plan_index = -1
+                    cue_name = ""
+
+                    if focus_block is not None:
+                        local_ms = max(0, elapsed_ms - int(focus_block.start_ms))
+                        fade_end_ms = max(int(focus_block.fade_start_ms), int(focus_block.fade_end_ms))
+                        if local_ms < fade_end_ms:
+                            phase = "fading"
+                            phase_remaining_ms = max(0, fade_end_ms - local_ms)
+                        else:
+                            phase = "active"
+                            phase_remaining_ms = max(0, int(focus_block.end_ms) - elapsed_ms)
+                        cue_index = int(focus_block.cue_index)
+                        plan_index = int(focus_block.plan_index)
+                        cue_name = str(focus_block.cue_name)
+                        focus_key = (focus_block.plan_index, focus_block.start_ms)
+                        if runtime.get("last_focus_key") != focus_key:
+                            runtime["last_focus_key"] = focus_key
+                            runtime["cue_token"] = int(runtime.get("cue_token", 0) or 0) + 1
+                    elif waiting_block is not None:
+                        phase = "waiting"
+                        phase_remaining_ms = max(0, int(waiting_block.start_ms) - elapsed_ms)
+                        cue_index = int(waiting_block.cue_index)
+                        plan_index = int(waiting_block.plan_index)
+                        cue_name = str(waiting_block.cue_name)
+                    else:
+                        runtime["last_focus_key"] = None
+
+                    cue_token = int(runtime.get("cue_token", 0) or 0)
+                    self._update_playback_state_locked(
+                        active=bool(runtime.get("blocks")),
+                        paused=paused,
+                        phase=phase,
+                        cue_index=cue_index,
+                        plan_index=plan_index,
+                        cue_name=cue_name,
+                        cue_token=cue_token,
+                        phase_remaining_ms=phase_remaining_ms,
+                        sequence_length=len(runtime.get("blocks") or []),
+                        speed=self._playback_run_speed,
+                    )
+
+                    should_finish = (focus_block is None and waiting_block is None and elapsed_ms >= total_length_ms)
+
+                self._notify_state_change()
+
+                if should_finish:
+                    break
+                time.sleep(self._playback_poll_interval_sec())
+
+            with self._lock:
+                self._timeline_runtime = None
+                self._restore_playback_render_locked()
+                self._playback_run_speed = self._playback_speed
+                self._update_playback_state_locked(
+                    active=False,
+                    paused=False,
+                    phase="idle",
+                    cue_index=-1,
+                    plan_index=-1,
+                    cue_name="",
+                    cue_token=0,
+                    phase_remaining_ms=0,
+                    sequence_length=0,
+                    speed=self._playback_speed,
+                )
+                self._playback_thread = None
+            self._notify_state_change()
+        finally:
+            if stop_event.is_set():
+                with self._lock:
+                    self._timeline_runtime = None
+                    self._fade = None
+                    self._cue_effects.clear()
+                    self._fade_effect_groups = None
+                    self._restore_playback_render_locked()
+                    self._playback_run_speed = self._playback_speed
+                    self._update_playback_state_locked(
+                        active=False,
+                        paused=False,
+                        phase="idle",
+                        cue_index=-1,
+                        plan_index=-1,
+                        cue_name="",
+                        cue_token=0,
+                        phase_remaining_ms=0,
+                        sequence_length=0,
+                        speed=self._playback_speed,
+                    )
+                    self._playback_thread = None
+                self._notify_state_change()
 
     def _play_sequence(self, sequence: List[PlaybackPlanEntry], sequence_length: int):
         stop_event = self._playback_stop_event

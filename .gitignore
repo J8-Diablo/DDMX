@@ -40,6 +40,10 @@ logs/
 ./config/*
 ./static/favicon.ico
 
+# User projects (rig + cue lists bundles) and recent list
+projects/
+*.ddmxproj
+
 # OS / editor files
 .DS_Store
 Thumbs.db

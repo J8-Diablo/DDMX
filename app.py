@@ -8,11 +8,13 @@ import logging
 import logging.handlers
 import re
 import socket
-import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional
 from queue import Queue
 
 from flask import Flask, render_template, jsonify, request, send_from_directory, Response
+from autolight import AutoLightService, normalize_autolight_settings
+from fixture_runtime import load_fixture_file, load_fixture_xml
+from runtime_paths import DATA_DIR, RESOURCE_DIR
 from version import APP_LICENSE_CODE, APP_NAME, APP_UPDATE_RELEASES_URL, APP_VERSION
 
 # New render engine (selectable)
@@ -37,17 +39,21 @@ try:
 except ImportError:
     IntelligentFX = None
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FIXTURES_DIR = os.path.join(BASE_DIR, "fixtures")
-CUE_DIR = os.path.join(BASE_DIR, "cue")
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
+BASE_DIR = RESOURCE_DIR
+os.makedirs(DATA_DIR, exist_ok=True)
+
+FIXTURES_DIR = os.path.join(DATA_DIR, "fixtures")
+CUE_DIR = os.path.join(DATA_DIR, "cue")
+CONFIG_DIR = os.path.join(DATA_DIR, "config")
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
-INTELLIGENT_EFFECTS_DIR = os.path.join(BASE_DIR, "intelligent_effects")
+INTELLIGENT_EFFECTS_DIR = os.path.join(DATA_DIR, "intelligent_effects")
+PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
 
 os.makedirs(FIXTURES_DIR, exist_ok=True)
 os.makedirs(CUE_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(INTELLIGENT_EFFECTS_DIR, exist_ok=True)
+os.makedirs(PROJECTS_DIR, exist_ok=True)
 
 def _safe_effect_filename(name: str) -> Optional[str]:
     """Allow only safe JS/JSON filenames for intelligent effects."""
@@ -118,12 +124,31 @@ def load_settings() -> Dict[str, Any]:
         "ui": {
             "language": "en",
         },
+        "cue_editor": {
+            "view_mode": "classic",
+            "timeline_priority_mode": "top",
+            "zoom_x": 120.0,
+            "zoom_y": 88.0,
+        },
+        "autolight": {
+            "enabled": False,
+            "mode": "live",
+            "source_mode": "player_metadata_then_local",
+            "override_timeout_ms": 5000,
+            "confidence_threshold": 0.75,
+            "allow_guarded_channels": False,
+            "snapshot_auto_capture": False,
+            "energy_sensitivity": 1.0,
+            "movement_sensitivity": 1.0,
+            "freeze_global": False,
+        },
         "dmx_runtime": {
             "render_mode": "ui",
             "playback_clock_mode": os.environ.get("DMX_PLAYBACK_CLOCK_MODE", "timeline").strip().lower(),
             "playback_engine_hz": _env_float("DMX_PLAYBACK_ENGINE_HZ", 120),
+            "idle_engine_hz": _env_float("DMX_IDLE_ENGINE_HZ", 120),
             "playback_ui_fps": _env_float("DMX_PLAYBACK_UI_FPS", 12),
-            "max_send_hz": _env_float("DMX_MAX_SEND_HZ", 40),
+            "max_send_hz": _env_float("DMX_MAX_SEND_HZ", 120),
             "heartbeat_sec": _env_float("DMX_HEARTBEAT_SEC", 0.1),
             "artnet_diff": _env_bool("DMX_ARTNET_DIFF", False),
             "artnet_heartbeat_full": _env_bool("DMX_ARTNET_HEARTBEAT_FULL", True),
@@ -186,6 +211,21 @@ def load_settings() -> Dict[str, Any]:
                 lang = ui.get("language")
                 if isinstance(lang, str) and lang.strip():
                     defaults["ui"]["language"] = lang.strip().lower()
+            cue_editor = data.get("cue_editor")
+            if isinstance(cue_editor, dict):
+                view_mode = cue_editor.get("view_mode")
+                if isinstance(view_mode, str) and view_mode.strip():
+                    defaults["cue_editor"]["view_mode"] = "timeline" if view_mode.strip().lower() == "timeline" else "classic"
+                priority = cue_editor.get("timeline_priority_mode")
+                if isinstance(priority, str) and priority.strip():
+                    prio = priority.strip().lower()
+                    defaults["cue_editor"]["timeline_priority_mode"] = prio if prio in ("top", "bottom", "merge") else "top"
+                if cue_editor.get("zoom_x") is not None:
+                    defaults["cue_editor"]["zoom_x"] = _clamp_float(cue_editor.get("zoom_x"), 20.0, 480.0, defaults["cue_editor"]["zoom_x"])
+                if cue_editor.get("zoom_y") is not None:
+                    defaults["cue_editor"]["zoom_y"] = _clamp_float(cue_editor.get("zoom_y"), 48.0, 240.0, defaults["cue_editor"]["zoom_y"])
+            autolight = data.get("autolight")
+            defaults["autolight"] = normalize_autolight_settings(autolight, defaults["autolight"])
             runtime = data.get("dmx_runtime")
             if isinstance(runtime, dict):
                 defaults["dmx_runtime"].update(runtime)
@@ -226,9 +266,10 @@ def _normalize_runtime_settings(payload: Any, current: Dict[str, Any]) -> Dict[s
     clock_mode_raw = str(payload.get("playback_clock_mode") or out.get("playback_clock_mode") or "timeline").strip().lower()
     out["playback_clock_mode"] = "absolute_clock" if clock_mode_raw == "absolute_clock" else "timeline"
     out["playback_engine_hz"] = _clamp_float(payload.get("playback_engine_hz"), 40.0, 240.0, out.get("playback_engine_hz", 120.0))
-    out["playback_ui_fps"] = _clamp_float(payload.get("playback_ui_fps"), 1.0, 30.0, out.get("playback_ui_fps", 12.0))
+    out["idle_engine_hz"] = _clamp_float(payload.get("idle_engine_hz"), 40.0, 240.0, out.get("idle_engine_hz", 120.0))
+    out["playback_ui_fps"] = _clamp_float(payload.get("playback_ui_fps"), 1.0, 60.0, out.get("playback_ui_fps", 12.0))
 
-    out["max_send_hz"] = _clamp_float(payload.get("max_send_hz"), 1.0, 120.0, out.get("max_send_hz", 40))
+    out["max_send_hz"] = _clamp_float(payload.get("max_send_hz"), 1.0, 240.0, out.get("max_send_hz", 120))
     out["heartbeat_sec"] = _clamp_float(payload.get("heartbeat_sec"), 0.0, 5.0, out.get("heartbeat_sec", 0.1))
     out["artnet_diff"] = bool(payload.get("artnet_diff", out.get("artnet_diff", False)))
     out["artnet_heartbeat_full"] = bool(payload.get("artnet_heartbeat_full", out.get("artnet_heartbeat_full", True)))
@@ -300,6 +341,29 @@ def _normalize_auto_update_settings(payload: Any, current: Dict[str, Any]) -> Di
     return out
 
 
+def _normalize_cue_editor_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(current or {})
+    if not isinstance(payload, dict):
+        out["view_mode"] = "timeline" if str(out.get("view_mode") or "").strip().lower() == "timeline" else "classic"
+        priority = str(out.get("timeline_priority_mode") or "top").strip().lower()
+        out["timeline_priority_mode"] = priority if priority in ("top", "bottom", "merge") else "top"
+        out["zoom_x"] = _clamp_float(out.get("zoom_x"), 20.0, 480.0, 120.0)
+        out["zoom_y"] = _clamp_float(out.get("zoom_y"), 48.0, 240.0, 88.0)
+        return out
+
+    view_mode = str(payload.get("view_mode") or out.get("view_mode") or "classic").strip().lower()
+    out["view_mode"] = "timeline" if view_mode == "timeline" else "classic"
+    priority = str(payload.get("timeline_priority_mode") or out.get("timeline_priority_mode") or "top").strip().lower()
+    out["timeline_priority_mode"] = priority if priority in ("top", "bottom", "merge") else "top"
+    out["zoom_x"] = _clamp_float(payload.get("zoom_x"), 20.0, 480.0, out.get("zoom_x", 120.0))
+    out["zoom_y"] = _clamp_float(payload.get("zoom_y"), 48.0, 240.0, out.get("zoom_y", 88.0))
+    return out
+
+
+def _normalize_autolight_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
+    return normalize_autolight_settings(payload, current)
+
+
 def _apply_runtime_settings(engine: Any, runtime: Dict[str, Any]) -> None:
     if not engine or not isinstance(runtime, dict):
         return
@@ -342,6 +406,10 @@ def _apply_runtime_settings(engine: Any, runtime: Dict[str, Any]) -> None:
             engine.set_playback_engine_hz(runtime.get("playback_engine_hz", 120.0))
         elif hasattr(engine, "_playback_engine_hz"):
             engine._playback_engine_hz = float(runtime.get("playback_engine_hz", 120.0))
+        if hasattr(engine, "set_idle_engine_hz"):
+            engine.set_idle_engine_hz(runtime.get("idle_engine_hz", 120.0))
+        elif hasattr(engine, "_idle_engine_hz"):
+            engine._idle_engine_hz = float(runtime.get("idle_engine_hz", 120.0))
         if hasattr(engine, "set_playback_ui_fps"):
             engine.set_playback_ui_fps(runtime.get("playback_ui_fps", 12.0))
         elif hasattr(engine, "_playback_ui_fps"):
@@ -372,6 +440,7 @@ def _apply_runtime_settings(engine: Any, runtime: Dict[str, Any]) -> None:
 
 
 SETTINGS = load_settings()
+AUTOLIGHT = AutoLightService(SETTINGS.get("autolight") or {})
 if not os.path.exists(SETTINGS_PATH):
     save_settings(SETTINGS)
 
@@ -381,7 +450,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-app = Flask(__name__, static_folder="static", template_folder="templates")
+app = Flask(
+    __name__,
+    static_folder=os.path.join(RESOURCE_DIR, "static"),
+    template_folder=os.path.join(RESOURCE_DIR, "templates"),
+)
 app.logger.setLevel(logging.DEBUG)
 app.config["APP_NAME"] = APP_NAME
 app.config["APP_VERSION"] = APP_VERSION
@@ -392,7 +465,7 @@ LOG_UI_PAYLOADS = os.environ.get("DMX_LOG_UI", "0").strip().lower() in ("1", "tr
 LOG_UI_FULL = os.environ.get("DMX_LOG_UI_FULL", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # ---------- FILE LOGGING ----------
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_DIR = os.path.join(DATA_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 file_handler = logging.handlers.RotatingFileHandler(
@@ -422,6 +495,10 @@ def init_engine():
             _apply_runtime_settings(RENDER_ENGINE, runtime)
             RENDER_ENGINE.start()
             app.logger.info("DMX Render Engine started (mode=%s).", ENGINE_MODE)
+            try:
+                AUTOLIGHT.attach_engine(RENDER_ENGINE)
+            except Exception:
+                app.logger.exception("AutoLight attach failed")
         except Exception as e:
             app.logger.exception("Render Engine init failed: %s", e)
             RENDER_ENGINE = None
@@ -452,78 +529,18 @@ def safe_parse_channels_map(raw: Any) -> Dict[int, int]:
 
 # ---------- FIXTURES (XML) ----------
 def parse_fixture_xml(path: str) -> Dict[str, Any]:
-    tree = ET.parse(path)
-    root = tree.getroot()
-
-    addr_count = int(root.attrib.get("dmxaddresscount", "0") or 0)
-
-    info = {}
-    info_node = root.find("information")
-    if info_node is not None:
-        info["model"] = info_node.findtext("model") or ""
-        info["vendor"] = info_node.findtext("vendor") or ""
-        info["mode"] = info_node.findtext("mode") or ""
-
-    functions: Dict[str, Any] = {}
-    funcs = root.find("functions")
-    if funcs is not None:
-        dim = funcs.find("dimmer")
-        if dim is not None and "dmxchannel" in dim.attrib:
-            functions["dimmer"] = {"channel": int(dim.attrib["dmxchannel"])}
-
-        rgb = funcs.find("rgb")
-        if rgb is not None:
-            rgb_map = {}
-            for comp in ("red", "green", "blue"):
-                node = rgb.find(comp)
-                if node is not None and "dmxchannel" in node.attrib:
-                    rgb_map[comp] = int(node.attrib["dmxchannel"])
-            if rgb_map:
-                functions["rgb"] = rgb_map
-
-        focus = funcs.find("focus")
-        if focus is not None and "dmxchannel" in focus.attrib:
-            functions["focus"] = {"channel": int(focus.attrib["dmxchannel"])}
-
-        pos = funcs.find("position")
-        if pos is not None:
-            posmap: Dict[str, Any] = {}
-            pan = pos.find("pan")
-            tilt = pos.find("tilt")
-            if pan is not None and "dmxchannel" in pan.attrib:
-                rng_node = pan.find("range")
-                rng = int(rng_node.attrib.get("range")) if rng_node is not None and "range" in rng_node.attrib else None
-                posmap["pan"] = {"channel": int(pan.attrib["dmxchannel"]), "range": rng}
-            if tilt is not None and "dmxchannel" in tilt.attrib:
-                rng_node = tilt.find("range")
-                rng = int(rng_node.attrib.get("range")) if rng_node is not None and "range" in rng_node.attrib else None
-                posmap["tilt"] = {"channel": int(tilt.attrib["dmxchannel"]), "range": rng}
-            if posmap:
-                functions["position"] = posmap
-
-        for child in funcs:
-            tag = child.tag
-            if tag in ("dimmer", "rgb", "focus", "position"):
-                continue
-            if "dmxchannel" in child.attrib:
-                functions.setdefault("extra", {})[tag] = {"channel": int(child.attrib["dmxchannel"])}
-
-    return {
-        "info": info,
-        "addr_count": addr_count,
-        "functions": functions,
-        "source_file": os.path.basename(path),
-    }
+    return load_fixture_xml(path)
 
 
 def load_all_fixtures() -> Dict[str, Any]:
     fixtures: Dict[str, Any] = {}
     for fname in sorted(os.listdir(FIXTURES_DIR)):
-        if not fname.lower().endswith(".xml"):
+        lower = fname.lower()
+        if not (lower.endswith(".xml") or lower.endswith(".fixture.json")):
             continue
         path = os.path.join(FIXTURES_DIR, fname)
         try:
-            fixtures[fname] = parse_fixture_xml(path)
+            fixtures[fname] = load_fixture_file(path)
         except Exception as e:
             fixtures[fname] = {"error": str(e)}
     return fixtures
@@ -549,6 +566,73 @@ def save_cue_file(filename: str, data: Dict[str, Any]) -> None:
     path = os.path.join(CUE_DIR, filename)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+
+
+# ---------- PROJECTS ----------
+# A "project" bundles a rig (devices + calibration) and its cue lists into a
+# single portable .ddmxproj file (JSON). The rig is owned by the project;
+# switching cue lists within a project does NOT redefine the rig.
+PROJECT_EXT = ".ddmxproj"
+RECENT_PROJECTS_PATH = os.path.join(PROJECTS_DIR, "_recent.json")
+MAX_RECENT_PROJECTS = 12
+
+
+def _safe_project_name(filename: str) -> str:
+    """Sanitize a project filename and force the .ddmxproj extension."""
+    base = os.path.basename(str(filename or "")).strip()
+    if not base:
+        raise ValueError("empty project name")
+    if not base.lower().endswith(PROJECT_EXT):
+        base += PROJECT_EXT
+    return base
+
+
+def list_project_files() -> List[str]:
+    return sorted(
+        f for f in os.listdir(PROJECTS_DIR)
+        if f.lower().endswith(PROJECT_EXT)
+    )
+
+
+def load_project_file(filename: str) -> Dict[str, Any]:
+    path = os.path.join(PROJECTS_DIR, _safe_project_name(filename))
+    if not os.path.exists(path):
+        raise FileNotFoundError(filename)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_project_file(filename: str, data: Dict[str, Any]) -> str:
+    name = _safe_project_name(filename)
+    path = os.path.join(PROJECTS_DIR, name)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return name
+
+
+def _read_recent_projects() -> List[str]:
+    try:
+        with open(RECENT_PROJECTS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("recent") if isinstance(data, dict) else data
+        if isinstance(items, list):
+            # Drop entries whose file no longer exists.
+            return [str(x) for x in items if os.path.exists(os.path.join(PROJECTS_DIR, str(x)))]
+    except Exception:
+        pass
+    return []
+
+
+def _push_recent_project(filename: str) -> None:
+    name = _safe_project_name(filename)
+    recent = [r for r in _read_recent_projects() if r != name]
+    recent.insert(0, name)
+    recent = recent[:MAX_RECENT_PROJECTS]
+    try:
+        with open(RECENT_PROJECTS_PATH, "w", encoding="utf-8") as f:
+            json.dump({"recent": recent}, f, ensure_ascii=False)
+    except Exception:
+        app.logger.warning("[API] could not persist recent projects")
 
 
 # ---------- FLASK ROUTES ----------
@@ -683,6 +767,58 @@ def api_cues_file(filename: str):
     return jsonify({"ok": True})
 
 
+# ---------- PROJECTS API ----------
+
+@app.route("/api/projects", methods=["GET"])
+def api_projects_list():
+    return jsonify({"files": list_project_files(), "recent": _read_recent_projects()})
+
+
+@app.route("/api/projects/<filename>", methods=["GET", "POST", "DELETE"])
+def api_project_file(filename: str):
+    if ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "invalid filename"}), 400
+
+    if request.method == "GET":
+        try:
+            data = load_project_file(filename)
+        except FileNotFoundError:
+            return jsonify({"error": "not found"}), 404
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        _push_recent_project(filename)
+        return jsonify(data)
+
+    if request.method == "DELETE":
+        try:
+            path = os.path.join(PROJECTS_DIR, _safe_project_name(filename))
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True})
+
+    payload = request.get_json()
+    if not isinstance(payload, dict):
+        return jsonify({"error": "bad payload"}), 400
+    try:
+        name = save_project_file(filename, payload)
+        _push_recent_project(name)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, "file": name})
+
+
+@app.route("/api/projects/<filename>/download", methods=["GET"])
+def api_project_download(filename: str):
+    if ".." in filename or "/" in filename or "\\" in filename:
+        return jsonify({"error": "invalid filename"}), 400
+    name = _safe_project_name(filename)
+    if not os.path.exists(os.path.join(PROJECTS_DIR, name)):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(PROJECTS_DIR, name, as_attachment=True)
+
+
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     sync = SETTINGS.get("sync_video") or {}
@@ -690,6 +826,8 @@ def api_settings_get():
     whats_new = SETTINGS.get("whats_new") or {}
     auto_update = SETTINGS.get("auto_update") or {}
     ui = SETTINGS.get("ui") or {}
+    cue_editor = SETTINGS.get("cue_editor") or {}
+    autolight = SETTINGS.get("autolight") or {}
     runtime = SETTINGS.get("dmx_runtime") or {}
     return jsonify({
         "dmx_target_ip": SETTINGS.get("dmx_target_ip", "127.0.0.1"),
@@ -714,6 +852,14 @@ def api_settings_get():
         "ui": {
             "language": str(ui.get("language") or "en"),
         },
+        "cue_editor": {
+            "view_mode": str(cue_editor.get("view_mode") or "classic"),
+            "timeline_priority_mode": str(cue_editor.get("timeline_priority_mode") or "top"),
+            "zoom_x": float(cue_editor.get("zoom_x") or 120.0),
+            "zoom_y": float(cue_editor.get("zoom_y") or 88.0),
+        },
+        "autolight": autolight,
+        "autolight_status": AUTOLIGHT.get_status(force_refresh=False),
         "dmx_runtime": runtime
     })
 
@@ -768,6 +914,17 @@ def api_settings_post():
     ui = _normalize_ui_settings(ui_payload, ui)
     SETTINGS["ui"] = ui
 
+    cue_editor_payload = payload.get("cue_editor")
+    cue_editor = SETTINGS.get("cue_editor") or {}
+    cue_editor = _normalize_cue_editor_settings(cue_editor_payload, cue_editor)
+    SETTINGS["cue_editor"] = cue_editor
+
+    autolight_payload = payload.get("autolight")
+    autolight = SETTINGS.get("autolight") or {}
+    autolight = _normalize_autolight_settings(autolight_payload, autolight)
+    SETTINGS["autolight"] = autolight
+    AUTOLIGHT.apply_settings(autolight)
+
     runtime_payload = payload.get("dmx_runtime")
     runtime = SETTINGS.get("dmx_runtime") or {}
     runtime = _normalize_runtime_settings(runtime_payload, runtime)
@@ -787,8 +944,368 @@ def api_settings_post():
         "whats_new": SETTINGS.get("whats_new") or {},
         "auto_update": SETTINGS.get("auto_update") or {},
         "ui": SETTINGS.get("ui") or {},
+        "cue_editor": SETTINGS.get("cue_editor") or {},
+        "autolight": SETTINGS.get("autolight") or {},
+        "autolight_status": AUTOLIGHT.get_status(force_refresh=False),
         "dmx_runtime": SETTINGS.get("dmx_runtime") or {}
     })
+
+
+@app.route("/api/autolight/status", methods=["GET"])
+def api_autolight_status():
+    force_refresh = str(request.args.get("refresh") or "").strip().lower() in ("1", "true", "yes", "on")
+    return jsonify(AUTOLIGHT.get_status(force_refresh=force_refresh))
+
+
+@app.route("/api/autolight/features", methods=["GET"])
+def api_autolight_features():
+    return jsonify(AUTOLIGHT.get_features())
+
+
+@app.route("/api/autolight/audio", methods=["GET"])
+def api_autolight_audio():
+    """Lightweight audio snapshot for high-frequency spectrogram polling.
+
+    Cheaper than /api/autolight/status — no player discovery, no music service
+    calls — so the UI can poll it at 20-30 Hz without overhead."""
+    return jsonify(AUTOLIGHT.get_audio_snapshot())
+
+
+@app.route("/api/autolight/control", methods=["POST"])
+def api_autolight_control():
+    payload = request.get_json(silent=True) or {}
+    status = AUTOLIGHT.control(payload)
+    SETTINGS["autolight"] = AUTOLIGHT.get_settings()
+    save_settings(SETTINGS)
+    return jsonify({
+        "ok": True,
+        "autolight": SETTINGS["autolight"],
+        "status": status,
+    })
+
+
+@app.route("/api/autolight/snapshots", methods=["GET", "POST"])
+def api_autolight_snapshots():
+    if request.method == "GET":
+        return jsonify({"items": AUTOLIGHT.list_snapshots()})
+    payload = request.get_json(silent=True) or {}
+    item = AUTOLIGHT.create_snapshot(payload)
+    return jsonify({"ok": True, "item": item, "items": AUTOLIGHT.list_snapshots()})
+
+
+@app.route("/api/autolight/effects", methods=["GET"])
+def api_autolight_effects():
+    return jsonify({"items": AUTOLIGHT.list_effects(), "moods": AUTOLIGHT.list_moods()})
+
+
+@app.route("/api/autolight/audio-tuning", methods=["GET", "POST"])
+def api_autolight_audio_tuning():
+    if request.method == "GET":
+        return jsonify(AUTOLIGHT.get_audio_tuning())
+    payload = request.get_json(silent=True) or {}
+    tuning = payload.get("tuning") if isinstance(payload.get("tuning"), dict) else payload
+    current = AUTOLIGHT.get_settings()
+    merged = dict(current.get("audio_tuning") or {})
+    if isinstance(tuning, dict):
+        merged.update({k: v for k, v in tuning.items() if isinstance(k, str)})
+    current["audio_tuning"] = merged
+    settings = AUTOLIGHT.apply_settings(current)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings, **AUTOLIGHT.get_audio_tuning()})
+
+
+@app.route("/api/autolight/mood-filter", methods=["POST"])
+def api_autolight_mood_filter():
+    payload = request.get_json(silent=True) or {}
+    moods = payload.get("moods") or payload.get("mood_filter") or []
+    if not isinstance(moods, list):
+        moods = [str(moods)]
+    current = AUTOLIGHT.get_settings()
+    current["mood_filter"] = moods
+    settings = AUTOLIGHT.apply_settings(current)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings, "moods": AUTOLIGHT.list_moods()})
+
+
+@app.route("/api/autolight/tap-tempo", methods=["POST"])
+def api_autolight_tap_tempo():
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("bpm")
+    if raw in (None, "", 0):
+        bpm: Optional[float] = None
+    else:
+        try:
+            bpm = float(raw)
+        except Exception:
+            return jsonify({"error": "invalid bpm"}), 400
+    settings = AUTOLIGHT.apply_tap_tempo(bpm)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings})
+
+
+@app.route("/api/autolight/scene-lock", methods=["POST"])
+def api_autolight_scene_lock():
+    payload = request.get_json(silent=True) or {}
+    scene = payload.get("scene")
+    duration = float(payload.get("duration_s") or 30.0)
+    settings = AUTOLIGHT.apply_scene_lock(scene, duration)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings})
+
+
+@app.route("/api/autolight/genres", methods=["GET"])
+def api_autolight_genres():
+    return jsonify({"items": AUTOLIGHT.list_genres(), "current": AUTOLIGHT.get_settings().get("genre_preset", "auto")})
+
+
+@app.route("/api/autolight/genre-preset", methods=["POST"])
+def api_autolight_genre_preset():
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "auto").strip().lower()
+    settings = AUTOLIGHT.apply_genre_preset(name)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings})
+
+
+@app.route("/api/autolight/identify", methods=["POST"])
+def api_autolight_identify():
+    payload = request.get_json(silent=True) or {}
+    dev_id = str(payload.get("device_id") or "").strip()
+    if not dev_id:
+        return jsonify({"error": "device_id required"}), 400
+    duration = float(payload.get("duration_s") or 2.0)
+    ok = AUTOLIGHT.identify_device(dev_id, duration)
+    if not ok:
+        return jsonify({"error": f"cannot identify {dev_id}"}), 404
+    return jsonify({"ok": True, "device_id": dev_id, "duration_s": duration})
+
+
+@app.route("/api/autolight/calibrate", methods=["POST"])
+def api_autolight_calibrate():
+    payload = request.get_json(silent=True) or {}
+    duration = float(payload.get("duration_s") or 30.0)
+    result = AUTOLIGHT.start_calibration(duration)
+    return jsonify(result)
+
+
+@app.route("/api/autolight/effects/config", methods=["POST"])
+def api_autolight_effects_config():
+    payload = request.get_json(silent=True) or {}
+    cfg = payload.get("effect_config")
+    if not isinstance(cfg, dict):
+        return jsonify({"error": "effect_config must be an object"}), 400
+    current = AUTOLIGHT.get_settings()
+    current["effect_config"] = cfg
+    settings = AUTOLIGHT.apply_settings(current)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings, "items": AUTOLIGHT.list_effects()})
+
+
+@app.route("/api/autolight/effects/trigger", methods=["POST"])
+def api_autolight_effects_trigger():
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    ok = AUTOLIGHT.force_trigger_effect(name)
+    if not ok:
+        return jsonify({"error": f"unknown effect: {name}"}), 404
+    return jsonify({"ok": True, "triggered": name, "status": AUTOLIGHT.get_status()})
+
+
+@app.route("/api/autolight/training/status", methods=["GET"])
+def api_autolight_training_status():
+    return jsonify(AUTOLIGHT.training.status())
+
+
+@app.route("/api/autolight/training/moves", methods=["GET"])
+def api_autolight_training_moves():
+    """Static metadata about all compositional moves. Fetched once when the
+    training modal opens to render the score table with proper labels +
+    intent badges."""
+    return jsonify({"items": AUTOLIGHT.training.list_moves()})
+
+
+@app.route("/api/autolight/training/control", methods=["POST"])
+def api_autolight_training_control():
+    """Toggle training mode. When enabling, also auto-enable memory_persistence
+    so the satisfaction signal actually has a TrackMemory to write into —
+    a training toggle that silently does nothing because of an unrelated
+    setting would be a UX trap."""
+    payload = request.get_json(silent=True) or {}
+    if "enabled" in payload:
+        enabled = bool(payload.get("enabled"))
+        AUTOLIGHT.training.set_enabled(enabled)
+        if enabled:
+            updated = AUTOLIGHT.control({"memory_persistence": True})
+            SETTINGS["autolight"] = AUTOLIGHT.get_settings()
+            save_settings(SETTINGS)
+            return jsonify({"ok": True, "training": AUTOLIGHT.training.status(), "autolight_status": updated})
+    return jsonify({"ok": True, "training": AUTOLIGHT.training.status()})
+
+
+@app.route("/api/autolight/training/satisfaction", methods=["POST"])
+def api_autolight_training_satisfaction():
+    """Hot path: called at ~10 Hz by the modal slider while the user drags.
+    Kept minimal — no settings save, no status_cache rebuild, just a
+    direct write to the in-memory satisfaction log."""
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("value", 0.0)
+    result = AUTOLIGHT.training.record_satisfaction(raw)
+    return jsonify(result)
+
+
+@app.route("/api/autolight/training/library", methods=["GET", "POST", "DELETE"])
+def api_autolight_training_library():
+    if request.method == "GET":
+        return jsonify({"items": AUTOLIGHT.training.list_library()})
+    if request.method == "DELETE":
+        AUTOLIGHT.training.clear_library()
+        return jsonify({"ok": True, "items": []})
+    payload = request.get_json(silent=True) or {}
+    raw_paths = payload.get("paths") or []
+    if not isinstance(raw_paths, list):
+        return jsonify({"error": "paths must be a list"}), 400
+    recursive = bool(payload.get("recursive", True))
+    discovered = []
+    errors = []
+    for raw in raw_paths:
+        path = str(raw or "").strip()
+        if not path:
+            continue
+        try:
+            discovered.extend(AUTOLIGHT.training.scan_path(path, recursive=recursive))
+        except FileNotFoundError:
+            errors.append({"path": path, "error": "not_found"})
+        except Exception as exc:
+            errors.append({"path": path, "error": str(exc)})
+    added = AUTOLIGHT.training.add_entries(discovered)
+    return jsonify({
+        "ok": True,
+        "added": added,
+        "scanned": len(discovered),
+        "errors": errors,
+        "items": AUTOLIGHT.training.list_library(),
+    })
+
+
+@app.route("/api/autolight/training/library/<track_id>", methods=["DELETE"])
+def api_autolight_training_library_remove(track_id):
+    removed = AUTOLIGHT.training.remove_track(track_id)
+    return jsonify({"ok": removed, "items": AUTOLIGHT.training.list_library()})
+
+
+@app.route("/api/autolight/training/devices", methods=["GET"])
+def api_autolight_training_devices():
+    """Devices the camera-calibration loop can iterate, plus their currently
+    stored camera-frame positions (if any). Single fetch for the modal's
+    'Calibrate' phase to know what to walk."""
+    engine = getattr(AUTOLIGHT, "_engine", None)
+    devices_list = []
+    if engine is not None:
+        engine_devices = getattr(engine, "_devices", None) or {}
+        positions = AUTOLIGHT.training.get_camera_positions()
+        for dev_id, dev in engine_devices.items():
+            caps = getattr(dev, "capabilities", None) or {}
+            if not (caps.get("has_dimmer") or caps.get("has_color")):
+                continue
+            pos = positions.get(str(dev_id))
+            devices_list.append({
+                "device_id": str(dev_id),
+                "cname": str(getattr(dev, "cname", "") or ""),
+                "fixture": str(getattr(dev, "fixture_template", "") or ""),
+                "universe": int(getattr(dev, "universe", 0) or 0),
+                "address": int(getattr(dev, "base_address", 0) or 0),
+                "has_movement": bool(caps.get("has_movement")),
+                "strobe_friendly": bool(caps.get("strobe_friendly")),
+                "x": pos.get("x") if pos else None,
+                "y": pos.get("y") if pos else None,
+                "captured_at_ms": pos.get("captured_at_ms") if pos else None,
+            })
+    return jsonify({"items": devices_list})
+
+
+@app.route("/api/autolight/training/identify", methods=["POST"])
+def api_autolight_training_identify():
+    """Flash a single fixture so the browser can capture its pixel position
+    from the live webcam. Duration defaults to 1.5s — long enough to be
+    captured even with browser frame-rate jitter, short enough that the
+    full calibration loop completes in a reasonable time."""
+    payload = request.get_json(silent=True) or {}
+    device_id = str(payload.get("device_id") or "").strip()
+    if not device_id:
+        return jsonify({"error": "device_id required"}), 400
+    try:
+        duration_s = float(payload.get("duration_s") or 1.5)
+    except (TypeError, ValueError):
+        duration_s = 1.5
+    duration_s = max(0.5, min(5.0, duration_s))
+    ok = AUTOLIGHT.training.identify_fixture(device_id, duration_s)
+    return jsonify({"ok": ok, "device_id": device_id, "duration_s": duration_s})
+
+
+@app.route("/api/autolight/training/camera-position", methods=["POST", "DELETE"])
+def api_autolight_training_camera_position():
+    """Browser → server: 'I just identified fixture X at (x, y) of the
+    video frame.' Stored persistently so positions survive restarts."""
+    if request.method == "DELETE":
+        AUTOLIGHT.training.clear_camera_positions()
+        return jsonify({"ok": True, "positions": {}})
+    payload = request.get_json(silent=True) or {}
+    device_id = str(payload.get("device_id") or "").strip()
+    if not device_id:
+        return jsonify({"error": "device_id required"}), 400
+    try:
+        x = float(payload.get("x"))
+        y = float(payload.get("y"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "x and y must be numeric in [0,1]"}), 400
+    ok = AUTOLIGHT.training.set_camera_position(device_id, x, y)
+    return jsonify({"ok": ok, "positions": AUTOLIGHT.training.get_camera_positions()})
+
+
+@app.route("/api/autolight/training/play", methods=["POST"])
+def api_autolight_training_play():
+    """Hand a library file to the OS's default audio player. Cheapest path
+    to "playback through the app" without bundling decoders."""
+    payload = request.get_json(silent=True) or {}
+    track_id = str(payload.get("track_id") or "").strip()
+    path = AUTOLIGHT.training.lookup_path(track_id) if track_id else None
+    if path is None:
+        explicit = str(payload.get("path") or "").strip()
+        if explicit:
+            path = explicit
+    if not path:
+        return jsonify({"error": "track_id or path required"}), 400
+    ok = AUTOLIGHT.training.open_in_os_player(path)
+    return jsonify({"ok": ok, "path": path})
+
+
+@app.route("/api/autolight/audio-devices", methods=["GET", "POST"])
+def api_autolight_audio_devices():
+    if request.method == "GET":
+        devices = AUTOLIGHT.list_audio_devices()
+        current = AUTOLIGHT.get_settings().get("audio_device_index")
+        return jsonify({"items": devices, "current": current})
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get("index")
+    if raw is None or raw == "" or raw == "default":
+        index: Optional[int] = None
+    else:
+        try:
+            index = int(raw)
+        except Exception:
+            return jsonify({"error": "invalid index"}), 400
+    settings = AUTOLIGHT.set_audio_device(index)
+    SETTINGS["autolight"] = settings
+    save_settings(SETTINGS)
+    return jsonify({"ok": True, "autolight": settings, "status": AUTOLIGHT.get_status()})
 
 
 # ---------- NEW API: JS LOGGING ----------
@@ -825,14 +1342,29 @@ def api_rig_register():
         return jsonify({"error": "engine not running"}), 503
     payload = request.get_json() or {}
     devices = payload.get("devices")
+    replace = bool(payload.get("replace"))
     if not isinstance(devices, list):
         return jsonify({"error": "invalid devices"}), 400
     try:
         if hasattr(RENDER_ENGINE, "register_rig_devices"):
-            RENDER_ENGINE.register_rig_devices(devices)
+            RENDER_ENGINE.register_rig_devices(devices, replace=replace)
         return jsonify({"ok": True, "count": len(devices)})
     except Exception as e:
         app.logger.exception("[API] rig/register error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/rig/reset", methods=["POST"])
+def api_rig_reset():
+    """Clear the entire rig and zero all output (new/blank project)."""
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+    try:
+        if hasattr(RENDER_ENGINE, "reset_rig"):
+            RENDER_ENGINE.reset_rig()
+        return jsonify({"ok": True})
+    except Exception as e:
+        app.logger.exception("[API] rig/reset error")
         return jsonify({"error": str(e)}), 500
 
 
@@ -870,6 +1402,60 @@ def api_live_channels():
         return jsonify({"ok": True})
     except Exception as e:
         app.logger.exception("[API] live/channels error")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/live/channels/bulk", methods=["POST"])
+def api_live_channels_bulk():
+    """Atomic multi-universe live write.
+
+    Payload: {"device_id": "...", "universes": {"0": {"5": 127, ...}, "1": {...}}}
+
+    All channel writes across universes commit under a single engine lock so
+    that the next render frame sees one consistent snapshot — required to keep
+    fixtures spread across multiple universes in lock-step on live edits."""
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+
+    payload = request.get_json()
+    if not payload:
+        return jsonify({"error": "no json"}), 400
+
+    try:
+        device_id = payload.get("device_id", "live")
+        raw_unis = payload.get("universes") or {}
+        if not isinstance(raw_unis, dict):
+            return jsonify({"error": "universes must be a dict"}), 400
+
+        updates: Dict[int, Dict[int, int]] = {}
+        total_channels = 0
+        for uni_key, ch_map in raw_unis.items():
+            try:
+                uni = int(uni_key)
+            except (TypeError, ValueError):
+                continue
+            channels = safe_parse_channels_map(ch_map)
+            if not channels:
+                continue
+            updates[uni] = channels
+            total_channels += len(channels)
+
+        if not updates:
+            return jsonify({"ok": True, "applied": 0})
+
+        if LOG_UI_PAYLOADS:
+            if LOG_UI_FULL:
+                app.logger.debug("[UI] live/channels/bulk raw=%s", payload)
+            else:
+                app.logger.debug(
+                    "[UI] live/channels/bulk device=%s universes=%s channels=%s",
+                    device_id, list(updates.keys()), total_channels,
+                )
+
+        RENDER_ENGINE.set_channels_multi(device_id, updates)
+        return jsonify({"ok": True, "applied": total_channels})
+    except Exception as e:
+        app.logger.exception("[API] live/channels/bulk error")
         return jsonify({"error": str(e)}), 500
 
 
@@ -933,6 +1519,29 @@ def api_live_effect_groups():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/live/effects/groups/purge", methods=["POST"])
+def api_live_effect_groups_purge():
+    """Purge group id(s) from both live and cue effect pools.
+    Used when the UI explicitly deletes an effect while a cue is playing,
+    so the deletion takes effect immediately instead of waiting for the cue
+    to end. Body: {"group_ids": ["g1", "g2"]} or {"group_id": "g1"}.
+    """
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+    payload = request.get_json() or {}
+    group_ids = payload.get("group_ids") or payload.get("groupIds") or []
+    if not group_ids and payload.get("group_id"):
+        group_ids = [payload.get("group_id")]
+    try:
+        removed = 0
+        if hasattr(RENDER_ENGINE, "remove_effect_group_everywhere"):
+            removed = int(RENDER_ENGINE.remove_effect_group_everywhere(group_ids) or 0)
+        return jsonify({"ok": True, "removed": removed})
+    except Exception as e:
+        app.logger.exception("[API] live/effects/groups/purge error")
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------- NEW API: PLAYBACK ----------
 
 @app.route("/api/playback/run", methods=["POST"])
@@ -946,16 +1555,49 @@ def api_playback_run():
         return jsonify({"error": "no json"}), 400
 
     try:
+        mode = str(payload.get("mode") or "classic").strip().lower()
         sequence = payload.get("sequence") or []
+        timeline = payload.get("timeline") or payload.get("blocks") or []
         start_index = int(payload.get("start_index", 0) or 0)
+        start_ms = int(payload.get("start_ms", 0) or 0)
+        paused = bool(payload.get("paused", False))
         speed = payload.get("speed", 1.0)
+        priority_mode = str(payload.get("priority_mode") or "top").strip().lower()
         virtual_groups = payload.get("virtual_groups") or payload.get("virtualGroups") or {}
         if not isinstance(sequence, list):
             return jsonify({"error": "invalid sequence"}), 400
+        if timeline and not isinstance(timeline, list):
+            return jsonify({"error": "invalid timeline"}), 400
         if not isinstance(virtual_groups, dict):
             virtual_groups = {}
-        RENDER_ENGINE.run_sequence(sequence, start_index=start_index, virtual_groups=virtual_groups, speed=speed)
-        return jsonify({"ok": True, "count": len(sequence), "start_index": start_index, "speed": speed})
+        if priority_mode not in ("top", "bottom", "merge"):
+            priority_mode = "top"
+        try:
+            RENDER_ENGINE.run_sequence(
+                sequence,
+                start_index=start_index,
+                virtual_groups=virtual_groups,
+                speed=speed,
+                mode=mode,
+                timeline=timeline,
+                priority_mode=priority_mode,
+                start_ms=start_ms,
+                paused=paused,
+            )
+        except TypeError:
+            if mode == "timeline":
+                return jsonify({"error": "timeline playback is unavailable with the active engine"}), 400
+            RENDER_ENGINE.run_sequence(sequence, start_index=start_index, virtual_groups=virtual_groups, speed=speed)
+        return jsonify({
+            "ok": True,
+            "mode": mode,
+            "count": len(timeline) if mode == "timeline" else len(sequence),
+            "start_index": start_index,
+            "start_ms": start_ms,
+            "paused": paused,
+            "speed": speed,
+            "priority_mode": priority_mode,
+        })
     except Exception as e:
         app.logger.exception("[API] playback/run error")
         return jsonify({"error": str(e)}), 500
@@ -991,12 +1633,16 @@ def api_playback_control():
     payload = request.get_json() or {}
     action = str(payload.get("action") or "").strip().lower()
     delta_ms = int(payload.get("delta_ms", 0) or 0)
+    seek_ms = int(payload.get("seek_ms", delta_ms) or 0)
     if not action:
         return jsonify({"error": "missing action"}), 400
 
     try:
         if hasattr(RENDER_ENGINE, "playback_control"):
-            RENDER_ENGINE.playback_control(action, delta_ms=delta_ms)
+            if action == "seek":
+                RENDER_ENGINE.playback_control(action, delta_ms=seek_ms)
+            else:
+                RENDER_ENGINE.playback_control(action, delta_ms=delta_ms)
         return jsonify({"ok": True})
     except Exception as e:
         app.logger.exception("[API] playback/control error")
@@ -1265,7 +1911,7 @@ def api_effects():
 
 @app.route("/static/<path:filename>")
 def static_files(filename):
-    return send_from_directory(os.path.join(BASE_DIR, "static"), filename)
+    return send_from_directory(os.path.join(RESOURCE_DIR, "static"), filename)
 
 
 # ---------- STARTUP ----------

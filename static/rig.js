@@ -2,22 +2,36 @@
 // Gestion du rig : devices, canvas pan/zoom, multi-select, controller (sliders, color, position)
 
 
+// Shared drag handler — a single pair of window listeners dispatches to the
+// currently-active widget instead of every widget instance registering its own
+// pair on every render (which leaked listeners on each refreshControllerFromSelection).
+let _activeDragHandler = null;
+window.addEventListener("mousemove", (e) => { if (_activeDragHandler) _activeDragHandler(e); });
+window.addEventListener("mouseup", () => { _activeDragHandler = null; });
+
 // Initialize default values for a device (RGB=white, dimmer=255)
 function initDeviceDefaults(deviceId, fixtureName) {
   const fi = fixtures[fixtureName];
   if (!fi) return;
+  deviceLocalValues[deviceId] = deviceLocalValues[deviceId] || {};
+  const groups = getFixtureGroups(fi);
+  if (groups.length) {
+    groups.forEach(group => {
+      getGroupChannels(group).forEach(channel => {
+        const offset = parseInt(channel?.offset ?? -1, 10);
+        if (!Number.isFinite(offset) || offset < 0) return;
+        deviceLocalValues[deviceId][offset] = clamp(parseInt(channel?.default ?? 0, 10) || 0, 0, 255);
+      });
+    });
+    return;
+  }
 
   const funcs = fi.functions || {};
-  deviceLocalValues[deviceId] = deviceLocalValues[deviceId] || {};
-
-  // Default RGB to white (255, 255, 255)
   if (funcs.rgb) {
     if (funcs.rgb.red != null) deviceLocalValues[deviceId][funcs.rgb.red] = 255;
     if (funcs.rgb.green != null) deviceLocalValues[deviceId][funcs.rgb.green] = 255;
     if (funcs.rgb.blue != null) deviceLocalValues[deviceId][funcs.rgb.blue] = 255;
   }
-
-  // Default dimmer to full (255)
   if (funcs.dimmer && funcs.dimmer.channel != null) {
     deviceLocalValues[deviceId][funcs.dimmer.channel] = 0;
   }
@@ -42,20 +56,17 @@ function buildMovementChannelsByUniverse() {
   for (const dev of Object.values(rigDevices)) {
     if (!dev) continue;
     const fi = fixtures[dev.fixture] || {};
-    const pos = fi.functions?.position;
-    if (!pos) continue;
-
     const u = parseInt(dev.universe, 10) || 0;
     map[u] ||= new Set();
-
-    if (pos.pan?.channel != null) {
-      const abs = dev.address + parseInt(pos.pan.channel, 10);
-      if (Number.isFinite(abs)) map[u].add(abs);
-    }
-    if (pos.tilt?.channel != null) {
-      const abs = dev.address + parseInt(pos.tilt.channel, 10);
-      if (Number.isFinite(abs)) map[u].add(abs);
-    }
+    const groups = getFixtureGroups(fi, "position");
+    groups.forEach(group => {
+      ["pan", "tilt"].forEach(role => {
+        const channel = getGroupChannel(group, role);
+        if (!channel) return;
+        const abs = dev.address + (parseInt(channel.offset ?? 0, 10) || 0);
+        if (Number.isFinite(abs)) map[u].add(abs);
+      });
+    });
   }
 
   const out = {};
@@ -96,7 +107,7 @@ function buildDummyChannelsByUniverse() {
   for (const dev of Object.values(rigDevices)) {
     if (!dev) continue;
     const fi = fixtures[dev.fixture] || {};
-    const addrCount = fi.addr_count || 1;
+    const addrCount = getFixtureFootprint(fi);
     const u = parseInt(dev.universe, 10) || 0;
     used[u] ||= new Set();
     for (let li = 0; li < addrCount; li++) {
@@ -155,17 +166,27 @@ function buildRigRegisterPayload() {
       universe: parseInt(dev.universe, 10) || 0,
       attr_map: attrMap || {},
       address: dev.address ?? 0,
+      x: Number.isFinite(Number(dev.x)) ? Number(dev.x) : null,
+      y: Number.isFinite(Number(dev.y)) ? Number(dev.y) : null,
+      fixture: String(dev.fixture || ""),
+      cname: String(dev.cname || ""),
+      home_pan: dev.home_pan ?? null,
+      home_tilt: dev.home_tilt ?? null,
+      invert_pan: !!dev.invert_pan,
+      invert_tilt: !!dev.invert_tilt,
     });
   }
-  return { devices };
+  // The UI always pushes the COMPLETE rig, so request replace semantics:
+  // the backend prunes any device no longer present (no ghost fixtures).
+  return { devices, replace: true };
 }
 
 async function syncRigToBackend(force = false) {
-  const backendActive = typeof window.isBackendMode === "function" && window.isBackendMode();
-  if (!force && !backendActive && !window.backendPlaybackOwned) return;
+  // Always push the rig to the backend: even in UI render mode AutoLight
+  // needs the device list to know which channels to drive.
   const payload = buildRigRegisterPayload();
   const body = JSON.stringify(payload);
-  if (body === lastRigPayload) return;
+  if (!force && body === lastRigPayload) return;
   lastRigPayload = body;
   try {
     await fetch("/api/rig/register", {
@@ -248,7 +269,7 @@ function findNextFreeAddress(universe, addrCount) {
     if (!d) continue;
     if (parseInt(d.universe, 10) !== universe) continue;
     const fi = fixtures[d.fixture] || {};
-    const c = fi.addr_count || 1;
+    const c = getFixtureFootprint(fi);
     ranges.push([d.address, d.address + c - 1]);
   }
   ranges.sort((a, b) => a[0] - b[0]);
@@ -268,6 +289,683 @@ function findNextFreeAddress(universe, addrCount) {
   return null;
 }
 
+function findNextFreeAddressExcludingDevice(universe, addrCount, excludedDeviceId = null) {
+  const ranges = [];
+  const targetUniverse = parseInt(universe, 10) || 0;
+
+  for (const d of Object.values(rigDevices)) {
+    if (!d) continue;
+    if (excludedDeviceId != null && String(d.id) === String(excludedDeviceId)) continue;
+    if ((parseInt(d.universe, 10) || 0) !== targetUniverse) continue;
+    const fi = fixtures[d.fixture] || {};
+    const c = getFixtureFootprint(fi);
+    ranges.push([d.address, d.address + c - 1]);
+  }
+
+  ranges.sort((a, b) => a[0] - b[0]);
+
+  for (let start = 0; start <= 512 - addrCount; start++) {
+    let ok = true;
+    for (const [r0, r1] of ranges) {
+      const end = start + addrCount - 1;
+      if (!(end < r0 || start > r1)) {
+        ok = false;
+        start = r1;
+        break;
+      }
+    }
+    if (ok) return start;
+  }
+  return null;
+}
+
+function findAutoRemapSlot(fixtureName, preferredUniverse, excludedDeviceId = null) {
+  const fi = fixtures?.[fixtureName] || {};
+  const footprint = getFixtureFootprint(fi);
+  const preferred = clamp(parseInt(preferredUniverse, 10) || 0, 0, 9999);
+
+  const currentAddr = findNextFreeAddressExcludingDevice(preferred, footprint, excludedDeviceId);
+  if (currentAddr != null) {
+    return { universe: preferred, address: currentAddr, footprint };
+  }
+
+  for (let universe = 0; universe <= 9999; universe++) {
+    if (universe === preferred) continue;
+    const address = findNextFreeAddressExcludingDevice(universe, footprint, excludedDeviceId);
+    if (address != null) {
+      return { universe, address, footprint };
+    }
+  }
+  return null;
+}
+
+const FIXTURE_REMAP_ALIAS_SPECS = {
+  dimmer: { family: "dimmer", role: "level", label: "Primary Dimmer" },
+  r: { family: "color", role: "red", label: "Primary Red" },
+  g: { family: "color", role: "green", label: "Primary Green" },
+  b: { family: "color", role: "blue", label: "Primary Blue" },
+  pan: { family: "position", role: "pan", label: "Primary Pan" },
+  tilt: { family: "position", role: "tilt", label: "Primary Tilt" },
+};
+
+function buildFixtureRemapMeta(fixtureName) {
+  const fi = fixtures?.[fixtureName] || {};
+  const exactDefs = Object.values(getFixtureAttrDefinitions(fi, { includeLegacy: false }));
+  const legacyDefs = getFixtureAttrDefinitions(fi, { includeLegacy: true });
+  const exactByKey = {};
+  const exactByOffset = {};
+  const legacyByKey = {};
+  const supportedDeviceKeys = new Set();
+  const elementTargets = {};
+
+  exactDefs.forEach((def) => {
+    exactByKey[def.key] = def;
+    exactByOffset[parseInt(def.offset ?? 0, 10) || 0] = def;
+  });
+
+  Object.entries(legacyDefs).forEach(([key, def]) => {
+    legacyByKey[key] = def;
+    supportedDeviceKeys.add(key);
+  });
+
+  getFixtureElementDefs(fi).forEach((element) => {
+    Object.entries(element?.targets || {}).forEach(([key, target]) => {
+      const offset = parseInt(target?.offset ?? 0, 10) || 0;
+      const exact = exactByOffset[offset] || null;
+      elementTargets[key] ||= [];
+      elementTargets[key].push({
+        offset,
+        exactKey: exact?.key || "",
+      });
+    });
+  });
+
+  return {
+    fixtureName,
+    fi,
+    footprint: getFixtureFootprint(fi),
+    exactDefs,
+    exactByKey,
+    exactByOffset,
+    legacyByKey,
+    supportedDeviceKeys,
+    elementTargets,
+    profileCache: {},
+  };
+}
+
+function buildRemapSourceLabel(profile) {
+  if (!profile) return "Unknown channel";
+  if (profile.label) return profile.label;
+  if (profile.sourceKey && profile.sourceKey.startsWith("offset.")) {
+    const offset = parseInt(profile.sourceKey.split(".")[1], 10) || 0;
+    return `Channel offset ${offset}`;
+  }
+  return profile.sourceKey || "Unknown channel";
+}
+
+function getFixtureSourceProfile(meta, sourceKey) {
+  const cacheKey = String(sourceKey || "");
+  if (meta.profileCache[cacheKey]) return meta.profileCache[cacheKey];
+
+  const exact = meta.exactByKey[cacheKey];
+  if (exact) {
+    const profile = {
+      sourceKey: cacheKey,
+      exactKey: exact.key,
+      family: String(exact.family || ""),
+      role: String(exact.role || ""),
+      kind: String(exact.kind || ""),
+      label: String(exact.label || cacheKey),
+      offset: parseInt(exact.offset ?? 0, 10) || 0,
+    };
+    meta.profileCache[cacheKey] = profile;
+    return profile;
+  }
+
+  const legacy = meta.legacyByKey[cacheKey];
+  if (legacy) {
+    const exactByOffset = meta.exactByOffset[parseInt(legacy.offset ?? 0, 10) || 0] || null;
+    const profile = {
+      sourceKey: cacheKey,
+      exactKey: exactByOffset?.key || "",
+      family: String(exactByOffset?.family || legacy.family || ""),
+      role: String(exactByOffset?.role || legacy.role || ""),
+      kind: String(exactByOffset?.kind || legacy.kind || ""),
+      label: String(legacy.label || exactByOffset?.label || cacheKey),
+      offset: exactByOffset ? (parseInt(exactByOffset.offset ?? 0, 10) || 0) : (parseInt(legacy.offset ?? 0, 10) || 0),
+    };
+    meta.profileCache[cacheKey] = profile;
+    return profile;
+  }
+
+  const elementEntries = meta.elementTargets[cacheKey] || [];
+  const uniqueExactKeys = Array.from(new Set(
+    elementEntries.map((entry) => String(entry?.exactKey || "")).filter(Boolean)
+  ));
+  if (uniqueExactKeys.length === 1 && meta.exactByKey[uniqueExactKeys[0]]) {
+    const resolved = meta.exactByKey[uniqueExactKeys[0]];
+    const profile = {
+      sourceKey: cacheKey,
+      exactKey: resolved.key,
+      family: String(resolved.family || ""),
+      role: String(resolved.role || ""),
+      kind: String(resolved.kind || ""),
+      label: String(resolved.label || cacheKey),
+      offset: parseInt(resolved.offset ?? 0, 10) || 0,
+    };
+    meta.profileCache[cacheKey] = profile;
+    return profile;
+  }
+
+  const sharedSpec = getSharedFixtureTargetSpec(cacheKey) || FIXTURE_REMAP_ALIAS_SPECS[cacheKey] || null;
+  if (sharedSpec) {
+    const profile = {
+      sourceKey: cacheKey,
+      exactKey: "",
+      family: String(sharedSpec.family || ""),
+      role: String(sharedSpec.role || ""),
+      kind: "",
+      label: String(sharedSpec.label || humanizeFixtureToken(cacheKey)),
+      offset: 0,
+    };
+    meta.profileCache[cacheKey] = profile;
+    return profile;
+  }
+
+  if (cacheKey.startsWith("offset.")) {
+    const offset = parseInt(cacheKey.split(".")[1], 10) || 0;
+    const fallback = meta.exactByOffset[offset] || null;
+    const profile = {
+      sourceKey: cacheKey,
+      exactKey: fallback?.key || "",
+      family: String(fallback?.family || ""),
+      role: String(fallback?.role || ""),
+      kind: String(fallback?.kind || ""),
+      label: fallback?.label ? `${fallback.label} (offset ${offset})` : `Offset ${offset}`,
+      offset,
+    };
+    meta.profileCache[cacheKey] = profile;
+    return profile;
+  }
+
+  const profile = {
+    sourceKey: cacheKey,
+    exactKey: "",
+    family: "",
+    role: "",
+    kind: "",
+    label: humanizeFixtureToken(cacheKey),
+    offset: 0,
+  };
+  meta.profileCache[cacheKey] = profile;
+  return profile;
+}
+
+function fixtureSupportsTarget(meta, sourceKey, scope = "devices") {
+  const key = String(sourceKey || "");
+  if (!key) return false;
+  if (scope === "fixture_elements") {
+    return (
+      (Array.isArray(meta.elementTargets[key]) && meta.elementTargets[key].length > 0) ||
+      meta.supportedDeviceKeys.has(key)
+    );
+  }
+  return meta.supportedDeviceKeys.has(key);
+}
+
+function rankRemapCandidate(def, profile) {
+  let score = 0;
+  if (!def || !profile) return score;
+  if (def.key === profile.exactKey) score += 1000;
+  if (String(def.family || "") === String(profile.family || "")) score += 200;
+  if (String(def.role || "") === String(profile.role || "")) score += 120;
+  if (String(def.kind || "") === String(profile.kind || "")) score += 80;
+  return score;
+}
+
+function listManualRemapOptions(meta, sourceKey) {
+  const profile = getFixtureSourceProfile(meta, sourceKey);
+  return [...meta.exactDefs]
+    .sort((left, right) => {
+      const delta = rankRemapCandidate(right, profile) - rankRemapCandidate(left, profile);
+      if (delta !== 0) return delta;
+      return String(left.label || left.key).localeCompare(String(right.label || right.key));
+    })
+    .map((def) => ({
+      value: def.key,
+      label: `${def.label} (${def.key}, ch ${parseInt(def.offset ?? 0, 10) + 1})`,
+    }));
+}
+
+function autoResolveRemapTarget(sourceKey, oldMeta, newMeta) {
+  const profile = getFixtureSourceProfile(oldMeta, sourceKey);
+
+  if (profile.exactKey && newMeta.exactByKey[profile.exactKey]) {
+    return {
+      key: profile.exactKey,
+      reason: "exact",
+    };
+  }
+
+  if (sourceKey.startsWith("offset.")) {
+    const offset = parseInt(sourceKey.split(".")[1], 10) || 0;
+    const sameOffset = newMeta.exactByOffset[offset] || null;
+    if (sameOffset) {
+      return {
+        key: sameOffset.key,
+        reason: "offset",
+      };
+    }
+  }
+
+  const sameKindRole = newMeta.exactDefs.filter((def) =>
+    String(def.family || "") === String(profile.family || "") &&
+    String(def.role || "") === String(profile.role || "") &&
+    String(def.kind || "") === String(profile.kind || "")
+  );
+  if (sameKindRole.length === 1) {
+    return {
+      key: sameKindRole[0].key,
+      reason: "family-kind-role",
+    };
+  }
+
+  const sameFamilyRole = newMeta.exactDefs.filter((def) =>
+    String(def.family || "") === String(profile.family || "") &&
+    String(def.role || "") === String(profile.role || "")
+  );
+  if (sameFamilyRole.length === 1) {
+    return {
+      key: sameFamilyRole[0].key,
+      reason: "family-role",
+    };
+  }
+
+  const sameFamily = newMeta.exactDefs.filter((def) =>
+    profile.family && String(def.family || "") === String(profile.family || "")
+  );
+  if (sameFamily.length === 1) {
+    return {
+      key: sameFamily[0].key,
+      reason: "family",
+    };
+  }
+
+  return null;
+}
+
+function collectCueChannelSourceUsage(deviceId, address, footprint, oldMeta) {
+  const usage = {};
+
+  for (const step of (cuesObj.sequence || [])) {
+    const entry = step?.devices?.[deviceId];
+    if (!entry || typeof entry !== "object") continue;
+    const channels = entry.channels || {};
+
+    Object.entries(channels).forEach(([rawKey]) => {
+      if (rawKey === "Universe" || !/^\d+$/.test(rawKey)) return;
+      const absCh = parseInt(rawKey, 10);
+      if (!Number.isFinite(absCh)) return;
+      const offset = absCh - address;
+      if (offset < 0 || offset >= footprint) return;
+      const exact = oldMeta.exactByOffset[offset] || null;
+      const sourceKey = exact?.key || `offset.${offset}`;
+      if (!usage[sourceKey]) {
+        const profile = getFixtureSourceProfile(oldMeta, sourceKey);
+        usage[sourceKey] = {
+          sourceKey,
+          label: buildRemapSourceLabel(profile),
+          helpText: `Cue channel at DMX ${absCh}`,
+          kind: "channel",
+          offset,
+        };
+      }
+    });
+  }
+
+  return usage;
+}
+
+function collectCueGroupSourceUsage(deviceId, oldMeta, newMeta) {
+  const usage = {};
+  const seenGroups = new Set();
+
+  for (const step of (cuesObj.sequence || [])) {
+    const groups = step?.device_groups?.[deviceId];
+    if (!Array.isArray(groups)) continue;
+
+    for (const gid of groups) {
+      const groupId = String(gid || "");
+      if (!groupId || seenGroups.has(groupId)) continue;
+      seenGroups.add(groupId);
+
+      const group = virtualGroups[groupId];
+      if (!group) continue;
+
+      const sourceKey = getGroupTargetKey(group);
+      if (!sourceKey) continue;
+      const scope = getGroupSelectionScope(group);
+      if (fixtureSupportsTarget(newMeta, sourceKey, scope)) continue;
+
+      const profile = getFixtureSourceProfile(oldMeta, sourceKey);
+      usage[sourceKey] ||= {
+        sourceKey,
+        label: `${buildRemapSourceLabel(profile)} effect target`,
+        helpText: `Effect target used by group ${groupId}`,
+        kind: "group",
+        groupIds: [],
+      };
+      usage[sourceKey].groupIds.push(groupId);
+    }
+  }
+
+  return usage;
+}
+
+function buildFixtureRemapPlan(deviceId, oldFixtureName, newFixtureName, oldUniverse, oldAddress, newUniverse, newAddress) {
+  const oldMeta = buildFixtureRemapMeta(oldFixtureName);
+  const newMeta = buildFixtureRemapMeta(newFixtureName);
+  const channelUsage = collectCueChannelSourceUsage(deviceId, oldAddress, oldMeta.footprint, oldMeta);
+  const groupUsage = collectCueGroupSourceUsage(deviceId, oldMeta, newMeta);
+  const mergedUsage = { ...channelUsage };
+
+  Object.entries(groupUsage).forEach(([sourceKey, entry]) => {
+    if (!mergedUsage[sourceKey]) {
+      mergedUsage[sourceKey] = entry;
+      return;
+    }
+    mergedUsage[sourceKey].kind = mergedUsage[sourceKey].kind === "channel" ? "channel+group" : mergedUsage[sourceKey].kind;
+    mergedUsage[sourceKey].groupIds = Array.from(new Set([
+      ...(mergedUsage[sourceKey].groupIds || []),
+      ...(entry.groupIds || []),
+    ]));
+    if (!mergedUsage[sourceKey].helpText && entry.helpText) {
+      mergedUsage[sourceKey].helpText = entry.helpText;
+    }
+  });
+
+  const autoResolutions = [];
+  const manualResolutions = [];
+  const sourceToNewKey = {};
+
+  Object.values(mergedUsage).forEach((entry) => {
+    const sourceKey = entry.sourceKey;
+    const auto = autoResolveRemapTarget(sourceKey, oldMeta, newMeta);
+    const profile = getFixtureSourceProfile(oldMeta, sourceKey);
+
+    if (auto?.key && newMeta.exactByKey[auto.key]) {
+      sourceToNewKey[sourceKey] = auto.key;
+      const newDef = newMeta.exactByKey[auto.key];
+      const oldDef = profile.exactKey ? oldMeta.exactByKey[profile.exactKey] : null;
+      const detail = oldDef
+        ? `${oldDef.label} (${oldAddress + (parseInt(oldDef.offset ?? 0, 10) || 0)} / U${oldUniverse}) -> ${newDef.label} (${newAddress + (parseInt(newDef.offset ?? 0, 10) || 0)} / U${newUniverse})`
+        : `${sourceKey} -> ${newDef.label}`;
+      autoResolutions.push({
+        sourceKey,
+        label: entry.label,
+        detail,
+      });
+      return;
+    }
+
+    manualResolutions.push({
+      sourceKey,
+      label: entry.label,
+      helpText: entry.helpText || "",
+      options: listManualRemapOptions(newMeta, sourceKey),
+    });
+  });
+
+  return {
+    oldMeta,
+    newMeta,
+    channelUsage,
+    groupUsage,
+    sourceToNewKey,
+    autoResolutions,
+    manualResolutions,
+  };
+}
+
+function applyCueChannelRemapForDevice(deviceId, oldAddress, oldFootprint, newUniverse, newAddress, oldMeta, newMeta, sourceToNewKey) {
+  for (const step of (cuesObj.sequence || [])) {
+    const entry = step?.devices?.[deviceId];
+    if (!entry || typeof entry !== "object") continue;
+
+    const previous = entry.channels || {};
+    const nextChannels = { Universe: newUniverse };
+
+    Object.entries(previous).forEach(([rawKey, value]) => {
+      if (rawKey === "Universe") return;
+      if (!/^\d+$/.test(rawKey)) {
+        nextChannels[rawKey] = value;
+        return;
+      }
+
+      const absCh = parseInt(rawKey, 10);
+      if (!Number.isFinite(absCh)) return;
+      const offset = absCh - oldAddress;
+
+      if (offset < 0 || offset >= oldFootprint) {
+        nextChannels[rawKey] = value;
+        return;
+      }
+
+      const exact = oldMeta.exactByOffset[offset] || null;
+      const sourceKey = exact?.key || `offset.${offset}`;
+      const targetKey = String(sourceToNewKey[sourceKey] || "").trim();
+      const newDef = newMeta.exactByKey[targetKey];
+      if (!newDef) return;
+
+      const newAbs = newAddress + (parseInt(newDef.offset ?? 0, 10) || 0);
+      nextChannels[String(newAbs)] = value;
+    });
+
+    entry.channels = nextChannels;
+  }
+}
+
+function cloneRemappedGroup(groupId, targetKey) {
+  const original = virtualGroups[groupId];
+  if (!original) return groupId;
+
+  const newGid = allocVirtualGroupId();
+  const clone = JSON.parse(JSON.stringify(original));
+  clone.id = newGid;
+
+  if ("targetKey" in clone || getGroupSelectionScope(clone) === "fixture_elements") {
+    clone.targetKey = targetKey;
+  }
+  if ("attrKey" in clone || !("targetKey" in clone)) {
+    clone.attrKey = targetKey;
+  }
+
+  virtualGroups[newGid] = clone;
+  cuesObj.virtual_groups = virtualGroups;
+  return newGid;
+}
+
+function applyCueGroupRemapForDevice(deviceId, oldMeta, newMeta, sourceToNewKey) {
+  const replacementByGroup = {};
+
+  const ensureReplacement = (groupId) => {
+    if (replacementByGroup[groupId]) return replacementByGroup[groupId];
+
+    const group = virtualGroups[groupId];
+    if (!group) {
+      replacementByGroup[groupId] = groupId;
+      return groupId;
+    }
+
+    const sourceKey = getGroupTargetKey(group);
+    const scope = getGroupSelectionScope(group);
+    if (!sourceKey || fixtureSupportsTarget(newMeta, sourceKey, scope)) {
+      replacementByGroup[groupId] = groupId;
+      return groupId;
+    }
+
+    const newTargetKey = String(sourceToNewKey[sourceKey] || "").trim();
+    if (!newTargetKey || newTargetKey === sourceKey) {
+      replacementByGroup[groupId] = groupId;
+      return groupId;
+    }
+
+    replacementByGroup[groupId] = cloneRemappedGroup(groupId, newTargetKey);
+    return replacementByGroup[groupId];
+  };
+
+  for (const step of (cuesObj.sequence || [])) {
+    const groups = step?.device_groups?.[deviceId];
+    if (!Array.isArray(groups) || !groups.length) continue;
+    step.device_groups[deviceId] = groups.map((gid) => ensureReplacement(String(gid || "")));
+  }
+
+  const currentGroups = Array.from(deviceCurrentGroups[deviceId] || []);
+  if (currentGroups.length) {
+    deviceCurrentGroups[deviceId] = new Set(currentGroups.map((gid) => ensureReplacement(String(gid || ""))));
+  }
+}
+
+function buildFixtureRangeSummary(universe, address, fixtureName) {
+  const range = getAddressRangeForFixture(fixtureName, address);
+  return `Universe ${parseInt(universe, 10) || 0}, addresses ${range.start}-${range.end} (${range.footprint} channel${range.footprint > 1 ? "s" : ""})`;
+}
+
+function buildFixtureChangeWarningConfig(device, oldFixtureName, newFixtureName, keepUniverse, keepAddress, remapSlot, remapPlan) {
+  const oldLabel = getFixtureDisplayName(oldFixtureName);
+  const newLabel = getFixtureDisplayName(newFixtureName);
+  const oldRange = buildFixtureRangeSummary(device.universe, device.address, oldFixtureName);
+  const keepRange = buildFixtureRangeSummary(keepUniverse, keepAddress, newFixtureName);
+  const remapSummary = remapSlot
+    ? buildFixtureRangeSummary(remapSlot.universe, remapSlot.address, newFixtureName)
+    : "No free DMX slot was found for the new fixture.";
+  const keepOverlapReport = findRigAddressOverlaps({
+    deviceId: device.id,
+    fixtureName: newFixtureName,
+    universe: keepUniverse,
+    address: keepAddress,
+  });
+  const overlapCount = keepOverlapReport.overlaps.length;
+  const overlapText = overlapCount
+    ? `Keep mode will overlap ${overlapCount} existing fixture${overlapCount > 1 ? "s" : ""} on the current DMX range.`
+    : "Keep mode preserves the edited address exactly as entered.";
+
+  return {
+    title: `Change Fixture For Device ${device.id}`,
+    warningText: `${oldLabel} -> ${newLabel}\n\nCurrent: ${oldRange}\nKeep mode: ${keepRange}`,
+    keepText: "Keep the edited address and preserve the current behavior, even if some cues/effects break.",
+    keepDetail: `${keepRange}\n${overlapText}`,
+    remapText: "Find the next free DMX slot automatically and update cue channels to match the new fixture.",
+    remap: {
+      available: !!remapSlot,
+      summary: remapSummary,
+    },
+    defaultStrategy: remapSlot ? "remap" : "keep",
+  };
+}
+
+function buildFixtureRemapResolutionConfig(device, newFixtureName, remapSlot, remapPlan) {
+  return {
+    title: `Resolve Remap For Device ${device.id}`,
+    warningText: `The software found a new DMX slot for ${getFixtureDisplayName(newFixtureName)}.\nReview the automatic channel resolution below before applying the remap.`,
+    remap: {
+      available: !!remapSlot,
+      summary: remapSlot
+        ? buildFixtureRangeSummary(remapSlot.universe, remapSlot.address, newFixtureName)
+        : "No free DMX slot was found for the new fixture.",
+    },
+    autoResolutions: remapPlan?.autoResolutions || [],
+    manualResolutions: remapPlan?.manualResolutions || [],
+  };
+}
+
+function buildFixtureStatusHero(universe, address, fixtureName) {
+  const range = getAddressRangeForFixture(fixtureName, address);
+  return `U${parseInt(universe, 10) || 0}  ${range.start}-${range.end}`;
+}
+
+function getFixtureDisplayName(fixtureName) {
+  const fi = fixtures?.[fixtureName] || {};
+  return String(fi?.meta?.model || fi?.info?.model || fixtureName || "Fixture");
+}
+
+function getAddressRangeForFixture(fixtureName, address) {
+  const fi = fixtures?.[fixtureName] || {};
+  const footprint = getFixtureFootprint(fi);
+  const start = clamp(parseInt(address, 10) || 0, 0, 511);
+  return {
+    start,
+    end: start + footprint - 1,
+    footprint,
+  };
+}
+
+function findRigAddressOverlaps({ deviceId = null, fixtureName, universe, address }) {
+  const targetUniverse = parseInt(universe, 10) || 0;
+  const targetRange = getAddressRangeForFixture(fixtureName, address);
+  const overlaps = [];
+
+  for (const other of Object.values(rigDevices)) {
+    if (!other) continue;
+    if (deviceId != null && String(other.id) === String(deviceId)) continue;
+    if ((parseInt(other.universe, 10) || 0) !== targetUniverse) continue;
+
+    const otherRange = getAddressRangeForFixture(other.fixture, other.address);
+    const overlapStart = Math.max(targetRange.start, otherRange.start);
+    const overlapEnd = Math.min(targetRange.end, otherRange.end);
+    if (overlapStart > overlapEnd) continue;
+
+    overlaps.push({
+      deviceId: String(other.id),
+      cname: String(other.cname || `Device ${other.id}`),
+      fixtureName: String(other.fixture || ""),
+      start: otherRange.start,
+      end: otherRange.end,
+      overlapStart,
+      overlapEnd,
+    });
+  }
+
+  return {
+    universe: targetUniverse,
+    fixtureName: String(fixtureName || ""),
+    targetRange,
+    overlaps,
+  };
+}
+
+function buildRigOverlapKey(overlap) {
+  return [
+    String(overlap?.deviceId || ""),
+    parseInt(overlap?.overlapStart, 10) || 0,
+    parseInt(overlap?.overlapEnd, 10) || 0
+  ].join(":");
+}
+
+function buildRigOverlapWarningText(report, overlaps) {
+  const targetLabel = getFixtureDisplayName(report?.fixtureName);
+  const range = report?.targetRange || { start: 0, end: 0, footprint: 1 };
+  const countLabel = range.footprint === 1 ? "1 DMX address" : `${range.footprint} DMX addresses`;
+  const lines = [
+    `The selected fixture "${targetLabel}" uses ${countLabel}.`,
+    `Universe ${report?.universe ?? 0}, range ${range.start}-${range.end}.`,
+    "",
+    "This creates overlaps with:",
+  ];
+
+  overlaps.forEach((overlap) => {
+    const fixtureLabel = getFixtureDisplayName(overlap.fixtureName);
+    lines.push(
+      `- Device ${overlap.deviceId} (${overlap.cname}) - ${fixtureLabel}, range ${overlap.start}-${overlap.end}, overlap ${overlap.overlapStart}-${overlap.overlapEnd}`
+    );
+  });
+
+  lines.push("");
+  lines.push("The change will still be applied.");
+  return lines.join("\n");
+}
+
 ///////////////////////
 // DEVICE CRUD
 ///////////////////////
@@ -277,7 +975,7 @@ function addDeviceFromUI() {
   if (!fixtureName) return toast("Select a fixture first.", "error");
 
   const fi = fixtures[fixtureName] || {};
-  const addrCount = fi.addr_count || 1;
+  const addrCount = getFixtureFootprint(fi);
 
   const cname = $id("fixture-name-input")?.value || `Device ${nextDeviceId}`;
   const universe = parseInt($id("fixture-universe-input")?.value || "0", 10);
@@ -325,18 +1023,159 @@ async function editDeviceDialog(id) {
   const dev = rigDevices[id];
   if (!dev) return;
 
-  const res = await deviceEditModal(dev);
-  if (!res) return;
+  try {
+    const res = await deviceEditModal(dev);
+    if (!res) return;
 
-  rigDevices[id].cname = res.cname;
-  rigDevices[id].universe = clamp(parseInt(res.universe, 10) || 0, 0, 9999);
-  rigDevices[id].address = clamp(parseInt(res.address, 10) || 0, 0, 511);
-  scheduleMovementSync();
-  scheduleDummySync();
-  scheduleRigSync();
+    const prevFixture = String(dev.fixture || "");
+    const prevUniverse = clamp(parseInt(dev.universe, 10) || 0, 0, 9999);
+    const prevAddress = clamp(parseInt(dev.address, 10) || 0, 0, 511);
 
-  drawRig();
-  refreshControllerFromSelection();
+    const requestedFixture = String(res.fixture || prevFixture).trim();
+    const nextFixture = fixtures?.[requestedFixture] && !fixtures[requestedFixture]?.error
+      ? requestedFixture
+      : prevFixture;
+    const nextUniverse = clamp(parseInt(res.universe, 10) || 0, 0, 9999);
+    const nextAddress = clamp(parseInt(res.address, 10) || 0, 0, 511);
+    const fixtureChanged = nextFixture !== prevFixture;
+    let finalUniverse = nextUniverse;
+    let finalAddress = nextAddress;
+    let appliedRemap = false;
+
+    if (fixtureChanged) {
+      const remapSlot = findAutoRemapSlot(nextFixture, nextUniverse, id);
+      const effectiveRemapUniverse = remapSlot?.universe ?? nextUniverse;
+      const effectiveRemapAddress = remapSlot?.address ?? nextAddress;
+      const remapPlan = buildFixtureRemapPlan(
+        id,
+        prevFixture,
+        nextFixture,
+        prevUniverse,
+        prevAddress,
+        effectiveRemapUniverse,
+        effectiveRemapAddress
+      );
+
+      const decision = await fixtureChangeDecisionModal(
+        buildFixtureChangeWarningConfig(
+          dev,
+          prevFixture,
+          nextFixture,
+          nextUniverse,
+          nextAddress,
+          remapSlot,
+          remapPlan
+        )
+      );
+      if (!decision) {
+        await operationStatusModal({
+          status: "error",
+          title: "Fixture Update Canceled",
+          message: "The fixture change was canceled by the user.",
+          hero: "No Changes Applied",
+          details: "The device kept its previous fixture and DMX address."
+        });
+        return;
+      }
+
+      if (decision.strategy === "remap") {
+        if (!remapSlot) {
+          await operationStatusModal({
+            status: "error",
+            title: "Fixture Update Failed",
+            message: "No free DMX slot was found for the selected fixture.",
+            hero: "No Free Address",
+            details: "The fixture was not changed because the software could not place it on any universe."
+          });
+          return;
+        }
+
+        let sourceToNewKey = { ...remapPlan.sourceToNewKey };
+        const needsResolution = remapPlan.autoResolutions.length > 0 || remapPlan.manualResolutions.length > 0;
+        if (needsResolution) {
+          const resolution = await fixtureRemapModal(
+            buildFixtureRemapResolutionConfig(dev, nextFixture, remapSlot, remapPlan)
+          );
+          if (!resolution) {
+            await operationStatusModal({
+              status: "error",
+              title: "Fixture Update Canceled",
+              message: "The remap resolution step was canceled by the user.",
+              hero: "No Changes Applied",
+              details: "The device kept its previous fixture and DMX address."
+            });
+            return;
+          }
+          sourceToNewKey = {
+            ...sourceToNewKey,
+            ...(resolution.manualMappings || {}),
+          };
+        }
+
+        finalUniverse = effectiveRemapUniverse;
+        finalAddress = effectiveRemapAddress;
+
+        applyCueChannelRemapForDevice(
+          id,
+          prevAddress,
+          remapPlan.oldMeta.footprint,
+          finalUniverse,
+          finalAddress,
+          remapPlan.oldMeta,
+          remapPlan.newMeta,
+          sourceToNewKey
+        );
+        applyCueGroupRemapForDevice(
+          id,
+          remapPlan.oldMeta,
+          remapPlan.newMeta,
+          sourceToNewKey
+        );
+
+        appliedRemap = true;
+      }
+    }
+
+    rigDevices[id].fixture = nextFixture;
+    rigDevices[id].cname = res.cname;
+    rigDevices[id].universe = finalUniverse;
+    rigDevices[id].address = finalAddress;
+
+    if (fixtureChanged) {
+      deviceLocalValues[id] = {};
+      deviceCurrentGroups[id] = new Set();
+      initDeviceDefaults(id, nextFixture);
+    }
+
+    scheduleMovementSync();
+    scheduleDummySync();
+    scheduleRigSync();
+
+    drawRig();
+    refreshControllerFromSelection();
+
+    if (fixtureChanged) {
+      const successDetails = appliedRemap
+        ? `The fixture was updated and all cue addresses for device ${id} were recalculated automatically.`
+        : `The fixture was updated and the edited DMX address was kept as requested.`;
+      await operationStatusModal({
+        status: "success",
+        title: "Fixture Updated",
+        message: `${getFixtureDisplayName(prevFixture)} -> ${getFixtureDisplayName(nextFixture)}`,
+        hero: buildFixtureStatusHero(finalUniverse, finalAddress, nextFixture),
+        details: `${successDetails}\n${buildFixtureRangeSummary(finalUniverse, finalAddress, nextFixture)}`
+      });
+    }
+  } catch (error) {
+    console.error("[RIG] fixture edit failed:", error);
+    await operationStatusModal({
+      status: "error",
+      title: "Fixture Update Failed",
+      message: "The fixture change crashed before completion.",
+      hero: "Update Failed",
+      details: String(error?.message || error || "Unknown error")
+    });
+  }
 }
 
 async function deleteSelectedDevices() {
@@ -352,6 +1191,8 @@ async function deleteSelectedDevices() {
     delete rigDevices[id];
     delete deviceLocalValues[id];
     delete deviceCurrentGroups[id];
+    if (typeof invalidateDevicePreviewCache === "function") invalidateDevicePreviewCache(id);
+    if (typeof invalidateDeviceAttrCache === "function") invalidateDeviceAttrCache(id);
   }
   scheduleMovementSync();
   scheduleDummySync();
@@ -396,6 +1237,10 @@ function buildDevicesDefFromRig() {
       address: dev.address,
       x: dev.x,
       y: dev.y,
+      home_pan: dev.home_pan ?? null,
+      home_tilt: dev.home_tilt ?? null,
+      invert_pan: !!dev.invert_pan,
+      invert_tilt: !!dev.invert_tilt,
     };
   }
   return defs;
@@ -438,6 +1283,10 @@ function rebuildRigFromCueFile() {
       address: dev.address ?? 0,
       x: dev.x ?? 100,
       y: dev.y ?? 100,
+      home_pan: dev.home_pan ?? null,
+      home_tilt: dev.home_tilt ?? null,
+      invert_pan: !!dev.invert_pan,
+      invert_tilt: !!dev.invert_tilt,
     };
 
     deviceLocalValues[id] = {};
@@ -481,6 +1330,100 @@ function updateRigSortButtonsState() {
     const btn = (typeof $id === "function") ? $id(bid) : null;
     if (btn) btn.disabled = disabled;
   });
+}
+
+// Cheap in-drag update: change just the selection count text in the
+// controller header, without rebuilding the dimmer/color/position/other
+// sections. Used by the select-rect drag loop so the page DOM doesn't
+// reflow on every mousemove.
+function updateSelectionCountOnly() {
+  const info = (typeof $id === "function") ? $id("controller-info") : null;
+  if (!info) return;
+  const n = selectedDeviceOrder ? selectedDeviceOrder.length : 0;
+  info.textContent = n ? `${n} device(s) selected.` : "Select device(s) in rig.";
+}
+
+// One button per distinct fixture template currently present in the rig.
+// Clicking a button selects every device of that type at once.
+let _rigTypeButtonsSig = "";
+function renderRigTypeButtons() {
+  const bar = (typeof $id === "function") ? $id("rig-type-bar") : null;
+  const host = (typeof $id === "function") ? $id("rig-type-buttons") : null;
+  if (!host || !bar) return;
+
+  // Count devices per fixture template.
+  const counts = {};
+  for (const dev of Object.values(rigDevices)) {
+    const t = String(dev.fixture || "").trim();
+    if (!t) continue;
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  const types = Object.keys(counts).sort();
+  // Signature avoids DOM rebuild when nothing relevant changed.
+  const sig = types.map(t => `${t}:${counts[t]}`).join("|");
+  if (sig === _rigTypeButtonsSig) return;
+  _rigTypeButtonsSig = sig;
+
+  if (types.length === 0) {
+    host.innerHTML = "";
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+
+  // Build buttons.
+  host.innerHTML = "";
+  for (const t of types) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "secondary";
+    btn.dataset.fixtureType = t;
+    btn.title = `Select all ${counts[t]} "${t}" device(s)`;
+    btn.innerHTML = `<span class="rig-type-label">${escapeHtmlSimple(prettifyFixtureName(t))}</span><span class="rig-type-count">${counts[t]}</span>`;
+    btn.addEventListener("click", (e) => {
+      const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+      selectAllDevicesOfType(t, additive);
+    });
+    host.appendChild(btn);
+  }
+}
+
+function prettifyFixtureName(name) {
+  return String(name || "")
+    .replace(/[_\-]+/g, " ")
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function escapeHtmlSimple(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Replace (or augment with Ctrl/Shift) the current selection with every
+// rigDevice whose `fixture` equals `type`.
+function selectAllDevicesOfType(type, additive) {
+  const t = String(type || "").trim();
+  if (!t) return;
+  const matchIds = Object.entries(rigDevices)
+    .filter(([_, d]) => String(d.fixture || "") === t)
+    .map(([id, _]) => String(id));
+  if (!matchIds.length) return;
+
+  if (additive) {
+    for (const id of matchIds) {
+      if (!selectedDeviceSet.has(id)) {
+        selectedDeviceSet.add(id);
+        selectedDeviceOrder.push(id);
+      }
+    }
+  } else {
+    selectedDeviceOrder = matchIds.slice();
+    selectedDeviceSet = new Set(selectedDeviceOrder);
+  }
+  refreshControllerFromSelection();
+  drawRig();
 }
 
 function sortSelectionVertical() {
@@ -690,8 +1633,8 @@ function reverseSelectionOrder() {
 
 function refreshControllerFromSelection() {
   const info = $id("controller-info");
-  rgbWidgetRef = null;
-  posWidgetRef = null;
+  rgbWidgetRefs = [];
+  posWidgetRefs = [];
   updateRigSortButtonsState();
 
   if (!selectedDeviceOrder.length) {
@@ -699,7 +1642,7 @@ function refreshControllerFromSelection() {
     $id("intensity-body") && ($id("intensity-body").innerHTML = "");
     $id("color-body") && ($id("color-body").innerHTML = "");
     $id("position-body") && ($id("position-body").innerHTML = "");
-    $id("beam-body") && ($id("beam-body").innerHTML = "");
+    $id("other-body") && ($id("other-body").innerHTML = "");
     if ($id('tab-effects')?.classList.contains('active')) renderEffectsTargets();
     return;
   }
@@ -712,40 +1655,36 @@ function refreshControllerFromSelection() {
     $id("intensity-body") && ($id("intensity-body").innerHTML = "");
     $id("color-body") && ($id("color-body").innerHTML = "");
     $id("position-body") && ($id("position-body").innerHTML = "");
-    $id("beam-body") && ($id("beam-body").innerHTML = "");
+    $id("other-body") && ($id("other-body").innerHTML = "");
     if ($id('tab-effects')?.classList.contains('active')) renderEffectsTargets();
     return;
   }
 
   const fi = fixtures[first.fixture] || {};
-  const funcs = fi.functions || {};
 
   const ib = $id("intensity-body");
   if (ib) {
     ib.innerHTML = "";
-    if (funcs.dimmer) addLocalSlider(ib, "Dimmer", funcs.dimmer.channel);
-    else ib.innerHTML = "<span class='muted'>No dimmer defined.</span>";
+    renderFixtureGroupSection(ib, getFixtureGroups(fi, "dimmer"), renderDimmerGroupControls, "rig.info.noDimmer", "No dimmer defined.", renderGlobalDimmerGroupControls);
   }
 
   const cb = $id("color-body");
   if (cb) {
     cb.innerHTML = "";
-    if (funcs.rgb) addRgbControls(cb, funcs.rgb);
-    else cb.innerHTML = "<span class='muted'>No RGB function defined.</span>";
+    renderFixtureGroupSection(cb, getFixtureGroups(fi, "color"), renderColorGroupControls, "rig.info.noColor", "No color functions defined.", renderGlobalColorGroupControls);
   }
 
   const pb = $id("position-body");
   if (pb) {
     pb.innerHTML = "";
-    if (funcs.position) addPositionControls(pb, funcs.position);
-    else pb.innerHTML = "<span class='muted'>No position function defined.</span>";
+    renderFixtureGroupSection(pb, getFixtureGroups(fi, "position"), renderPositionGroupControls, "rig.info.noPosition", "No position function defined.", renderGlobalPositionGroupControls);
+    addDistributeControls(pb);
   }
 
-  const bb = $id("beam-body");
-  if (bb) {
-    bb.innerHTML = "";
-    if (funcs.beam || funcs.focus) addBeamControls(bb, funcs);
-    else bb.innerHTML = "<span class='muted'>No beam controls yet.</span>";
+  const ob = $id("other-body");
+  if (ob) {
+    ob.innerHTML = "";
+    renderFixtureGroupSection(ob, getFixtureGroups(fi, "other"), renderOtherGroupControls, "rig.info.noOther", "No other controls yet.");
   }
 
   // Si l’onglet "Effects" est actif, on rafraîchit l’affichage des groupes
@@ -759,12 +1698,47 @@ function refreshControllerFromSelection() {
 // SLIDERS GÉNÉRIQUES
 ///////////////////////
 
+function normalizeLocalIndices(localIndexOrList) {
+  const raw = Array.isArray(localIndexOrList) ? localIndexOrList : [localIndexOrList];
+  return Array.from(new Set(
+    raw
+      .map(idx => parseInt(idx, 10))
+      .filter(idx => Number.isFinite(idx))
+  ));
+}
+
+function getPrimaryLocalIndex(localIndexOrList) {
+  return normalizeLocalIndices(localIndexOrList)[0] ?? null;
+}
+
+function getSelectionLocalValue(localIndexOrList, fallback = 0) {
+  const indices = normalizeLocalIndices(localIndexOrList);
+  if (!indices.length || !selectedDeviceOrder.length) return fallback;
+  const firstId = selectedDeviceOrder[0];
+  const vals = deviceLocalValues[firstId] || {};
+  return vals[indices[0]] ?? fallback;
+}
+
+function applyValueToSelectionLocals(localIndexOrList, value) {
+  const indices = normalizeLocalIndices(localIndexOrList);
+  if (!indices.length) return;
+  for (const id of selectedDeviceOrder) {
+    deviceLocalValues[id] ||= {};
+    indices.forEach(idx => {
+      deviceLocalValues[id][idx] = value;
+    });
+  }
+}
+
 function addLocalSlider(container, label, localIndex, opts = {}) {
+  const indices = normalizeLocalIndices(localIndex);
+  const primaryIndex = indices[0] ?? 0;
   const row = document.createElement("div");
   row.className = "ctrl-row";
 
   const lab = document.createElement("label");
-  lab.textContent = `${label} (${localIndex})`;
+  const showIndex = opts.showIndex !== false && indices.length === 1;
+  lab.textContent = showIndex ? `${label} (${primaryIndex})` : label;
 
   const slider = document.createElement("input");
   slider.type = "range";
@@ -775,13 +1749,7 @@ function addLocalSlider(container, label, localIndex, opts = {}) {
   const valSpan = document.createElement("div");
   valSpan.className = "slider-value";
 
-  const getCommonValue = () => {
-    const vals = [];
-    for (const id of selectedDeviceOrder) {
-      vals.push(deviceLocalValues[id]?.[localIndex] ?? 0);
-    }
-    return vals[0] ?? 0;
-  };
+  const getCommonValue = () => getSelectionLocalValue(indices, 0);
 
   slider.value = getCommonValue();
   valSpan.textContent = slider.value;
@@ -790,12 +1758,9 @@ function addLocalSlider(container, label, localIndex, opts = {}) {
     const v = parseInt(slider.value, 10) || 0;
     valSpan.textContent = v;
 
-    for (const id of selectedDeviceOrder) {
-      deviceLocalValues[id] ||= {};
-      deviceLocalValues[id][localIndex] = v;
-    }
+    applyValueToSelectionLocals(indices, v);
 
-    applySelectionToEngine(true);
+    scheduleSelectionApply();
     drawRig();
 
     syncRgbWidgetFromFirstDevice();
@@ -816,10 +1781,98 @@ function addLocalSlider(container, label, localIndex, opts = {}) {
 }
 
 ///////////////////////
-// RGB + Color Wheel
+// GROUPED CONTROLS
 ///////////////////////
 
-function addRgbControls(container, rgbMap) {
+function collectFamilyChannelMap(groups) {
+  const out = {};
+  (Array.isArray(groups) ? groups : []).forEach(group => {
+    getGroupChannels(group).forEach(channel => {
+      const role = String(channel?.role || "").trim().toLowerCase();
+      if (!role) return;
+      out[role] ||= [];
+      out[role].push(parseInt(channel?.offset ?? 0, 10) || 0);
+    });
+  });
+  Object.keys(out).forEach(role => {
+    out[role] = Array.from(new Set(out[role]));
+  });
+  return out;
+}
+
+function appendGlobalFixtureCard(container, label, renderer, groups) {
+  if (typeof renderer !== "function") return;
+  const card = document.createElement("div");
+  card.className = "fixture-group-card";
+  const title = document.createElement("div");
+  title.className = "fixture-group-title";
+  title.textContent = label;
+  card.appendChild(title);
+  renderer(card, groups);
+  container.appendChild(card);
+}
+
+function renderFixtureGroupSection(container, groups, renderer, emptyI18nKey, emptyFallback, globalRenderer = null) {
+  const list = Array.isArray(groups) ? groups : [];
+  if (!list.length) {
+    const empty = document.createElement("span");
+    empty.className = "muted";
+    empty.textContent = window.t ? window.t(emptyI18nKey, emptyFallback) : emptyFallback;
+    container.appendChild(empty);
+    return;
+  }
+  if (list.length > 1 && typeof globalRenderer === "function") {
+    appendGlobalFixtureCard(container, "Global", globalRenderer, list);
+  }
+  list.forEach(group => {
+    const card = document.createElement("div");
+    card.className = "fixture-group-card";
+    const title = document.createElement("div");
+    title.className = "fixture-group-title";
+    title.textContent = getFixtureGroupLabel(group);
+    card.appendChild(title);
+    renderer(card, group);
+    container.appendChild(card);
+  });
+}
+
+function renderPresetButtons(container, slider, presets) {
+  if (!Array.isArray(presets) || !presets.length || !slider) return;
+  const row = document.createElement("div");
+  row.className = "fixture-presets";
+  presets.forEach(preset => {
+    if (!preset || preset.label == null) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "secondary";
+    btn.textContent = `${preset.label} (${preset.min}-${preset.max})`;
+    btn.onclick = () => {
+      const min = clamp(parseInt(preset.min ?? 0, 10) || 0, 0, 255);
+      const max = clamp(parseInt(preset.max ?? min, 10) || min, 0, 255);
+      slider.value = String(Math.round((min + max) / 2));
+      slider.dispatchEvent(new Event("input"));
+    };
+    row.appendChild(btn);
+  });
+  container.appendChild(row);
+}
+
+function renderDimmerGroupControls(container, group) {
+  getGroupChannels(group).forEach(channel => {
+    const label = humanizeFixtureToken(channel?.role || "Level");
+    const slider = addLocalSlider(container, label, parseInt(channel?.offset ?? 0, 10) || 0);
+    renderPresetButtons(container, slider, channel?.presets);
+  });
+}
+
+function renderGlobalDimmerGroupControls(container, groups) {
+  const channelMap = collectFamilyChannelMap(groups);
+  Object.entries(channelMap).forEach(([role, offsets]) => {
+    addLocalSlider(container, humanizeFixtureToken(role || "Level"), offsets, { showIndex: false });
+  });
+}
+
+function addRgbControls(container, rgbMap, extraChannels = [], groupKey = "color") {
   const preview = document.createElement("div");
   preview.className = "color-preview";
   container.appendChild(preview);
@@ -848,10 +1901,20 @@ function addRgbControls(container, rgbMap) {
 
   comps.forEach(c => {
     const li = rgbMap[c.key];
-    sliders[c.key] = addLocalSlider(container, c.name, li);
+    sliders[c.key] = addLocalSlider(container, c.name, li, { showIndex: !Array.isArray(li) });
   });
 
-  rgbWidgetRef = { wheelEl: wheel, cursorEl: cursor, sliders, rgbMap, previewEl: preview };
+  extraChannels.forEach(channel => {
+    const label = humanizeFixtureToken(channel?.role || "Value");
+    const offsets = channel?.offsets || (parseInt(channel?.offset ?? 0, 10) || 0);
+    const slider = addLocalSlider(container, label, offsets, { showIndex: !Array.isArray(offsets) });
+    if (!Array.isArray(offsets)) {
+      renderPresetButtons(container, slider, channel?.presets);
+    }
+  });
+
+  const widgetRef = { key: groupKey, wheelEl: wheel, cursorEl: cursor, sliders, rgbMap, previewEl: preview };
+  rgbWidgetRefs.push(widgetRef);
 
   function setFromWheelEvent(e) {
     const { x, y } = elementCoords(e, wheel);
@@ -878,13 +1941,10 @@ function addRgbControls(container, rgbMap) {
     sliders.green.dispatchEvent(new Event("input"));
     sliders.blue.dispatchEvent(new Event("input"));
 
-    moveWheelCursor(hDeg, s);
+    moveWheelCursor(widgetRef, hDeg, s);
   }
 
-  let dragging = false;
-  wheel.onmousedown = (e) => { dragging = true; setFromWheelEvent(e); };
-  window.addEventListener("mousemove", (e) => dragging && setFromWheelEvent(e));
-  window.addEventListener("mouseup", () => dragging = false);
+  wheel.onmousedown = (e) => { _activeDragHandler = setFromWheelEvent; setFromWheelEvent(e); };
 
   wheel.ondblclick = () => {
     sliders.red.value = 255;
@@ -893,17 +1953,63 @@ function addRgbControls(container, rgbMap) {
     sliders.red.dispatchEvent(new Event("input"));
     sliders.green.dispatchEvent(new Event("input"));
     sliders.blue.dispatchEvent(new Event("input"));
-    moveWheelCursor(0, 0);
+    moveWheelCursor(widgetRef, 0, 0);
   };
 
   updateColorPreview(preview, rgbMap);
   syncRgbWidgetFromFirstDevice();
 }
 
-function moveWheelCursor(hDeg, s) {
-  if (!rgbWidgetRef) return;
-  const wheel = rgbWidgetRef.wheelEl;
-  const cursor = rgbWidgetRef.cursorEl;
+function renderColorGroupControls(container, group) {
+  const channels = getGroupChannels(group);
+  const rgbMap = {};
+  const extras = [];
+  channels.forEach(channel => {
+    const role = String(channel?.role || "").toLowerCase();
+    if (role === "red" || role === "green" || role === "blue") {
+      rgbMap[role] = parseInt(channel?.offset ?? 0, 10) || 0;
+    } else {
+      extras.push(channel);
+    }
+  });
+
+  if (rgbMap.red != null && rgbMap.green != null && rgbMap.blue != null) {
+    addRgbControls(container, rgbMap, extras, String(group?.id || ""));
+    return;
+  }
+
+  channels.forEach(channel => {
+    const label = humanizeFixtureToken(channel?.role || "Value");
+    const slider = addLocalSlider(container, label, parseInt(channel?.offset ?? 0, 10) || 0);
+    renderPresetButtons(container, slider, channel?.presets);
+  });
+}
+
+function renderGlobalColorGroupControls(container, groups) {
+  const channelMap = collectFamilyChannelMap(groups);
+  const rgbMap = {
+    red: channelMap.red,
+    green: channelMap.green,
+    blue: channelMap.blue,
+  };
+  const extras = Object.entries(channelMap)
+    .filter(([role]) => !["red", "green", "blue"].includes(role))
+    .map(([role, offsets]) => ({ role, offsets }));
+
+  if (rgbMap.red?.length && rgbMap.green?.length && rgbMap.blue?.length) {
+    addRgbControls(container, rgbMap, extras, "color.global");
+    return;
+  }
+
+  Object.entries(channelMap).forEach(([role, offsets]) => {
+    addLocalSlider(container, humanizeFixtureToken(role || "Value"), offsets, { showIndex: false });
+  });
+}
+
+function moveWheelCursor(widgetRef, hDeg, s) {
+  if (!widgetRef) return;
+  const wheel = widgetRef.wheelEl;
+  const cursor = widgetRef.cursorEl;
   const w = wheel.clientWidth, h = wheel.clientHeight;
   const maxR = Math.min(w, h) / 2;
   const rad = hDeg * Math.PI / 180;
@@ -918,32 +2024,32 @@ function moveWheelCursor(hDeg, s) {
 function updateColorPreview(preview, rgbMap) {
   const firstId = selectedDeviceOrder[0];
   const vals = deviceLocalValues[firstId] || {};
-  const r = vals[rgbMap.red] ?? 0;
-  const g = vals[rgbMap.green] ?? 0;
-  const b = vals[rgbMap.blue] ?? 0;
+  const r = vals[getPrimaryLocalIndex(rgbMap.red)] ?? 0;
+  const g = vals[getPrimaryLocalIndex(rgbMap.green)] ?? 0;
+  const b = vals[getPrimaryLocalIndex(rgbMap.blue)] ?? 0;
   preview.style.background = `rgb(${r},${g},${b})`;
 }
 
 function syncRgbWidgetFromFirstDevice() {
-  if (!rgbWidgetRef || !selectedDeviceOrder.length) return;
+  if (!rgbWidgetRefs.length || !selectedDeviceOrder.length) return;
   const id = selectedDeviceOrder[0];
   const vals = deviceLocalValues[id] || {};
-  const { rgbMap, previewEl } = rgbWidgetRef;
-
-  const r = vals[rgbMap.red] ?? 0;
-  const g = vals[rgbMap.green] ?? 0;
-  const b = vals[rgbMap.blue] ?? 0;
-
-  const hsv = rgbToHsv(r, g, b);
-  moveWheelCursor(hsv.h, hsv.s);
-  if (previewEl) updateColorPreview(previewEl, rgbMap);
+  rgbWidgetRefs.forEach(widgetRef => {
+    const { rgbMap, previewEl } = widgetRef;
+    const r = vals[getPrimaryLocalIndex(rgbMap.red)] ?? 0;
+    const g = vals[getPrimaryLocalIndex(rgbMap.green)] ?? 0;
+    const b = vals[getPrimaryLocalIndex(rgbMap.blue)] ?? 0;
+    const hsv = rgbToHsv(r, g, b);
+    moveWheelCursor(widgetRef, hsv.h, hsv.s);
+    if (previewEl) updateColorPreview(previewEl, rgbMap);
+  });
 }
 
 ///////////////////////
 // Position XY + Pan/Tilt
 ///////////////////////
 
-function addPositionControls(container, posMap) {
+function addPositionControls(container, posMap, groupKey = "position", extraChannels = []) {
   const panIdx = posMap.pan?.channel;
   const tiltIdx = posMap.tilt?.channel;
 
@@ -978,17 +2084,19 @@ function addPositionControls(container, posMap) {
   let tiltSlider = null;
 
   if (panIdx != null) {
-    panSlider = addLocalSlider(panWrapper, "Pan", panIdx);
+    panSlider = addLocalSlider(panWrapper, "Pan", panIdx, { showIndex: !Array.isArray(panIdx) });
   }
 
   if (tiltIdx != null) {
     // on lui donne juste une classe en plus pour le style vertical
     tiltSlider = addLocalSlider(tiltWrapper, "Tilt", tiltIdx, {
-      className: "tilt-row"
+      className: "tilt-row",
+      showIndex: !Array.isArray(tiltIdx)
     });
   }
 
-  posWidgetRef = { xyEl: xy, cursorEl: cursor, panSlider, tiltSlider, panIdx, tiltIdx };
+  const widgetRef = { key: groupKey, xyEl: xy, cursorEl: cursor, panSlider, tiltSlider, panIdx, tiltIdx };
+  posWidgetRefs.push(widgetRef);
 
   function setFromXYEvent(e) {
     const r = xy.getBoundingClientRect();
@@ -1009,41 +2117,315 @@ function addPositionControls(container, posMap) {
       tiltSlider.dispatchEvent(new Event("input"));
     }
 
-    moveXYCursor(nx, ny);
+    moveXYCursor(widgetRef, nx, ny);
   }
 
-  let dragging = false;
-  xy.onmousedown = (e) => { dragging = true; setFromXYEvent(e); };
-  window.addEventListener("mousemove", (e) => dragging && setFromXYEvent(e));
-  window.addEventListener("mouseup", () => dragging = false);
+  xy.onmousedown = (e) => { _activeDragHandler = setFromXYEvent; setFromXYEvent(e); };
 
   xy.ondblclick = () => {
     if (panSlider) { panSlider.value = "128"; panSlider.dispatchEvent(new Event("input")); }
     if (tiltSlider) { tiltSlider.value = "128"; tiltSlider.dispatchEvent(new Event("input")); }
-    moveXYCursor(0.5, 0.5);
+    moveXYCursor(widgetRef, 0.5, 0.5);
   };
+
+  extraChannels.forEach(channel => {
+    const label = humanizeFixtureToken(channel?.role || "Value");
+    const offsets = channel?.offsets || (parseInt(channel?.offset ?? 0, 10) || 0);
+    const slider = addLocalSlider(container, label, offsets, { showIndex: !Array.isArray(offsets) });
+    if (!Array.isArray(offsets)) {
+      renderPresetButtons(container, slider, channel?.presets);
+    }
+  });
 
   syncPosWidgetFromFirstDevice();
 }
 
 ///////////////////////
-// Beam / Focus
+// Other / Focus / Generic
 ///////////////////////
 
-function addBeamControls(container, funcs) {
-  const focusIdx = funcs?.focus?.channel ?? funcs?.beam?.focus?.channel;
-  if (focusIdx != null) {
-    addLocalSlider(container, "Focus", focusIdx);
+function renderPositionGroupControls(container, group) {
+  const panChannel = getGroupChannel(group, "pan");
+  const tiltChannel = getGroupChannel(group, "tilt");
+  const extras = getGroupChannels(group).filter(channel => {
+    const role = String(channel?.role || "").toLowerCase();
+    return role !== "pan" && role !== "tilt";
+  });
+
+  if (panChannel || tiltChannel) {
+    addPositionControls(container, {
+      pan: panChannel ? { channel: parseInt(panChannel.offset ?? 0, 10) || 0 } : null,
+      tilt: tiltChannel ? { channel: parseInt(tiltChannel.offset ?? 0, 10) || 0 } : null,
+    }, String(group?.id || ""), extras);
     return;
   }
 
-  container.innerHTML = "<span class='muted'>No beam controls yet.</span>";
+  getGroupChannels(group).forEach(channel => {
+    const label = humanizeFixtureToken(channel?.role || "Value");
+    const slider = addLocalSlider(container, label, parseInt(channel?.offset ?? 0, 10) || 0);
+    renderPresetButtons(container, slider, channel?.presets);
+  });
 }
 
+function renderGlobalPositionGroupControls(container, groups) {
+  const channelMap = collectFamilyChannelMap(groups);
+  const extras = Object.entries(channelMap)
+    .filter(([role]) => !["pan", "tilt"].includes(role))
+    .map(([role, offsets]) => ({ role, offsets }));
 
-function moveXYCursor(nx, ny) {
-  if (!posWidgetRef) return;
-  const xy = posWidgetRef.xyEl, cursor = posWidgetRef.cursorEl;
+  if (channelMap.pan?.length || channelMap.tilt?.length) {
+    addPositionControls(container, {
+      pan: channelMap.pan?.length ? { channel: channelMap.pan } : null,
+      tilt: channelMap.tilt?.length ? { channel: channelMap.tilt } : null,
+    }, "position.global", extras);
+    return;
+  }
+
+  Object.entries(channelMap).forEach(([role, offsets]) => {
+    addLocalSlider(container, humanizeFixtureToken(role || "Value"), offsets, { showIndex: false });
+  });
+}
+
+///////////////////////
+// Distribute Pan/Tilt across selection
+///////////////////////
+
+let distributeState = {
+  pan:  { from: 0, to: 90, mode: "linear", seed: null },
+  tilt: { from: 0, to: 90, mode: "linear", seed: null },
+};
+
+function enumeratePositionSlots(role) {
+  const slots = [];
+  for (const id of selectedDeviceOrder) {
+    const dev = rigDevices[id];
+    if (!dev) continue;
+    const fi = fixtures[dev.fixture] || {};
+    const posGroups = getFixtureGroups(fi, "position");
+    for (const g of posGroups) {
+      const ch = getGroupChannel(g, role);
+      if (!ch) continue;
+      const offset = parseInt(ch.offset ?? 0, 10) || 0;
+      const rangeDegRaw = parseInt(ch.range_deg ?? 0, 10) || 0;
+      const rangeDeg = rangeDegRaw > 0 ? rangeDegRaw : (role === "pan" ? 540 : 270);
+      slots.push({ deviceId: id, groupId: String(g.id || ""), offset, rangeDeg });
+    }
+  }
+  return slots;
+}
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededShuffle(arr, seed) {
+  const out = arr.slice();
+  const rand = mulberry32(seed);
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function applyDistribute(role) {
+  const slots = enumeratePositionSlots(role);
+  const n = slots.length;
+  if (n < 2) return;
+
+  const st = distributeState[role];
+  const fromDeg = st.from;
+  const toDeg = st.to;
+
+  let order = slots.map((_, i) => i);
+  if (st.mode === "random") {
+    if (st.seed == null) st.seed = (Math.random() * 0x7FFFFFFF) | 0;
+    order = seededShuffle(order, st.seed);
+  }
+
+  for (let i = 0; i < n; i++) {
+    const slot = slots[order[i]];
+    const t = i / (n - 1);
+    const angle = fromDeg + (toDeg - fromDeg) * t;
+    const dmx = Math.max(0, Math.min(255, Math.round((angle / slot.rangeDeg) * 255)));
+    deviceLocalValues[slot.deviceId] ||= {};
+    deviceLocalValues[slot.deviceId][slot.offset] = dmx;
+  }
+
+  applySelectionToEngine(true);
+  drawRig();
+  syncPosWidgetFromFirstDevice();
+}
+
+function addDistributeControls(container) {
+  const panSlots = enumeratePositionSlots("pan");
+  const tiltSlots = enumeratePositionSlots("tilt");
+  if (!panSlots.length && !tiltSlots.length) return;
+
+  const card = document.createElement("div");
+  card.className = "fixture-group-card distribute-card";
+
+  const title = document.createElement("div");
+  title.className = "fixture-group-title";
+  title.textContent = window.t ? window.t("controller.distribute", "Distribute") : "Distribute";
+  card.appendChild(title);
+
+  function buildRoleBlock(role, slotsCount) {
+    const block = document.createElement("div");
+    block.className = "distribute-block";
+
+    const st = distributeState[role];
+
+    const lab = document.createElement("div");
+    lab.className = "distribute-label";
+    const labKey = role === "pan" ? "rig.label.pan" : "rig.label.tilt";
+    const labFallback = role === "pan" ? "Pan" : "Tilt";
+    const slotsHint = ` (${slotsCount})`;
+    lab.textContent = (window.t ? window.t(labKey, labFallback) : labFallback) + slotsHint;
+    block.appendChild(lab);
+
+    const row = document.createElement("div");
+    row.className = "distribute-row";
+
+    const fromLab = document.createElement("span");
+    fromLab.className = "distribute-small";
+    fromLab.textContent = window.t ? window.t("controller.distributeFrom", "From") : "From";
+    row.appendChild(fromLab);
+
+    const fromInput = document.createElement("input");
+    fromInput.type = "number";
+    fromInput.step = "1";
+    fromInput.className = "distribute-input";
+    fromInput.value = st.from;
+    row.appendChild(fromInput);
+
+    const sep = document.createElement("span");
+    sep.className = "distribute-sep";
+    sep.textContent = "→";
+    row.appendChild(sep);
+
+    const toLab = document.createElement("span");
+    toLab.className = "distribute-small";
+    toLab.textContent = window.t ? window.t("controller.distributeTo", "To") : "To";
+    row.appendChild(toLab);
+
+    const toInput = document.createElement("input");
+    toInput.type = "number";
+    toInput.step = "1";
+    toInput.className = "distribute-input";
+    toInput.value = st.to;
+    row.appendChild(toInput);
+
+    const deg = document.createElement("span");
+    deg.className = "distribute-small";
+    deg.textContent = "°";
+    row.appendChild(deg);
+
+    block.appendChild(row);
+
+    const sliderRow = document.createElement("div");
+    sliderRow.className = "distribute-slider-row";
+
+    const fromSlider = document.createElement("input");
+    fromSlider.type = "range";
+    fromSlider.className = "distribute-slider";
+    fromSlider.min = "-360";
+    fromSlider.max = "360";
+    fromSlider.step = "1";
+    fromSlider.value = st.from;
+    sliderRow.appendChild(fromSlider);
+
+    const toSlider = document.createElement("input");
+    toSlider.type = "range";
+    toSlider.className = "distribute-slider";
+    toSlider.min = "-360";
+    toSlider.max = "360";
+    toSlider.step = "1";
+    toSlider.value = st.to;
+    sliderRow.appendChild(toSlider);
+
+    block.appendChild(sliderRow);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "distribute-btn-row";
+
+    const linearBtn = document.createElement("button");
+    linearBtn.type = "button";
+    linearBtn.className = "distribute-btn secondary";
+    linearBtn.textContent = window.t ? window.t("controller.distributeLinear", "Linear") : "Linear";
+
+    const randomBtn = document.createElement("button");
+    randomBtn.type = "button";
+    randomBtn.className = "distribute-btn secondary";
+    randomBtn.textContent = window.t ? window.t("controller.distributeRandom", "Random") : "Random";
+
+    if (slotsCount < 2) {
+      linearBtn.disabled = true;
+      randomBtn.disabled = true;
+      const hint = window.t ? window.t("controller.distributeNeedTwo", "Need 2+ slots in selection") : "Need 2+ slots in selection";
+      linearBtn.title = hint;
+      randomBtn.title = hint;
+    }
+
+    btnRow.appendChild(linearBtn);
+    btnRow.appendChild(randomBtn);
+    block.appendChild(btnRow);
+
+    function setFrom(v) {
+      const n = parseInt(v, 10);
+      st.from = Number.isFinite(n) ? n : 0;
+      fromInput.value = st.from;
+      fromSlider.value = st.from;
+    }
+    function setTo(v) {
+      const n = parseInt(v, 10);
+      st.to = Number.isFinite(n) ? n : 0;
+      toInput.value = st.to;
+      toSlider.value = st.to;
+    }
+
+    fromInput.oninput = () => setFrom(fromInput.value);
+    toInput.oninput = () => setTo(toInput.value);
+    fromSlider.oninput = () => setFrom(fromSlider.value);
+    toSlider.oninput = () => setTo(toSlider.value);
+
+    linearBtn.onclick = () => {
+      st.mode = "linear";
+      applyDistribute(role);
+    };
+    randomBtn.onclick = () => {
+      st.mode = "random";
+      st.seed = (Math.random() * 0x7FFFFFFF) | 0;
+      applyDistribute(role);
+    };
+
+    return block;
+  }
+
+  card.appendChild(buildRoleBlock("pan", panSlots.length));
+  card.appendChild(buildRoleBlock("tilt", tiltSlots.length));
+
+  container.appendChild(card);
+}
+
+function renderOtherGroupControls(container, group) {
+  getGroupChannels(group).forEach(channel => {
+    const roleLabel = humanizeFixtureToken(channel?.role || group?.kind || "Value");
+    const slider = addLocalSlider(container, roleLabel, parseInt(channel?.offset ?? 0, 10) || 0);
+    renderPresetButtons(container, slider, channel?.presets);
+  });
+}
+
+function moveXYCursor(widgetRef, nx, ny) {
+  if (!widgetRef) return;
+  const xy = widgetRef.xyEl, cursor = widgetRef.cursorEl;
   const w = Math.max(1, xy.clientWidth - 1);
   const h = Math.max(1, xy.clientHeight - 1);
   cursor.style.left = `${nx * w}px`;
@@ -1051,23 +2433,35 @@ function moveXYCursor(nx, ny) {
 }
 
 function syncPosWidgetFromFirstDevice() {
-  if (!posWidgetRef || !selectedDeviceOrder.length) return;
+  if (!posWidgetRefs.length || !selectedDeviceOrder.length) return;
   const id = selectedDeviceOrder[0];
   const vals = deviceLocalValues[id] || {};
-
-  const panIdx = posWidgetRef.panIdx;
-  const tiltIdx = posWidgetRef.tiltIdx;
-
-  const panVal = panIdx != null ? (vals[panIdx] ?? 128) : 128;
-  const tiltVal = tiltIdx != null ? (vals[tiltIdx] ?? 128) : 128;
-
-  moveXYCursor(panVal / 255, tiltVal / 255);
+  posWidgetRefs.forEach(widgetRef => {
+    const panKey = getPrimaryLocalIndex(widgetRef.panIdx);
+    const tiltKey = getPrimaryLocalIndex(widgetRef.tiltIdx);
+    const panVal = panKey != null ? (vals[panKey] ?? 128) : 128;
+    const tiltVal = tiltKey != null ? (vals[tiltKey] ?? 128) : 128;
+    moveXYCursor(widgetRef, panVal / 255, tiltVal / 255);
+  });
 }
 
 
 ///////////////////////
 // APPLY LIVE SELECTION -> ENGINE
 ///////////////////////
+
+// Debounced wrapper for high-frequency callers (slider oninput). Coalesces
+// multiple calls within `delayMs` into a single apply. Used during slider drag
+// so we don't rebuild the per-universe payload at 60+ Hz; the DMX pump still
+// runs at 50Hz independently so latency feels identical.
+let _selectionApplyTimer = null;
+function scheduleSelectionApply(delayMs = 30) {
+  if (_selectionApplyTimer) clearTimeout(_selectionApplyTimer);
+  _selectionApplyTimer = setTimeout(() => {
+    _selectionApplyTimer = null;
+    applySelectionToEngine(true);
+  }, delayMs);
+}
 
 async function applySelectionToEngine(silent = false) {
   // ========================================
@@ -1125,8 +2519,26 @@ function hitTestDeviceWorld(wx, wy) {
   return null;
 }
 
+// Public entry point: coalesces multiple calls in the same frame to a single
+// canvas repaint. Slider drags / SSE bursts can call drawRig() dozens of times
+// per second; without throttling each call did a full clearRect + grid + devices
+// repaint. rAF caps to ~60fps and merges intra-frame calls into one.
+let _drawRigPending = false;
 function drawRig() {
+  if (_drawRigPending) return;
+  _drawRigPending = true;
+  requestAnimationFrame(() => {
+    _drawRigPending = false;
+    _drawRigImpl();
+  });
+}
+
+function _drawRigImpl() {
   if (!rigCtx || !rigCanvas) return;
+  // Keep the "select by type" buttons in sync with rigDevices. The function
+  // signature-caches the rendered state, so this is a no-op when nothing
+  // about the set of present fixture types has changed.
+  renderRigTypeButtons();
   rigCtx.clearRect(0, 0, rigCanvas.width, rigCanvas.height);
 
   const nowGlow = performance.now();
@@ -1281,21 +2693,23 @@ function drawRig() {
     }
   
     // ----- APERÇU RGB : TOUJOURS AFFICHÉ, MÊME EN GROS DÉZOOM -----
-    if (funcs.rgb) {
+    const previewChannels = getDevicePrimaryPreviewChannels(dev);
+    if (previewChannels.r != null && previewChannels.g != null && previewChannels.b != null) {
       const pv = devicePreviewRGB[dev.id];
       let r = 0, g = 0, b = 0;
       if (pv) { r = pv.r; g = pv.g; b = pv.b; }
       else {
         const lv = deviceLocalValues[dev.id] || {};
-        r = lv[funcs.rgb.red] ?? 255;
-        g = lv[funcs.rgb.green] ?? 255;
-        b = lv[funcs.rgb.blue] ?? 255;
+        r = lv[previewChannels.r - (parseInt(dev.address, 10) || 0)] ?? 255;
+        g = lv[previewChannels.g - (parseInt(dev.address, 10) || 0)] ?? 255;
+        b = lv[previewChannels.b - (parseInt(dev.address, 10) || 0)] ?? 255;
       }
 
       // Apply dimmer to the color preview
       let dimmerFactor = 1.0;
-      if (funcs.dimmer) {
-        const dimmerVal = devicePreviewDimmer[dev.id] ?? (deviceLocalValues[dev.id]?.[funcs.dimmer.channel] ?? 255);
+      if (previewChannels.dimmer != null) {
+        const dimmerLocal = previewChannels.dimmer - (parseInt(dev.address, 10) || 0);
+        const dimmerVal = devicePreviewDimmer[dev.id] ?? (deviceLocalValues[dev.id]?.[dimmerLocal] ?? 255);
         dimmerFactor = dimmerVal / 255;
       }
       r = Math.round(r * dimmerFactor);
@@ -1395,6 +2809,11 @@ function bindRigCanvasEvents() {
   rigCanvas.onmousedown = (e) => {
     if (e.button !== 0) return;
     if (!rigCanvas) return;
+
+    // Prevent the browser from starting a text-selection drag on surrounding
+    // page content (which would auto-scroll the viewport once the cursor
+    // approaches a window edge during a long select-rect gesture).
+    e.preventDefault();
 
     isMouseDown = true;
     const { px, py, wx, wy } = eventToWorld(e);
@@ -1535,7 +2954,14 @@ function bindRigCanvasEvents() {
         }
       }
 
-      refreshControllerFromSelection();
+      // Cheap in-drag update only: refresh the count text and the sort
+      // buttons, but DO NOT rebuild the full controller panel here. The
+      // full rebuild grows/shrinks the page DOM (dimmer/color/position/other
+      // sections), which causes the viewport to scroll under the user's
+      // mouse mid-drag and the selection rect to seem to "drift". The full
+      // refresh runs once on mouseup.
+      updateSelectionCountOnly();
+      updateRigSortButtonsState();
       drawRig();
       return;
     }
@@ -1550,6 +2976,11 @@ function bindRigCanvasEvents() {
       dragBaseSelectedSet = null;
       dragBaseSelectedOrder = [];
       dragRectOrder = [];
+      // Now that the drag is over, commit the full controller refresh.
+      // Doing it here (instead of on every mousemove) makes the page DOM
+      // grow/shrink at most once per gesture, eliminating the layout shift
+      // that was scrolling the UI mid-drag.
+      refreshControllerFromSelection();
       drawRig();
     }
 

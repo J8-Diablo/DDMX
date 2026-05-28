@@ -396,7 +396,12 @@ async function loadCueFile(filename) {
     selectedCueIndices.clear();
 
     rebuildVirtualGroupsFromCues();
-    rebuildRigFromCueFile();
+    // When a project is active the rig is owned by the project, so switching
+    // cue list must NOT redefine the rig (decoupling). Otherwise (standalone
+    // cue editing) rebuild the rig from the cue's embedded devices_def.
+    if (!window.projectRigLocked) {
+      rebuildRigFromCueFile();
+    }
     renderCueTable();
     fillCuePropsFromSelected();
     toast(`Loaded ${filename}`, "success");
@@ -698,6 +703,25 @@ function applyCueProps() {
   step.name = $id("cue-prop-name")?.value || "";
   step.sleep = $id("cue-prop-sleep")?.value || "0";
   step.duration = $id("cue-prop-duration")?.value || "0";
+
+  if (typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode() && step.timeline) {
+    const text = String(step.duration || "0").trim();
+    const operators = ["<>", "><", "||", "|", ">", "<", "?"];
+    let operator = "";
+    let baseMs = Math.max(0, parseInt(text, 10) || 0);
+    let spreadMs = 0;
+    for (const candidate of operators) {
+      if (!text.includes(candidate)) continue;
+      operator = candidate;
+      const parts = text.split(candidate);
+      baseMs = Math.max(0, parseInt(parts[0], 10) || 0);
+      spreadMs = Math.max(0, parseInt(parts[1], 10) || 0);
+      break;
+    }
+    step.timeline.fade_operator = operator;
+    step.timeline.fade_start_ms = 0;
+    step.timeline.fade_end_ms = Math.max(0, Math.min(parseInt(step.timeline.length_ms, 10) || 0, baseMs + spreadMs));
+  }
   
   renderCueTable();
   toast("Cue props updated", "info");
@@ -708,6 +732,24 @@ let lastClickedCueIndex = null; // For shift+click range selection
 function renderCueTable() {
   const tbody = $id("cue-table-body");
   if (!tbody) return;
+
+  const timelineMode = typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode();
+  const timelineEditor = $id("timeline-editor");
+  const tableContainer = document.querySelector(".cue-table-container");
+  if (timelineEditor) timelineEditor.classList.toggle("hidden", !timelineMode);
+  if (tableContainer) tableContainer.classList.toggle("hidden", timelineMode);
+
+  if (timelineMode) {
+    tbody.innerHTML = "";
+    updateCueSelectionCount();
+    updatePlayFromButtonState();
+    if (typeof window.renderTimelineEditor === "function") {
+      window.renderTimelineEditor();
+    }
+    updatePlayingHighlight();
+    return;
+  }
+
   tbody.innerHTML = "";
 
   const seq = cuesObj.sequence || [];
@@ -1140,61 +1182,27 @@ function updatePlayFromButtonState() {
   btn.disabled = !hasSelection || playbackActive || backendPlaybackStarting;
 }
 
-function updatePlaybackUI() {
-  const seq = cuesObj.sequence || [];
-  const cueName = $id("playback-cue-name");
-  const phaseEl = $id("playback-phase");
-  const countdownEl = $id("playback-countdown");
-  const adjustEl = $id("wait-adjust-display");
-
-  if (cueName) {
-    const step = seq[playbackCueIndex];
-    cueName.textContent = step ? `Cue ${playbackCueIndex + 1}: ${step.name || ""}` : "--";
-  }
-
-  if (phaseEl) {
-    if (playbackPaused) {
-      phaseEl.textContent = "⏸ PAUSED";
-      phaseEl.style.color = "#fbbf24";
-    } else if (playbackPhase === "waiting") {
-      phaseEl.textContent = "⏳ Waiting";
-      phaseEl.style.color = "#60a5fa";
-    } else if (playbackPhase === "fading") {
-      phaseEl.textContent = "🎬 Fading";
-      phaseEl.style.color = "#22c55e";
-    } else {
-      phaseEl.textContent = "--";
-      phaseEl.style.color = "#94a3b8";
-    }
-  }
-
-  if (countdownEl) {
-    if (playbackPhase === "waiting" && playbackWaitRemaining > 0) {
-      countdownEl.textContent = `${Math.ceil(playbackWaitRemaining)}ms`;
-    } else {
-      countdownEl.textContent = "--";
-    }
-  }
-
-  if (adjustEl) {
-    const sign = liveWaitAdjust >= 0 ? "+" : "";
-    adjustEl.textContent = `${sign}${liveWaitAdjust}ms`;
-  }
-
-  updatePlaybackButtons();
-  updatePlayingHighlight();
-}
+// NOTE: a second updatePlaybackUI() is defined later in this file at line 2709
+// and (because function declarations hoist last-wins) is the one actually used.
+// The duplicate kept here as a stub for any direct in-file reference.
+// (Real implementation lives below.)
 
 function updatePlayingHighlight() {
   const tbody = $id("cue-table-body");
-  if (!tbody) return;
+  if (tbody) {
+    const rows = Array.from(tbody.children);
+    rows.forEach(tr => tr.classList.remove("playing"));
+    if (playbackCueIndex != null && playbackCueIndex >= 0) {
+      const row = rows.find(tr => parseInt(tr.dataset.index, 10) === playbackCueIndex);
+      if (row) row.classList.add("playing");
+    }
+  }
 
-  const rows = Array.from(tbody.children);
-  rows.forEach(tr => tr.classList.remove("playing"));
-
+  document.querySelectorAll(".timeline-block.playing").forEach((el) => el.classList.remove("playing"));
   if (playbackCueIndex == null || playbackCueIndex < 0) return;
-  const row = rows.find(tr => parseInt(tr.dataset.index, 10) === playbackCueIndex);
-  if (row) row.classList.add("playing");
+  document.querySelectorAll(`.timeline-block[data-source-index="${playbackCueIndex}"]`).forEach((el) => {
+    el.classList.add("playing");
+  });
 }
 
 async function handleBackendCueStart(playbackState) {
@@ -1643,11 +1651,15 @@ async function runBackendSequence(seq, indexOffset = 0) {
   }
 }
 
-async function controlBackendPlayback(action, deltaMs = 0) {
+async function controlBackendPlayback(action, deltaMs = 0, extraPayload = null) {
   const res = await fetch("/api/playback/control", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, delta_ms: deltaMs }),
+    body: JSON.stringify({
+      action,
+      delta_ms: deltaMs,
+      ...(extraPayload && typeof extraPayload === "object" ? extraPayload : {}),
+    }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -2364,8 +2376,8 @@ async function sendToEngineWithEffects(effectScale, groupMix) {
 
   for (const dev of Object.values(rigDevices)) {
     const fi = fixtures[dev.fixture] || {};
-    const funcs = fi.functions || {};
     const absMap = getDeviceAttrAbsChannels(dev);
+    const previewChannels = getDevicePrimaryPreviewChannels(dev);
     const lv = deviceLocalValues[dev.id] || {};
     const devGroups = Array.from(deviceCurrentGroups[dev.id] || []);
 
@@ -2398,33 +2410,17 @@ async function sendToEngineWithEffects(effectScale, groupMix) {
         }
         continue;
       }
-
-      const attr = group.attrKey;
-      const absCh = absMap[attr];
-      if (absCh == null) continue;
-
-      let baseAmp = parseFloat(group.amplitude ?? 0) || 0;
-      let effScale = scale;
-
-      if (gmForDev && gmForDev[gId] != null) {
-        effScale *= gmForDev[gId];
+      if (typeof applyLegacyGroupToDevice === "function") {
+        applyLegacyGroupToDevice(group, dev, tMs, perUniverseMap, {
+          scale,
+          groupMix: gmForDev
+        });
       }
-
-      const scaledGroup = {
-        ...group,
-        amplitude: baseAmp * effScale,
-        frequency: parseFloat(group.frequency ?? 0) || 0,
-      };
-
-      const baseVal = perUniverseMap[u][absCh] ?? 0;
-      const delta = evalGroupEffect(scaledGroup, tMs, dev.id);
-      const val = clamp(Math.round(baseVal + delta), 0, 255);
-      perUniverseMap[u][absCh] = val;
     }
 
     // Previews
-    if (funcs.rgb) {
-      const rAbs = absMap.r, gAbs = absMap.g, bAbs = absMap.b;
+    if (previewChannels.r != null && previewChannels.g != null && previewChannels.b != null) {
+      const rAbs = previewChannels.r, gAbs = previewChannels.g, bAbs = previewChannels.b;
       devicePreviewRGB[dev.id] = {
         r: rAbs != null ? (perUniverseMap[u][rAbs] ?? 0) : 0,
         g: gAbs != null ? (perUniverseMap[u][gAbs] ?? 0) : 0,
@@ -2432,8 +2428,8 @@ async function sendToEngineWithEffects(effectScale, groupMix) {
       };
     }
 
-    if (funcs.dimmer) {
-      const dAbs = absMap.dimmer;
+    if (previewChannels.dimmer != null) {
+      const dAbs = previewChannels.dimmer;
       devicePreviewDimmer[dev.id] = dAbs != null ? (perUniverseMap[u][dAbs] ?? 0) : 0;
     }
   }
@@ -2597,7 +2593,7 @@ function resetRigStateForPlaybackUi() {
 
   for (const [devId, dev] of Object.entries(rigDevices)) {
     const fi = fixtures[dev.fixture] || {};
-    const addrCount = fi.addr_count || 1;
+    const addrCount = getFixtureFootprint(fi);
     const local = {};
     for (let li = 0; li < addrCount; li++) local[li] = 0;
     deviceLocalValues[devId] = local;
@@ -2675,6 +2671,22 @@ function updatePlaybackButtons() {
   updatePlayFromButtonState();
 }
 
+// Cache for last DOM-written values; skip writes if unchanged. Saves ~5 DOM
+// writes per call during 30-60Hz playback ticks when nothing actually moves.
+const _playbackUiCache = { cueName: null, phaseText: null, phaseColor: null, countdown: null, adjust: null, speed: null };
+function _setIfChanged(el, prop, value, cacheKey) {
+  if (!el) return;
+  if (_playbackUiCache[cacheKey] === value) return;
+  el[prop] = value;
+  _playbackUiCache[cacheKey] = value;
+}
+function _setStyleIfChanged(el, value, cacheKey) {
+  if (!el) return;
+  if (_playbackUiCache[cacheKey] === value) return;
+  el.style.color = value;
+  _playbackUiCache[cacheKey] = value;
+}
+
 function updatePlaybackUI() {
   const cueNameEl = $id("playback-cue-name");
   const phaseEl = $id("playback-phase");
@@ -2685,48 +2697,34 @@ function updatePlaybackUI() {
     playbackActive &&
     !playbackPaused &&
     playbackPhaseEndHostMs > 0 &&
-    (playbackPhase === "waiting" || playbackPhase === "fading")
+    (playbackPhase === "waiting" || playbackPhase === "fading" || playbackPhase === "active")
   ) ? Math.max(0, playbackPhaseEndHostMs - Date.now()) : playbackWaitRemaining;
 
-  if (cueNameEl) {
-    if (playbackCueIndex != null && playbackCueIndex >= 0) {
-      cueNameEl.textContent = `Cue ${playbackCueIndex + 1}: ${getPlaybackCueLabel()}`;
-    } else {
-      cueNameEl.textContent = "--";
-    }
-  }
+  const cueText = (playbackCueIndex != null && playbackCueIndex >= 0)
+    ? `Cue ${playbackCueIndex + 1}: ${getPlaybackCueLabel()}`
+    : "--";
+  _setIfChanged(cueNameEl, "textContent", cueText, "cueName");
 
-  if (phaseEl) {
-    if (playbackPaused) {
-      phaseEl.textContent = "PAUSED";
-      phaseEl.style.color = "#fbbf24";
-    } else if (playbackPhase === "waiting") {
-      phaseEl.textContent = "Waiting";
-      phaseEl.style.color = "#60a5fa";
-    } else if (playbackPhase === "fading") {
-      phaseEl.textContent = "Fading";
-      phaseEl.style.color = "#22c55e";
-    } else {
-      phaseEl.textContent = "--";
-      phaseEl.style.color = "#94a3b8";
-    }
-  }
+  let phaseText, phaseColor;
+  if (playbackPaused)              { phaseText = "PAUSED";  phaseColor = "#fbbf24"; }
+  else if (playbackPhase === "waiting") { phaseText = "Waiting"; phaseColor = "#60a5fa"; }
+  else if (playbackPhase === "fading")  { phaseText = "Fading";  phaseColor = "#22c55e"; }
+  else if (playbackPhase === "active")  { phaseText = "Active";  phaseColor = "#93c5fd"; }
+  else                                  { phaseText = "--";      phaseColor = "#94a3b8"; }
+  _setIfChanged(phaseEl, "textContent", phaseText, "phaseText");
+  _setStyleIfChanged(phaseEl, phaseColor, "phaseColor");
 
-  if (countdownEl) {
-    if (playbackActive && liveRemaining > 0 && (playbackPhase === "waiting" || playbackPhase === "fading")) {
-      countdownEl.textContent = `${Math.ceil(liveRemaining)}ms`;
-    } else {
-      countdownEl.textContent = "--";
-    }
-  }
+  const countdownText = (playbackActive && liveRemaining > 0 &&
+    (playbackPhase === "waiting" || playbackPhase === "fading" || playbackPhase === "active"))
+    ? `${Math.ceil(liveRemaining)}ms`
+    : "--";
+  _setIfChanged(countdownEl, "textContent", countdownText, "countdown");
 
-  if (adjustEl) {
-    const sign = liveWaitAdjust >= 0 ? "+" : "";
-    adjustEl.textContent = `${sign}${liveWaitAdjust}ms`;
-  }
-  if (speedEl) {
-    speedEl.textContent = `${playbackSpeed}x`;
-  }
+  const adjustText = `${liveWaitAdjust >= 0 ? "+" : ""}${liveWaitAdjust}ms`;
+  _setIfChanged(adjustEl, "textContent", adjustText, "adjust");
+
+  const speedText = `${playbackSpeed}x`;
+  _setIfChanged(speedEl, "textContent", speedText, "speed");
 
   updatePlaybackButtons();
   updatePlayingHighlight();
@@ -2741,6 +2739,51 @@ async function runBackendSequence(seq, startIndex = 0) {
   const ctcStartedForRun = maybeStartCtcForPlayback();
 
   try {
+    if (typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode()) {
+      const timelineRequest = typeof window.buildTimelinePlaybackRequest === "function"
+        ? window.buildTimelinePlaybackRequest(startIndex)
+        : null;
+      if (!timelineRequest) {
+        throw new Error("timeline playback unavailable");
+      }
+
+      backendPlaybackPlan = timelineRequest.ui_plan || [];
+      backendAppliedPlanIndex = -1;
+      backendLastCueToken = 0;
+      backendPlaybackStarting = true;
+      window.backendPlaybackOwned = true;
+      playbackActive = true;
+      playbackPaused = false;
+      playbackPhase = "idle";
+      playbackCueIndex = timelineRequest.start_occurrence?.source_index ?? startIndex;
+      playbackCueName = timelineRequest.start_occurrence?.cue_name || cleanSequence[startIndex]?.name || "";
+      playbackWaitRemaining = 0;
+      playbackPhaseEndHostMs = 0;
+      liveWaitAdjust = 0;
+      devicePreviewRGB = {};
+      devicePreviewDimmer = {};
+      if (typeof window.setTimelineCursorMs === "function") {
+        window.setTimelineCursorMs(timelineRequest.payload.start_ms || 0, { render: false, ensure_visible: "center" });
+      }
+      showPlaybackBar();
+      updatePlaybackUI();
+
+      const res = await fetch("/api/playback/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...timelineRequest.payload,
+          speed: playbackSpeed,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "backend timeline playback failed");
+      }
+      return;
+    }
+
     if (typeof syncRigToBackend === "function") {
       await syncRigToBackend(true);
     }
@@ -2775,6 +2818,7 @@ async function runBackendSequence(seq, startIndex = 0) {
         start_index: resolvedStartIndex,
         virtual_groups: virtualGroups || {},
         speed: playbackSpeed,
+        mode: "classic",
       }),
     });
 
@@ -2827,7 +2871,8 @@ async function runCuesFromUI() {
 
   try {
     startEffectRenderLoop();
-    await runBackendSequence(seq, 0);
+    const timelineMode = typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode();
+    await runBackendSequence(seq, timelineMode ? null : 0);
     toast("Playback started", "info");
   } catch (err) {
     console.error("[BACKEND-PLAYBACK]", err);
@@ -2863,6 +2908,10 @@ async function stopRun(silent = false) {
     await fetch("/api/playback/stop", { method: "POST" });
   } catch (err) {
     console.warn("[BACKEND-PLAYBACK] stop failed:", err);
+  }
+
+  if (typeof window.resetTimelineInteractionState === "function") {
+    window.resetTimelineInteractionState({ stop_scrub_session: false });
   }
 
   if (!silent) {
@@ -2961,6 +3010,10 @@ window.applyBackendPlaybackState = function applyBackendPlaybackState(playbackSt
     playbackSpeed = normalizePlaybackSpeedValue(playbackState.speed);
   }
 
+  if (typeof window.syncTimelinePlaybackCursor === "function") {
+    window.syncTimelinePlaybackCursor(playbackState);
+  }
+
   if (playbackActive) {
     backendPlaybackStarting = false;
     window.backendPlaybackOwned = true;
@@ -3022,7 +3075,12 @@ document.addEventListener("DOMContentLoaded", () => {
         console.warn("[PLAYBACK] speed persist failed:", err);
       }
       updatePlaybackUI();
-    };
+};
+
+window.stopCuePlayback = stopRun;
+window.isCuePlaybackActive = function isCuePlaybackActive() {
+  return Boolean(playbackActive || backendPlaybackStarting);
+};
     playbackSpeedSelect.value = playbackSpeedToOptionValue(playbackSpeed);
     playbackSpeedSelect.addEventListener("change", syncPlaybackSpeedFromSelect);
     playbackSpeedSelect.addEventListener("input", syncPlaybackSpeedFromSelect);
@@ -3224,7 +3282,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Stop Effects button - clears all live effects from devices
   const stopFxBtn = $id("stop-effects");
   if (stopFxBtn) {
-    stopFxBtn.addEventListener("click", () => {
+    stopFxBtn.addEventListener("click", async () => {
       // Clear all device effect groups
       for (const devId of Object.keys(rigDevices)) {
         deviceCurrentGroups[devId] = new Set();
@@ -3233,7 +3291,23 @@ document.addEventListener("DOMContentLoaded", () => {
       if (typeof renderActualEffectsPanel === "function") {
         renderActualEffectsPanel();
       }
-      sendToEngineWithEffects(1.0);
+      try {
+        if (
+          typeof window.isBackendMode === "function" &&
+          window.isBackendMode() &&
+          typeof buildBackendCuePayloadFromCurrentState === "function" &&
+          typeof sendBackendCuePayload === "function"
+        ) {
+          await sendBackendCuePayload(buildBackendCuePayloadFromCurrentState());
+          if (typeof syncBackendLiveGroups === "function") {
+            await syncBackendLiveGroups();
+          }
+        } else if (typeof sendToEngineWithEffects === "function") {
+          await sendToEngineWithEffects(1.0);
+        }
+      } catch (err) {
+        console.warn("[FX] stop effects failed:", err);
+      }
       drawRig();
       toast("Effects stopped", "info");
     });
@@ -3263,14 +3337,11 @@ document.addEventListener("DOMContentLoaded", () => {
           const fix = fixtures[dev.fixture];
           if (!fix) continue;
 
-          const baseAddr = dev.address || 0;
           const universe = dev.universe || 0;
+          const absMap = getDeviceAttrAbsChannels(dev);
 
           // Find dimmer channel
-          let dimmerCh = null;
-          if (fix.functions?.dimmer?.channel != null) {
-            dimmerCh = baseAddr + fix.functions.dimmer.channel;
-          }
+          const dimmerCh = absMap.dimmer ?? null;
 
           devices.push({
             device_id: devId,
