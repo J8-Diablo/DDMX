@@ -1,0 +1,127 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "Laser",
+    "vendor": "Theatrical Extra Lights",
+    "mode": "19-Channel Mode",
+    "author": "Conversion Tool"
+  },
+  "footprint": 19,
+  "primary": {
+    "dimmer": "dimmer.main",
+    "color": "color.main",
+    "position": "position.main"
+  },
+  "groups": [
+    {
+      "id": "dimmer.main",
+      "family": "dimmer",
+      "label": "Main Dimmer",
+      "channels": [
+        { "role": "level", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.main",
+      "family": "color",
+      "label": "Color 1",
+      "channels": [
+        { "role": "red", "offset": 1, "default": 255 },
+        { "role": "green", "offset": 2, "default": 255 },
+        { "role": "blue", "offset": 3, "default": 255 }
+      ]
+    },
+    {
+      "id": "color.secondary",
+      "family": "color",
+      "label": "Color 2",
+      "channels": [
+        { "role": "red", "offset": 4, "default": 255 },
+        { "role": "green", "offset": 5, "default": 255 },
+        { "role": "blue", "offset": 6, "default": 255 }
+      ]
+    },
+    {
+      "id": "color.tertiary",
+      "family": "color",
+      "label": "Color 3",
+      "channels": [
+        { "role": "red", "offset": 7, "default": 255 },
+        { "role": "green", "offset": 8, "default": 255 },
+        { "role": "blue", "offset": 9, "default": 255 }
+      ]
+    },
+    {
+      "id": "other.prism_beam",
+      "family": "other",
+      "kind": "prism_beam",
+      "label": "Pattern",
+      "channels": [
+        { "role": "value", "offset": 10, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.prism_zoom",
+      "family": "other",
+      "kind": "prism_zoom",
+      "label": "Size",
+      "channels": [
+        { "role": "value", "offset": 11, "default": 128, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.iris",
+      "family": "other",
+      "kind": "iris",
+      "label": "Amplitude",
+      "channels": [
+        { "role": "value", "offset": 12, "default": 128, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.prism_rotation",
+      "family": "other",
+      "kind": "prism_rotation",
+      "label": "Speed",
+      "channels": [
+        { "role": "value", "offset": 13, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.gobo_rotation",
+      "family": "other",
+      "kind": "gobo_rotation",
+      "label": "Rotation",
+      "channels": [
+        { "role": "value", "offset": 14, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "position.main",
+      "family": "position",
+      "label": "Pan / Tilt",
+      "channels": [
+        { "role": "pan", "offset": 15, "default": 128, "range_deg": 160 },
+        { "role": "tilt", "offset": 16, "default": 128, "range_deg": 90 }
+      ]
+    },
+    {
+      "id": "other.focus",
+      "family": "other",
+      "kind": "focus",
+      "label": "Focus",
+      "channels": [
+        { "role": "value", "offset": 17, "default": 128, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.frost",
+      "family": "other",
+      "kind": "frost",
+      "label": "Persistence",
+      "channels": [
+        { "role": "value", "offset": 18, "default": 0, "ui": "slider" }
+      ]
+    }
+  ]
+}

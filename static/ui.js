@@ -91,6 +91,51 @@ window.ui = (() => {
 
   const hasSwal = () => typeof window.Swal !== "undefined" && window.Swal?.fire;
 
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function formatFixtureOptionLabel(name, fx) {
+    return `${fx?.meta?.model || fx?.info?.model || name} (${name})`;
+  }
+
+  function listFixtureChoices(currentFixture = "") {
+    const current = String(currentFixture || "").trim();
+    const allFixtures = (typeof fixtures === "object" && fixtures) ? fixtures : {};
+    const options = [];
+
+    for (const [name, fx] of Object.entries(allFixtures)) {
+      if (fx?.error) continue;
+      options.push({
+        value: name,
+        label: formatFixtureOptionLabel(name, fx),
+      });
+    }
+
+    options.sort((left, right) => left.label.localeCompare(right.label));
+
+    if (current && !options.some(option => option.value === current)) {
+      options.unshift({
+        value: current,
+        label: `${current} (missing fixture)`,
+      });
+    }
+
+    if (!options.length) {
+      options.push({
+        value: current,
+        label: current || "No fixtures available",
+      });
+    }
+
+    return options;
+  }
+
   function buildGuiModalShell(title, confirmText = "OK", cancelText = "Annuler", showCancel = true, modalClass = "") {
     const overlay = document.createElement("div");
     overlay.className = "dmx-modal-overlay";
@@ -274,6 +319,325 @@ window.ui = (() => {
     return true;
   }
 
+  async function alertModal(title, text, icon = "warning") {
+    if (isGuiApp) {
+      await openGuiModal({
+        title,
+        confirmText: "OK",
+        cancelText: "Annuler",
+        showCancel: false,
+        buildBody: (form) => appendGuiModalText(form, text || ""),
+        onSubmit: () => true,
+      });
+      return true;
+    }
+    if (hasSwal()) {
+      await window.Swal.fire({
+        title,
+        text,
+        icon,
+        confirmButtonText: "OK",
+      });
+      return true;
+    }
+    toast(`${title}: ${text}`, icon === "error" ? "error" : "warning");
+    return true;
+  }
+
+  function createFixtureRemapOption(value, title, subtitle) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "fixture-remap-choice";
+    btn.dataset.value = value;
+
+    const titleEl = document.createElement("strong");
+    titleEl.textContent = title;
+    const subEl = document.createElement("span");
+    subEl.textContent = subtitle;
+
+    btn.appendChild(titleEl);
+    btn.appendChild(subEl);
+    return btn;
+  }
+
+  function renderFixtureChangeDecisionBody(form, config, state) {
+    form.innerHTML = "";
+
+    const summary = document.createElement("div");
+    summary.className = "fixture-remap-summary";
+
+    const callout = document.createElement("div");
+    callout.className = "fixture-remap-callout";
+    callout.textContent = config.warningText || "";
+    summary.appendChild(callout);
+
+    const choiceRow = document.createElement("div");
+    choiceRow.className = "fixture-remap-choice-row";
+    const remapBtn = createFixtureRemapOption(
+      "remap",
+      "Remap (Recommended)",
+      config.remapText || "Find a safe free address and update cues automatically."
+    );
+    const keepBtn = createFixtureRemapOption(
+      "keep",
+      "Keep This Address",
+      config.keepText || "Keep the current address. This may break some cue values or effects."
+    );
+
+    if (!config.remap?.available) {
+      remapBtn.disabled = true;
+    }
+
+    const keepDetails = document.createElement("div");
+    keepDetails.className = "fixture-remap-proposal";
+    keepDetails.innerHTML = `<strong>Keep mode</strong><div>${escapeHtml(config.keepDetail || "")}</div>`;
+
+    const remapDetails = document.createElement("div");
+    remapDetails.className = "fixture-remap-proposal";
+    remapDetails.innerHTML = config.remap?.available
+      ? `<strong>Update address</strong><div>${escapeHtml(config.remap.summary || "")}</div>`
+      : `<strong>Update address unavailable</strong><div>${escapeHtml(config.remap?.summary || "No free DMX slot was found.")}</div>`;
+
+    const setStrategy = (value) => {
+      state.strategy = value;
+      remapBtn.classList.toggle("is-active", value === "remap");
+      keepBtn.classList.toggle("is-active", value === "keep");
+    };
+
+    remapBtn.addEventListener("click", () => {
+      if (!remapBtn.disabled) setStrategy("remap");
+    });
+    keepBtn.addEventListener("click", () => setStrategy("keep"));
+
+    choiceRow.appendChild(remapBtn);
+    choiceRow.appendChild(keepBtn);
+    summary.appendChild(choiceRow);
+    summary.appendChild(keepDetails);
+    summary.appendChild(remapDetails);
+    form.appendChild(summary);
+
+    setStrategy(
+      state.strategy === "keep" || !config.remap?.available
+        ? "keep"
+        : "remap"
+    );
+  }
+
+  function renderFixtureRemapResolutionBody(form, config, state) {
+    form.innerHTML = "";
+
+    const summary = document.createElement("div");
+    summary.className = "fixture-remap-summary";
+
+    const callout = document.createElement("div");
+    callout.className = "fixture-remap-callout";
+    callout.textContent = config.warningText || "";
+    summary.appendChild(callout);
+
+    const remapDetails = document.createElement("div");
+    remapDetails.className = "fixture-remap-section";
+
+    const proposal = document.createElement("div");
+    proposal.className = "fixture-remap-proposal";
+    proposal.innerHTML = `<strong>New address</strong><div>${escapeHtml(config.remap?.summary || "")}</div>`;
+    remapDetails.appendChild(proposal);
+
+    if (Array.isArray(config.autoResolutions) && config.autoResolutions.length) {
+      const section = document.createElement("div");
+      section.className = "fixture-remap-section";
+
+      const title = document.createElement("div");
+      title.className = "fixture-remap-section-title";
+      title.textContent = "Auto Resolution";
+      section.appendChild(title);
+
+      const list = document.createElement("div");
+      list.className = "fixture-remap-detail-list";
+      config.autoResolutions.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "fixture-remap-detail";
+        row.innerHTML = `<div>${escapeHtml(item.label || "")}</div><div><code>${escapeHtml(item.detail || "")}</code></div>`;
+        list.appendChild(row);
+      });
+      section.appendChild(list);
+      remapDetails.appendChild(section);
+    }
+
+    if (Array.isArray(config.manualResolutions) && config.manualResolutions.length) {
+      const section = document.createElement("div");
+      section.className = "fixture-remap-section";
+
+      const title = document.createElement("div");
+      title.className = "fixture-remap-section-title";
+      title.textContent = "Manual Resolution";
+      section.appendChild(title);
+
+      config.manualResolutions.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "fixture-remap-manual-row";
+
+        const label = document.createElement("div");
+        label.className = "fixture-remap-manual-label";
+        label.textContent = item.label || item.sourceKey || "";
+        row.appendChild(label);
+
+        if (item.helpText) {
+          const help = document.createElement("div");
+          help.className = "fixture-remap-manual-help";
+          help.textContent = item.helpText;
+          row.appendChild(help);
+        }
+
+        const select = document.createElement("select");
+        select.dataset.sourceKey = item.sourceKey || "";
+        const empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = "Choose a target channel";
+        select.appendChild(empty);
+
+        (item.options || []).forEach((option) => {
+          const opt = document.createElement("option");
+          opt.value = option.value;
+          opt.textContent = option.label;
+          select.appendChild(opt);
+        });
+
+        if (state.manualMappings[item.sourceKey]) {
+          select.value = state.manualMappings[item.sourceKey];
+        }
+
+        select.addEventListener("change", () => {
+          state.manualMappings[item.sourceKey] = String(select.value || "");
+        });
+        row.appendChild(select);
+        section.appendChild(row);
+      });
+
+      const note = document.createElement("div");
+      note.className = "fixture-remap-footer-note";
+      note.textContent = "All manual correspondences must be selected before saving the remap.";
+      section.appendChild(note);
+
+      remapDetails.appendChild(section);
+    }
+
+    summary.appendChild(remapDetails);
+    form.appendChild(summary);
+  }
+
+  function renderOperationStatusBody(form, config) {
+    form.innerHTML = "";
+
+    const summary = document.createElement("div");
+    summary.className = "status-summary";
+
+    if (config?.message) {
+      const msg = document.createElement("div");
+      msg.className = "fixture-remap-callout";
+      msg.textContent = config.message;
+      summary.appendChild(msg);
+    }
+
+    if (config?.hero) {
+      const hero = document.createElement("div");
+      hero.className = "status-hero";
+      hero.textContent = config.hero;
+      summary.appendChild(hero);
+    }
+
+    if (config?.details) {
+      const details = document.createElement("div");
+      details.className = "status-detail";
+      details.textContent = config.details;
+      summary.appendChild(details);
+    }
+
+    form.appendChild(summary);
+  }
+
+  async function fixtureChangeDecisionModal(config) {
+    const state = {
+      strategy: config?.defaultStrategy === "keep" ? "keep" : "remap",
+    };
+
+    return await openGuiModal({
+      title: config?.title || "Fixture Change Warning",
+      confirmText: "Continue",
+      cancelText: "Cancel",
+      showCancel: true,
+      modalClass: "dmx-modal-warning",
+      buildBody: (form) => renderFixtureChangeDecisionBody(form, config || {}, state),
+      onSubmit: () => ({
+        strategy: state.strategy,
+      }),
+    });
+  }
+
+  async function fixtureRemapModal(config) {
+    const state = {
+      manualMappings: {},
+    };
+
+    return await openGuiModal({
+      title: config?.title || "Resolve Fixture Remap",
+      confirmText: "Apply Remap",
+      cancelText: "Cancel",
+      showCancel: true,
+      modalClass: "dmx-modal-warning",
+      buildBody: (form) => renderFixtureRemapResolutionBody(form, config || {}, state),
+      onSubmit: () => {
+        const unresolved = Array.isArray(config?.manualResolutions) ? config.manualResolutions : [];
+        for (const item of unresolved) {
+          if (!String(state.manualMappings[item.sourceKey] || "").trim()) {
+            toast("Complete every manual correspondence before saving the remap.", "warning");
+            return false;
+          }
+        }
+        return {
+          manualMappings: { ...state.manualMappings },
+        };
+      },
+    });
+  }
+
+  async function operationStatusModal(config) {
+    const status = String(config?.status || "success").toLowerCase();
+    const modalClass = status === "error" ? "dmx-modal-error" : "dmx-modal-success";
+
+    if (isGuiApp) {
+      await openGuiModal({
+        title: config?.title || (status === "error" ? "Operation Failed" : "Operation Complete"),
+        confirmText: "OK",
+        cancelText: "Cancel",
+        showCancel: false,
+        modalClass,
+        buildBody: (form) => renderOperationStatusBody(form, config || {}),
+        onSubmit: () => true,
+      });
+      return true;
+    }
+    if (hasSwal()) {
+      await window.Swal.fire({
+        title: config?.title || (status === "error" ? "Operation Failed" : "Operation Complete"),
+        html: `
+          <div style="display:grid;gap:10px;text-align:left">
+            ${config?.message ? `<div>${escapeHtml(config.message)}</div>` : ""}
+            ${config?.hero ? `<div style="font-size:22px;font-weight:800;color:${status === "error" ? "#fca5a5" : "#86efac"}">${escapeHtml(config.hero)}</div>` : ""}
+            ${config?.details ? `<div>${escapeHtml(config.details)}</div>` : ""}
+          </div>
+        `,
+        icon: status === "error" ? "error" : "success",
+        confirmButtonText: "OK",
+      });
+      return true;
+    }
+    toast(
+      `${config?.title || (status === "error" ? "Operation failed" : "Operation complete")}: ${config?.hero || config?.message || ""}`,
+      status === "error" ? "error" : "success"
+    );
+    return true;
+  }
+
   async function promptModal(title, inputValue = "", placeholder = "") {
     if (isGuiApp) {
       return await openGuiModal({
@@ -312,6 +676,7 @@ window.ui = (() => {
   }
 
   async function deviceEditModal(dev) {
+    const fixtureChoices = listFixtureChoices(dev.fixture);
     if (isGuiApp) {
       return await openGuiModal({
         title: `Edit Device ${dev.id}`,
@@ -319,6 +684,19 @@ window.ui = (() => {
         cancelText: "Cancel",
         showCancel: true,
         buildBody: (form) => {
+          const fixtureSelect = document.createElement("select");
+          fixtureSelect.dataset.role = "fixture";
+          fixtureChoices.forEach((option) => {
+            const opt = document.createElement("option");
+            opt.value = option.value;
+            opt.textContent = option.label;
+            fixtureSelect.appendChild(opt);
+          });
+          fixtureSelect.value = fixtureChoices.some(option => option.value === dev.fixture)
+            ? dev.fixture
+            : fixtureChoices[0]?.value || "";
+          appendGuiModalField(form, "Fixture", fixtureSelect);
+
           const cname = document.createElement("input");
           cname.type = "text";
           cname.value = dev.cname ?? "";
@@ -341,11 +719,13 @@ window.ui = (() => {
           appendGuiModalField(form, "Address", addr);
         },
         onSubmit: (form) => {
+          const fixture = form.querySelector('[data-role="fixture"]');
           const cname = form.querySelector('[data-role="cname"]');
           const uni = form.querySelector('[data-role="universe"]');
           const addr = form.querySelector('[data-role="address"]');
           return {
             ...dev,
+            fixture: String(fixture?.value ?? dev.fixture ?? "").trim(),
             cname: String(cname?.value ?? "").trim(),
             universe: parseInt(uni?.value, 10) || 0,
             address: parseInt(addr?.value, 10) || 0,
@@ -354,10 +734,17 @@ window.ui = (() => {
       });
     }
     if (hasSwal()) {
+      const fixtureOptionsHtml = fixtureChoices.map((option) => {
+        const selected = option.value === dev.fixture ? " selected" : "";
+        return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+      }).join("");
       const res = await window.Swal.fire({
         title: `Edit Device ${dev.id}`,
         html: `
           <div style="display:grid;gap:8px;text-align:left">
+            <label style="font-size:12px;opacity:.7">Fixture</label>
+            <select id="sw-fixture" class="swal2-input">${fixtureOptionsHtml}</select>
+
             <label style="font-size:12px;opacity:.7">CName</label>
             <input id="sw-cname" class="swal2-input" value="${dev.cname ?? ""}" placeholder="Device name">
 
@@ -372,10 +759,11 @@ window.ui = (() => {
         confirmButtonText: "Save",
         cancelButtonText: "Cancel",
         preConfirm: () => {
+          const fixture = document.getElementById("sw-fixture").value.trim();
           const cname = document.getElementById("sw-cname").value.trim();
           const universe = parseInt(document.getElementById("sw-uni").value, 10) || 0;
           const address = parseInt(document.getElementById("sw-addr").value, 10) || 0;
-          return { ...dev, cname, universe, address };
+          return { ...dev, fixture, cname, universe, address };
         }
       });
       return res.isConfirmed ? res.value : null;
@@ -412,6 +800,16 @@ window.ui = (() => {
     });
   }
 
-  return { toast, confirmModal, promptModal, deviceEditModal, htmlModal };
+  return {
+    toast,
+    confirmModal,
+    alertModal,
+    promptModal,
+    deviceEditModal,
+    fixtureChangeDecisionModal,
+    fixtureRemapModal,
+    operationStatusModal,
+    htmlModal
+  };
 })();
 

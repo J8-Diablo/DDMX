@@ -51,12 +51,432 @@ const RIG_MAX_SCALE = 30.0;
 let rigView = { offsetX: 0, offsetY: 0, scale: 1 };
 
 // Widgets controller
-let rgbWidgetRef = null;
-let posWidgetRef = null;
+let rgbWidgetRefs = [];
+let posWidgetRefs = [];
 
 // Préview calculée par les effets
 let devicePreviewRGB = {};
 let devicePreviewDimmer = {};
+
+const FIXTURE_FAMILY_ORDER = {
+  dimmer: 0,
+  color: 1,
+  position: 2,
+  other: 3,
+};
+
+const FIXTURE_SHARED_TARGET_SPECS = [
+  { key: "family.dimmer.level", label: "All Dimmers", family: "dimmer", role: "level", aliases: ["dimmer"] },
+  { key: "family.color.red", label: "All Reds", family: "color", role: "red", aliases: ["r"] },
+  { key: "family.color.green", label: "All Greens", family: "color", role: "green", aliases: ["g"] },
+  { key: "family.color.blue", label: "All Blues", family: "color", role: "blue", aliases: ["b"] },
+  { key: "family.position.pan", label: "All Pans", family: "position", role: "pan", aliases: ["pan"] },
+  { key: "family.position.tilt", label: "All Tilts", family: "position", role: "tilt", aliases: ["tilt"] },
+];
+
+const FIXTURE_SHARED_TARGET_BY_KEY = Object.fromEntries(
+  FIXTURE_SHARED_TARGET_SPECS.map(spec => [spec.key, spec])
+);
+
+const FIXTURE_SHARED_ROLE_TO_SPEC = Object.fromEntries(
+  FIXTURE_SHARED_TARGET_SPECS.map(spec => [`${spec.family}:${spec.role}`, spec])
+);
+
+const fixtureElementDefsCache = new WeakMap();
+
+function humanizeFixtureToken(value) {
+  return String(value || "")
+    .replace(/[._-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function getFixtureFootprint(fi) {
+  return Math.max(1, parseInt(fi?.footprint ?? fi?.addr_count ?? 1, 10) || 1);
+}
+
+function getFixtureGroups(fi, family = null) {
+  const groups = Array.isArray(fi?.groups) ? fi.groups : [];
+  if (!family) return groups;
+  const wanted = String(family || "").trim().toLowerCase();
+  return groups.filter(group => String(group?.family || "").trim().toLowerCase() === wanted);
+}
+
+function getFixtureGroupLabel(group) {
+  return String(group?.label || "").trim() || humanizeFixtureToken(group?.id || group?.kind || group?.family || "Group");
+}
+
+function getFixturePrimaryGroupId(fi, family) {
+  const primary = fi?.primary;
+  const wanted = String(family || "").trim().toLowerCase();
+  if (primary && typeof primary === "object" && primary[wanted]) {
+    return String(primary[wanted]);
+  }
+  const match = getFixtureGroups(fi, wanted)[0];
+  return match ? String(match.id || "") : "";
+}
+
+function getFixturePrimaryGroup(fi, family) {
+  const wantedId = getFixturePrimaryGroupId(fi, family).toLowerCase();
+  return getFixtureGroups(fi, family).find(group => String(group?.id || "").toLowerCase() === wantedId) || null;
+}
+
+function getGroupChannels(group) {
+  return Array.isArray(group?.channels) ? group.channels : [];
+}
+
+function getGroupChannel(group, role) {
+  const wanted = String(role || "").trim().toLowerCase();
+  return getGroupChannels(group).find(channel => String(channel?.role || "").trim().toLowerCase() === wanted) || null;
+}
+
+function getGroupSelectionScope(group) {
+  return String(group?.selectionScope || "devices").trim().toLowerCase() === "fixture_elements"
+    ? "fixture_elements"
+    : "devices";
+}
+
+function getGroupTargetKey(group) {
+  return String(group?.targetKey || group?.attrKey || group?.attr || "").trim();
+}
+
+function getSharedFixtureTargetSpec(key) {
+  return FIXTURE_SHARED_TARGET_BY_KEY[String(key || "").trim().toLowerCase()] || null;
+}
+
+function getFixtureElementDefs(fi) {
+  if (!fi || typeof fi !== "object") return [];
+  if (fixtureElementDefsCache.has(fi)) {
+    return fixtureElementDefsCache.get(fi) || [];
+  }
+
+  const counts = {};
+  const elements = [];
+
+  getFixtureGroups(fi).forEach(group => {
+    const family = String(group?.family || "").trim().toLowerCase();
+    if (!family) return;
+
+    const mapped = [];
+    getGroupChannels(group).forEach(channel => {
+      const role = String(channel?.role || "").trim().toLowerCase();
+      const spec = FIXTURE_SHARED_ROLE_TO_SPEC[`${family}:${role}`];
+      if (!spec) return;
+      mapped.push({
+        spec,
+        offset: parseInt(channel?.offset ?? 0, 10) || 0,
+        attrKey: `${String(group?.id || "").trim().toLowerCase()}.${role}`,
+      });
+    });
+    if (!mapped.length) return;
+
+    counts[family] = (counts[family] || 0) + 1;
+    const idx = counts[family] - 1;
+    const element = elements[idx] || { index: idx, targets: {} };
+
+    mapped.forEach(entry => {
+      element.targets[entry.spec.key] = {
+        offset: entry.offset,
+        attrKey: entry.attrKey,
+      };
+      entry.spec.aliases.forEach(alias => {
+        element.targets[alias] = {
+          offset: entry.offset,
+          attrKey: entry.attrKey,
+        };
+      });
+    });
+
+    elements[idx] = element;
+  });
+
+  fixtureElementDefsCache.set(fi, elements);
+  return elements;
+}
+
+function resolveFixtureElementsForDevice(dev) {
+  const deviceId = String(dev?.id || "");
+  if (!deviceId) return [];
+
+  const fi = fixtures?.[dev?.fixture] || {};
+  const defs = getFixtureElementDefs(fi);
+  const base = parseInt(dev?.address ?? 0, 10) || 0;
+
+  if (!defs.length) {
+    return [{
+      memberId: `${deviceId}::1`,
+      deviceId,
+      elementIndex: 0,
+      targets: buildDeviceAttrAbsChannels(dev),
+    }];
+  }
+
+  return defs.map((def, idx) => {
+    const targets = {};
+    Object.entries(def.targets || {}).forEach(([key, meta]) => {
+      targets[key] = base + (parseInt(meta?.offset ?? 0, 10) || 0);
+    });
+    return {
+      memberId: `${deviceId}::${idx + 1}`,
+      deviceId,
+      elementIndex: idx,
+      targets,
+    };
+  });
+}
+
+function resolveEffectMembers(group) {
+  const scope = getGroupSelectionScope(group);
+  const deviceIds = Array.isArray(group?.deviceIds) ? group.deviceIds.map(String) : [];
+  const order = [];
+  const byDevice = {};
+
+  for (const deviceId of deviceIds) {
+    const dev = rigDevices?.[deviceId];
+    if (!dev) continue;
+    const members = scope === "fixture_elements"
+      ? resolveFixtureElementsForDevice(dev)
+      : [{
+          memberId: String(deviceId),
+          deviceId: String(deviceId),
+          elementIndex: 0,
+          targets: buildDeviceAttrAbsChannels(dev),
+        }];
+
+    byDevice[deviceId] = [];
+    members.forEach(member => {
+      const resolved = {
+        ...member,
+        index: order.length,
+      };
+      order.push(resolved);
+      byDevice[deviceId].push(resolved);
+    });
+  }
+
+  return {
+    scope,
+    order,
+    count: Math.max(1, order.length),
+    byDevice,
+    effectMemberIds: order.map(member => String(member.memberId)),
+  };
+}
+
+function getFixtureAttrDefinitions(fi, options = {}) {
+  const includeLegacy = options.includeLegacy !== false;
+  const defs = {};
+  const groups = getFixtureGroups(fi);
+  const primary = fi?.primary && typeof fi.primary === "object" ? fi.primary : {};
+
+  groups.forEach(group => {
+    const family = String(group?.family || "").trim().toLowerCase();
+    const groupId = String(group?.id || "").trim().toLowerCase();
+    const groupLabel = getFixtureGroupLabel(group);
+    const isPrimaryGroup = String(primary[family] || "").trim().toLowerCase() === groupId;
+    getGroupChannels(group).forEach(channel => {
+      const role = String(channel?.role || "").trim().toLowerCase();
+      const key = `${groupId}.${role}`;
+      defs[key] = {
+        key,
+        label: `${groupLabel} - ${humanizeFixtureToken(role)}`,
+        family,
+        kind: String(group?.kind || "").trim().toLowerCase(),
+        groupId,
+        groupLabel,
+        role,
+        offset: parseInt(channel?.offset ?? 0, 10) || 0,
+        presets: Array.isArray(channel?.presets) ? channel.presets : [],
+        ui: String(channel?.ui || "").trim().toLowerCase(),
+        isPrimary: isPrimaryGroup,
+        legacy: false,
+      };
+    });
+  });
+
+  if (!includeLegacy) return defs;
+
+  const primaryDimmer = getFixturePrimaryGroup(fi, "dimmer");
+  const primaryColor = getFixturePrimaryGroup(fi, "color");
+  const primaryPosition = getFixturePrimaryGroup(fi, "position");
+  const dimmerLevel = getGroupChannel(primaryDimmer, "level") || getGroupChannels(primaryDimmer)[0];
+  const colorRoles = { r: "red", g: "green", b: "blue" };
+
+  if (primaryDimmer && dimmerLevel) {
+    defs.dimmer = {
+      key: "dimmer",
+      label: "Primary Dimmer",
+      family: "dimmer",
+      kind: "",
+      groupId: String(primaryDimmer.id || "").toLowerCase(),
+      groupLabel: getFixtureGroupLabel(primaryDimmer),
+      role: String(dimmerLevel.role || "level").toLowerCase(),
+      offset: parseInt(dimmerLevel.offset ?? 0, 10) || 0,
+      presets: Array.isArray(dimmerLevel.presets) ? dimmerLevel.presets : [],
+      ui: String(dimmerLevel.ui || "").trim().toLowerCase(),
+      isPrimary: true,
+      legacy: true,
+    };
+  }
+
+  Object.entries(colorRoles).forEach(([alias, role]) => {
+    const channel = getGroupChannel(primaryColor, role);
+    if (!primaryColor || !channel) return;
+    defs[alias] = {
+      key: alias,
+      label: `Primary Color ${alias.toUpperCase()}`,
+      family: "color",
+      kind: "",
+      groupId: String(primaryColor.id || "").toLowerCase(),
+      groupLabel: getFixtureGroupLabel(primaryColor),
+      role,
+      offset: parseInt(channel.offset ?? 0, 10) || 0,
+      presets: Array.isArray(channel.presets) ? channel.presets : [],
+      ui: String(channel.ui || "").trim().toLowerCase(),
+      isPrimary: true,
+      legacy: true,
+    };
+  });
+
+  ["pan", "tilt"].forEach(role => {
+    const channel = getGroupChannel(primaryPosition, role);
+    if (!primaryPosition || !channel) return;
+    defs[role] = {
+      key: role,
+      label: `Primary ${humanizeFixtureToken(role)}`,
+      family: "position",
+      kind: "",
+      groupId: String(primaryPosition.id || "").toLowerCase(),
+      groupLabel: getFixtureGroupLabel(primaryPosition),
+      role,
+      offset: parseInt(channel.offset ?? 0, 10) || 0,
+      presets: Array.isArray(channel.presets) ? channel.presets : [],
+      ui: String(channel.ui || "").trim().toLowerCase(),
+      isPrimary: true,
+      legacy: true,
+    };
+  });
+
+  return defs;
+}
+
+function buildDeviceAttrAbsChannels(dev, options = {}) {
+  const fi = fixtures[dev?.fixture] || {};
+  const defs = getFixtureAttrDefinitions(fi, options);
+  const base = parseInt(dev?.address ?? 0, 10) || 0;
+  const out = {};
+  for (const [key, def] of Object.entries(defs)) {
+    out[key] = base + (parseInt(def?.offset ?? 0, 10) || 0);
+  }
+  return out;
+}
+
+function getDeviceChannelInfo(dev, absoluteChannel) {
+  const fi = fixtures[dev?.fixture] || {};
+  const defs = Object.values(getFixtureAttrDefinitions(fi, { includeLegacy: false }));
+  const base = parseInt(dev?.address ?? 0, 10) || 0;
+  const target = parseInt(absoluteChannel, 10);
+  for (const def of defs) {
+    const absCh = base + (parseInt(def?.offset ?? 0, 10) || 0);
+    if (absCh === target) return def;
+  }
+  return null;
+}
+
+const _devicePreviewChannelsCache = new Map();
+function getDevicePrimaryPreviewChannels(dev) {
+  if (!dev) return { dimmer: null, r: null, g: null, b: null };
+  const id = dev.id;
+  const fixtureKey = dev.fixture;
+  const addr = dev.address;
+  const cached = _devicePreviewChannelsCache.get(id);
+  if (cached && cached.fixture === fixtureKey && cached.address === addr) {
+    return cached.result;
+  }
+  const absMap = buildDeviceAttrAbsChannels(dev, { includeLegacy: true });
+  const result = {
+    dimmer: Number.isFinite(absMap.dimmer) ? absMap.dimmer : null,
+    r: Number.isFinite(absMap.r) ? absMap.r : null,
+    g: Number.isFinite(absMap.g) ? absMap.g : null,
+    b: Number.isFinite(absMap.b) ? absMap.b : null,
+  };
+  _devicePreviewChannelsCache.set(id, { fixture: fixtureKey, address: addr, result });
+  return result;
+}
+function invalidateDevicePreviewCache(deviceId) {
+  if (deviceId == null) _devicePreviewChannelsCache.clear();
+  else _devicePreviewChannelsCache.delete(deviceId);
+}
+window.invalidateDevicePreviewCache = invalidateDevicePreviewCache;
+
+function listSelectionEffectAttrs() {
+  const merged = {};
+  const orderFor = (def) => {
+    const family = String(def?.family || "other").toLowerCase();
+    const familyOrder = FIXTURE_FAMILY_ORDER[family] ?? 99;
+    const bucket = def?.shared ? "1" : (def?.legacy ? "2" : "0");
+    return `${bucket}-${familyOrder}-${String(def?.groupLabel || "")}-${String(def?.label || "")}`;
+  };
+
+  if (!selectedDeviceOrder.length) return [];
+
+  const availableShared = new Set();
+
+  for (const deviceId of selectedDeviceOrder) {
+    const dev = rigDevices?.[deviceId];
+    if (!dev) continue;
+    const fi = fixtures?.[dev.fixture];
+    if (!fi) continue;
+    const defs = getFixtureAttrDefinitions(fi, { includeLegacy: true });
+    for (const [key, def] of Object.entries(defs)) {
+      if (!merged[key]) merged[key] = def;
+    }
+
+    const counts = {};
+    const availableKeys = new Set();
+    getFixtureGroups(fi).forEach(group => {
+      const family = String(group?.family || "").trim().toLowerCase();
+      if (!family) return;
+      counts[family] = (counts[family] || 0) + 1;
+    });
+    getFixtureElementDefs(fi).forEach(element => {
+      Object.keys(element?.targets || {}).forEach(key => {
+        if (getSharedFixtureTargetSpec(key)) {
+          availableKeys.add(String(key));
+        }
+      });
+    });
+
+    if (Object.values(counts).some(count => count > 1)) {
+      FIXTURE_SHARED_TARGET_SPECS.forEach(spec => {
+        if ((counts[spec.family] || 0) > 1 && availableKeys.has(spec.key)) {
+          availableShared.add(spec.key);
+        }
+      });
+    }
+  }
+
+  availableShared.forEach(key => {
+    const spec = getSharedFixtureTargetSpec(key);
+    if (!spec || merged[key]) return;
+    merged[key] = {
+      key: spec.key,
+      targetKey: spec.key,
+      label: spec.label,
+      family: spec.family,
+      role: spec.role,
+      legacy: false,
+      shared: true,
+      selectionScope: "fixture_elements",
+      groupLabel: "Shared",
+    };
+  });
+
+  return Object.values(merged).sort((a, b) => orderFor(a).localeCompare(orderFor(b)));
+}
 
 // ========================================
 // SYSTÈME DE VERROU DMX
@@ -75,7 +495,20 @@ window.addRenderModeListener = (fn) => {
 };
 window.setRenderMode = (mode) => {
   const next = String(mode || "ui").toLowerCase() === "backend" ? "backend" : "ui";
+  const prev = window.renderMode;
   window.renderMode = next;
+  // At a mode switch, drop any cached preview state to avoid the virtual rig
+  // showing stale frames from the previous owner (UI math vs Python state).
+  if (prev && prev !== next) {
+    for (const k of Object.keys(lastDmxFrames)) delete lastDmxFrames[k];
+    devicePreviewRGB = {};
+    devicePreviewDimmer = {};
+    if (typeof scheduleEnginePreviewRefresh === "function") {
+      scheduleEnginePreviewRefresh(true);
+    } else if (typeof drawRig === "function") {
+      drawRig();
+    }
+  }
   if (typeof window.onRenderModeChanged === "function") {
     window.onRenderModeChanged(next);
   }
@@ -90,11 +523,11 @@ window.setRenderMode = (mode) => {
   }
 };
 
-window.DMX_PLAYBACK_UI_FPS = Number(window.DMX_PLAYBACK_UI_FPS || 12);
+window.DMX_PLAYBACK_UI_FPS = Number(window.DMX_PLAYBACK_UI_FPS || 30);
 window.setPlaybackUiFps = (fps) => {
-  const raw = Number.parseFloat(String(fps ?? "12"));
+  const raw = Number.parseFloat(String(fps ?? "30"));
   if (!Number.isFinite(raw)) return;
-  window.DMX_PLAYBACK_UI_FPS = Math.max(1, Math.min(30, raw));
+  window.DMX_PLAYBACK_UI_FPS = Math.max(1, Math.min(60, raw));
 };
 
 let enginePreviewFrameScheduled = false;
@@ -110,16 +543,15 @@ function refreshEnginePreviewFrame() {
 
     for (const dev of Object.values(rigDevices || {})) {
       if (!dev) continue;
-      const fi = fixtures[dev.fixture] || {};
-      const funcs = fi.functions || {};
       const universe = parseInt(dev.universe, 10) || 0;
       const frame = lastDmxFrames[universe];
       if (!Array.isArray(frame)) continue;
+      const previewChannels = getDevicePrimaryPreviewChannels(dev);
 
-      if (funcs.rgb) {
-        const rAbs = dev.address + (parseInt(funcs.rgb.red, 10) || 0);
-        const gAbs = dev.address + (parseInt(funcs.rgb.green, 10) || 0);
-        const bAbs = dev.address + (parseInt(funcs.rgb.blue, 10) || 0);
+      if (previewChannels.r != null && previewChannels.g != null && previewChannels.b != null) {
+        const rAbs = previewChannels.r;
+        const gAbs = previewChannels.g;
+        const bAbs = previewChannels.b;
         devicePreviewRGB[dev.id] = {
           r: (rAbs >= 0 && rAbs < 512) ? (frame[rAbs] ?? 0) : 0,
           g: (gAbs >= 0 && gAbs < 512) ? (frame[gAbs] ?? 0) : 0,
@@ -127,8 +559,8 @@ function refreshEnginePreviewFrame() {
         };
       }
 
-      if (funcs.dimmer && funcs.dimmer.channel != null) {
-        const dAbs = dev.address + (parseInt(funcs.dimmer.channel, 10) || 0);
+      if (previewChannels.dimmer != null) {
+        const dAbs = previewChannels.dimmer;
         if (dAbs >= 0 && dAbs < 512) {
           devicePreviewDimmer[dev.id] = frame[dAbs] ?? 0;
         }
@@ -143,14 +575,18 @@ function refreshEnginePreviewFrame() {
 
 function scheduleEnginePreviewRefresh(force = false) {
   if (enginePreviewFrameScheduled) return;
-  const fps = Math.max(1, Number(window.DMX_PLAYBACK_UI_FPS || 12));
+  const fps = Math.max(1, Number(window.DMX_PLAYBACK_UI_FPS || 30));
   const minIntervalMs = 1000 / fps;
   const now = performance.now();
   const delay = force ? 0 : Math.max(0, minIntervalMs - (now - enginePreviewLastDrawTs));
   enginePreviewFrameScheduled = true;
-  window.setTimeout(() => {
+  if (delay <= 0) {
     window.requestAnimationFrame(refreshEnginePreviewFrame);
-  }, delay);
+  } else {
+    window.setTimeout(() => {
+      window.requestAnimationFrame(refreshEnginePreviewFrame);
+    }, delay);
+  }
 }
 window.isBackendMode = () => window.renderMode === "backend";
 
@@ -382,6 +818,14 @@ const confirmModal = async (title, text) => {
   return true;
 };
 
+const alertModal = async (title, text, icon = "warning") => {
+  if (window.ui && typeof window.ui.alertModal === "function") {
+    return await window.ui.alertModal(title, text, icon);
+  }
+  toast(`${title}: ${text}`, icon === "error" ? "error" : "warning");
+  return true;
+};
+
 const promptModal = async (title, val = "", ph = "") => {
   if (window.ui && typeof window.ui.promptModal === "function") {
     return await window.ui.promptModal(title, val, ph);
@@ -396,6 +840,30 @@ const deviceEditModal = async (dev) => {
   }
   toast("Device edit modal indisponible.", "error");
   return null;
+};
+
+const fixtureRemapModal = async (config) => {
+  if (window.ui && typeof window.ui.fixtureRemapModal === "function") {
+    return await window.ui.fixtureRemapModal(config);
+  }
+  toast("Fixture remap modal indisponible.", "error");
+  return null;
+};
+
+const fixtureChangeDecisionModal = async (config) => {
+  if (window.ui && typeof window.ui.fixtureChangeDecisionModal === "function") {
+    return await window.ui.fixtureChangeDecisionModal(config);
+  }
+  toast("Fixture change decision modal indisponible.", "error");
+  return null;
+};
+
+const operationStatusModal = async (config) => {
+  if (window.ui && typeof window.ui.operationStatusModal === "function") {
+    return await window.ui.operationStatusModal(config);
+  }
+  toast(config?.hero || config?.message || "Operation completed.", config?.status === "error" ? "error" : "success");
+  return true;
 };
 
 ///////////////////////
@@ -447,29 +915,25 @@ function rgbToHsv(r, g, b) {
 // ATTRIBUTS FIXTURE -> ABS CHANNELS
 ///////////////////////
 
+const _deviceAttrAbsCache = new Map();
 function getDeviceAttrAbsChannels(dev) {
-  const fi = fixtures[dev.fixture] || {};
-  const funcs = fi.functions || {};
-  const base = dev.address || 0;
-  const out = {};
-
-  if (funcs.dimmer && funcs.dimmer.channel != null)
-    out.dimmer = base + parseInt(funcs.dimmer.channel, 10);
-
-  if (funcs.rgb) {
-    if (funcs.rgb.red != null) out.r = base + parseInt(funcs.rgb.red, 10);
-    if (funcs.rgb.green != null) out.g = base + parseInt(funcs.rgb.green, 10);
-    if (funcs.rgb.blue != null) out.b = base + parseInt(funcs.rgb.blue, 10);
+  if (!dev) return {};
+  const id = dev.id;
+  const fixtureKey = dev.fixture;
+  const addr = dev.address;
+  const cached = _deviceAttrAbsCache.get(id);
+  if (cached && cached.fixture === fixtureKey && cached.address === addr) {
+    return cached.result;
   }
-
-  if (funcs.position) {
-    if (funcs.position.pan && funcs.position.pan.channel != null)
-      out.pan = base + parseInt(funcs.position.pan.channel, 10);
-    if (funcs.position.tilt && funcs.position.tilt.channel != null)
-      out.tilt = base + parseInt(funcs.position.tilt.channel, 10);
-  }
-  return out;
+  const result = buildDeviceAttrAbsChannels(dev, { includeLegacy: true });
+  _deviceAttrAbsCache.set(id, { fixture: fixtureKey, address: addr, result });
+  return result;
 }
+function invalidateDeviceAttrCache(deviceId) {
+  if (deviceId == null) _deviceAttrAbsCache.clear();
+  else _deviceAttrAbsCache.delete(deviceId);
+}
+window.invalidateDeviceAttrCache = invalidateDeviceAttrCache;
 
 ///////////////////////
 // API DMX (buffer + pump réseau)
@@ -543,43 +1007,67 @@ async function applyUniverseState(universe, channels, bypassLock = false, device
   if (!changedCount) return;
 }
 
-// Send buffered values to Python engine
+// Send buffered values to Python engine.
+// All pending buffers across (deviceId, universe) tuples are coalesced into
+// one HTTP POST per pump cycle, grouped by deviceId. The /api/live/channels/bulk
+// endpoint commits every universe's channels under a single engine lock so the
+// next render frame sees a consistent multi-universe snapshot — no inter-universe
+// drift on simultaneous edits.
+let _dmxPumpInFlight = false;
 async function dmxNetworkPump() {
+  if (_dmxPumpInFlight) return;
+
+  // Group pending channels by deviceId, then by universe.
+  const byDevice = {}; // {devId: {uni: {ch: val}}}
+  const drained = []; // [[state, snapshot], ...] for rollback on failure
   for (const [_key, state] of Object.entries(dmxUniverseBuffers)) {
+    const pendingKeys = Object.keys(state.pending);
+    if (!pendingKeys.length) continue;
     const u = Number.isFinite(state.universe) ? state.universe : 0;
     const devId = state.deviceId || "ui_live";
 
-    if (state.inFlight) continue;
-
-    const pendingKeys = Object.keys(state.pending);
-    if (!pendingKeys.length) continue;
-
     const frame = {};
-    for (const k of pendingKeys) {
-      frame[k] = state.pending[k];
-    }
-    state.pending = {};
+    for (const k of pendingKeys) frame[k] = state.pending[k];
 
-    state.inFlight = true;
-    try {
-      // Use new API endpoint
-      await fetch("/api/live/channels", {
+    let devBucket = byDevice[devId];
+    if (!devBucket) {
+      devBucket = {};
+      byDevice[devId] = devBucket;
+    }
+    // If two buffers somehow map to the same (devId, universe) (shouldn't),
+    // last one wins after merge.
+    devBucket[u] = Object.assign(devBucket[u] || {}, frame);
+
+    drained.push([state, frame]);
+    state.pending = {};
+  }
+
+  if (!drained.length) return;
+
+  _dmxPumpInFlight = true;
+  try {
+    // One bulk request per device_id (almost always just "ui_live").
+    await Promise.all(Object.entries(byDevice).map(([devId, universes]) =>
+      fetch("/api/live/channels/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ universe: u, channels: frame, device_id: devId }),
-      });
-    } catch (err) {
-      console.warn("[DMX] pump send failed for universe", u, err);
-      // Re-queue on failure
-      state.pending = { ...frame, ...state.pending };
-    } finally {
-      state.inFlight = false;
+        body: JSON.stringify({ device_id: devId, universes }),
+      })
+    ));
+  } catch (err) {
+    console.warn("[DMX] bulk pump send failed", err);
+    // Re-queue (preserve newer pending writes that may have arrived since drain)
+    for (const [state, frame] of drained) {
+      state.pending = Object.assign({}, frame, state.pending);
     }
+  } finally {
+    _dmxPumpInFlight = false;
   }
 }
 
-// DMX pump interval
-setInterval(dmxNetworkPump, 30);
+// DMX pump interval (20 ms ≈ 50 Hz, comfortably faster than the 120 Hz
+// engine tick can consume but still throttled by the engine's global send gate).
+setInterval(dmxNetworkPump, 20);
 
 // ========================================
 // UI: Packet meter (ArtNet packets/sec)
@@ -671,16 +1159,31 @@ function handleEngineState(state) {
   // Update local state from engine for visualization ONLY
   // DO NOT update dmxLocked - that's controlled by JS fade logic
   if (state.universes) {
+    let universesChanged = false;
     for (const [uStr, values] of Object.entries(state.universes)) {
       const u = parseInt(uStr, 10);
-      // Store for visualization only (don't feed back into pending!)
-      lastDmxFrames[u] = Array.isArray(values) ? values.slice(0, 512) : [];
+      const newFrame = Array.isArray(values) ? values.slice(0, 512) : [];
+      // Compare against previous frame to avoid redundant preview redraws when
+      // the engine broadcasts state but nothing actually moved (idle backend).
+      if (!universesChanged) {
+        const old = lastDmxFrames[u];
+        if (!old || old.length !== newFrame.length) {
+          universesChanged = true;
+        } else {
+          for (let i = 0; i < newFrame.length; i++) {
+            if (old[i] !== newFrame[i]) { universesChanged = true; break; }
+          }
+        }
+      }
+      lastDmxFrames[u] = newFrame;
     }
-    needsPreviewRefresh = Boolean(
-      window.backendPlaybackOwned ||
-      window.identMode ||
-      (typeof window.isBackendMode === "function" && window.isBackendMode())
-    );
+    if (universesChanged) {
+      needsPreviewRefresh = Boolean(
+        window.backendPlaybackOwned ||
+        window.identMode ||
+        (typeof window.isBackendMode === "function" && window.isBackendMode())
+      );
+    }
   }
 
   // Update identify indicator from Python (Python controls identify)
@@ -719,6 +1222,8 @@ async function loadFixtures() {
     fixtures = {};
     console.error(e);
   }
+  invalidateDevicePreviewCache();
+  invalidateDeviceAttrCache();
 
   const sel = $id("fixture-type-select");
   if (!sel) return;
@@ -727,7 +1232,7 @@ async function loadFixtures() {
     if (fx.error) continue;
     const opt = document.createElement("option");
     opt.value = name;
-    opt.textContent = `${fx.info?.model || name} (${name})`;
+    opt.textContent = `${fx.meta?.model || fx.info?.model || name} (${name})`;
     sel.appendChild(opt);
   }
 }

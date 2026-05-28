@@ -1,0 +1,80 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "VL6",
+    "vendor": "Rushmead-Theatrical",
+    "mode": "Mode 7",
+    "author": "Conversion Tool"
+  },
+  "footprint": 11,
+  "primary": {
+    "dimmer": "dimmer.main",
+    "color": "color.main",
+    "position": "position.main"
+  },
+  "groups": [
+    {
+      "id": "dimmer.main",
+      "family": "dimmer",
+      "label": "Main Dimmer",
+      "channels": [
+        { "role": "level", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.main",
+      "family": "color",
+      "label": "Color",
+      "channels": [
+        { "role": "red", "offset": 1, "default": 255 },
+        { "role": "green", "offset": 2, "default": 255 },
+        { "role": "blue", "offset": 3, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.main",
+      "family": "position",
+      "label": "Pan / Tilt",
+      "channels": [
+        { "role": "pan", "offset": 5, "default": 128, "range_deg": 720 },
+        { "role": "tilt", "offset": 6, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "other.focus",
+      "family": "other",
+      "kind": "focus",
+      "label": "Focus",
+      "channels": [
+        { "role": "value", "offset": 4, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.prism_beam",
+      "family": "other",
+      "kind": "prism_beam",
+      "label": "Prism Beam",
+      "channels": [
+        { "role": "value", "offset": 7, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.prism_zoom",
+      "family": "other",
+      "kind": "prism_zoom",
+      "label": "Prism Zoom",
+      "channels": [
+        { "role": "value", "offset": 8, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.prism_rotation",
+      "family": "other",
+      "kind": "prism_rotation",
+      "label": "Prism Rotation",
+      "channels": [
+        { "role": "value", "offset": 9, "default": 0, "ui": "slider" }
+      ]
+    }
+  ]
+}

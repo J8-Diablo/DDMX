@@ -172,6 +172,12 @@ class DMXEngine:
         if self.broadcast:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
+        # Larger send buffer reduces tail-latency jitter on bursts of UDP packets
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
+        except OSError:
+            pass
+
         self.sock.bind((self.bind_ip, 0))
 
         self.state = {}  # {universe: [512 ints]}
@@ -180,7 +186,27 @@ class DMXEngine:
         self._run_thread = None
         self._stop_event = threading.Event()
 
+        # Cached ArtNet packet templates per universe to avoid rebuilding the
+        # 18-byte header on every send (reduces per-universe send jitter).
+        self._packet_cache: dict = {}  # {universe: bytearray(530)} full ArtDMX
+        self._target_addr = (self.target_ip, self.port)
+
         log.info("DMXEngine initialized.")
+
+    def _build_full_packet(self, universe: int) -> bytearray:
+        """Return a full 530-byte ArtDMX packet template for `universe`.
+        Header is pre-filled; only the 512-byte payload region (offset 18)
+        needs updating per send."""
+        opcode = OP_DMX.to_bytes(2, "little")
+        prot = PROT_VER.to_bytes(2, "big")
+        seq = (0).to_bytes(1, "big")
+        phys = (0).to_bytes(1, "big")
+        uni = int(universe).to_bytes(2, "little")
+        ln = (512).to_bytes(2, "big")
+        header = ARTNET_HEADER + opcode + prot + seq + phys + uni + ln
+        pkt = bytearray(530)
+        pkt[:18] = header
+        return pkt
 
 
     # ----------------------------
@@ -242,28 +268,27 @@ class DMXEngine:
         self._ensure_universe(universe)
 
         if isinstance(buf512, (bytes, bytearray)):
-            data_in = list(buf512)
+            data_in = [b & 0xFF for b in buf512]
         else:
-            data_in = list(buf512)
+            data_in = [clamp(int(v)) for v in buf512]
 
         if len(data_in) < 512:
             data_in += [0] * (512 - len(data_in))
-        data_in = data_in[:512]
-        data_in = [clamp(int(v)) for v in data_in]
+        elif len(data_in) > 512:
+            data_in = data_in[:512]
 
         with self.state_lock:
             self.state[universe] = data_in[:]
-            payload = bytes(data_in)
+            pkt = self._packet_cache.get(universe)
+            if pkt is None:
+                pkt = self._build_full_packet(universe)
+                self._packet_cache[universe] = pkt
+            # Write payload in-place into the cached packet (single 18-byte header,
+            # 512-byte payload region). Single bytes() copy on send.
+            pkt[18:530] = bytes(data_in)
+            packet = bytes(pkt)
 
-        opcode = OP_DMX.to_bytes(2, "little")
-        prot = PROT_VER.to_bytes(2, "big")
-        seq = (0).to_bytes(1, "big")
-        phys = (0).to_bytes(1, "big")
-        uni = universe.to_bytes(2, "little")
-        ln = (512).to_bytes(2, "big")
-
-        packet = ARTNET_HEADER + opcode + prot + seq + phys + uni + ln + payload
-        self.sock.sendto(packet, (self.target_ip, self.port))
+        self.sock.sendto(packet, self._target_addr)
         if LOG_ARTNET:
             if LOG_ARTNET_FULL:
                 log.info("[ARTNET] send_universe universe=%s values=%s", universe, data_in)

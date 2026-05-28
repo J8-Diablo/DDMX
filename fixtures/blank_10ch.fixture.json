@@ -1,0 +1,80 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "TODO",
+    "vendor": "TODO",
+    "mode": "10-Channel Mode",
+    "author": "TODO"
+  },
+  "footprint": 10,
+  "primary": {
+    "dimmer": "dimmer.main",
+    "color": "color.main",
+    "position": "position.main"
+  },
+  "groups": [
+    {
+      "id": "dimmer.main",
+      "family": "dimmer",
+      "label": "Main Dimmer",
+      "channels": [
+        { "role": "level", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.main",
+      "family": "color",
+      "label": "Color",
+      "channels": [
+        { "role": "red",   "offset": 1, "default": 255 },
+        { "role": "green", "offset": 2, "default": 255 },
+        { "role": "blue",  "offset": 3, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.main",
+      "family": "position",
+      "label": "Pan / Tilt",
+      "channels": [
+        { "role": "pan",  "offset": 4, "default": 128, "range_deg": 180 },
+        { "role": "tilt", "offset": 5, "default": 128, "range_deg": 90 }
+      ]
+    },
+    {
+      "id": "other.slot6",
+      "family": "other",
+      "kind": "TODO",
+      "label": "Channel 7",
+      "channels": [
+        { "role": "value", "offset": 6, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.slot7",
+      "family": "other",
+      "kind": "TODO",
+      "label": "Channel 8",
+      "channels": [
+        { "role": "value", "offset": 7, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.slot8",
+      "family": "other",
+      "kind": "TODO",
+      "label": "Channel 9",
+      "channels": [
+        { "role": "value", "offset": 8, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.slot9",
+      "family": "other",
+      "kind": "TODO",
+      "label": "Channel 10",
+      "channels": [
+        { "role": "value", "offset": 9, "default": 0, "ui": "slider" }
+      ]
+    }
+  ]
+}

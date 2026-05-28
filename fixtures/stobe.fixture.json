@@ -1,0 +1,43 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "Strobe",
+    "vendor": "Rushmead-Theatrical",
+    "mode": "Mode 7",
+    "author": "Conversion Tool"
+  },
+  "footprint": 5,
+  "primary": {
+    "dimmer": "dimmer.main",
+    "color": "color.main"
+  },
+  "groups": [
+    {
+      "id": "dimmer.main",
+      "family": "dimmer",
+      "label": "Main Dimmer",
+      "channels": [
+        { "role": "level", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.main",
+      "family": "color",
+      "label": "Color",
+      "channels": [
+        { "role": "red", "offset": 1, "default": 255 },
+        { "role": "green", "offset": 2, "default": 255 },
+        { "role": "blue", "offset": 3, "default": 255 }
+      ]
+    },
+    {
+      "id": "other.focus",
+      "family": "other",
+      "kind": "focus",
+      "label": "Focus",
+      "channels": [
+        { "role": "value", "offset": 4, "default": 0, "ui": "slider" }
+      ]
+    }
+  ]
+}

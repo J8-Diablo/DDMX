@@ -1,0 +1,39 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "Firework",
+    "vendor": "Rushmead-Theatrical",
+    "mode": "Mode 7",
+    "author": "Conversion Tool"
+  },
+  "footprint": 3,
+  "groups": [
+    {
+      "id": "other.fire",
+      "family": "other",
+      "kind": "fire",
+      "label": "Fire",
+      "channels": [
+        { "role": "value", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.orientation",
+      "family": "other",
+      "kind": "orientation",
+      "label": "Orientation",
+      "channels": [
+        { "role": "value", "offset": 1, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.height",
+      "family": "other",
+      "kind": "height",
+      "label": "Height",
+      "channels": [
+        { "role": "value", "offset": 2, "default": 0, "ui": "slider" }
+      ]
+    }
+  ]
+}

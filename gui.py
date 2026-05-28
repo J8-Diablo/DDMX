@@ -23,6 +23,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from werkzeug.serving import make_server
 
 from app import SETTINGS, app, init_engine, set_update_callbacks, setup_engine_callbacks
+from runtime_paths import RESOURCE_DIR
 from version import (
     APP_NAME,
     APP_UPDATE_ASSET_NAME,
@@ -41,7 +42,7 @@ _popup_views = []
 MAX_LOAD_ATTEMPTS = 40
 LOAD_RETRY_MS = 700
 STARTUP_FORCE_RELOAD_MS = 1200
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = RESOURCE_DIR
 ICON_SVG_PATH = os.path.join(BASE_DIR, "static", "favicon.svg")
 ICON_ICO_PATH = os.path.join(BASE_DIR, "static", "favicon.ico")
 APP_ICON = None
@@ -483,13 +484,37 @@ class StartupSplash(QWidget):
 
 
 class PopupPage(QWebEnginePage):
+    # Web features the embedded page is allowed to use without an OS-level
+    # permission prompt. Camera + microphone are required by the AutoLight
+    # training modal's calibration step (getUserMedia hangs forever inside
+    # QtWebEngine until we explicitly answer the permission request).
+    _AUTO_GRANT_FEATURES = (
+        QWebEnginePage.MediaAudioCapture,
+        QWebEnginePage.MediaVideoCapture,
+        QWebEnginePage.MediaAudioVideoCapture,
+    )
+
     def __init__(self, profile, parent=None):
         super().__init__(profile, parent)
         self.settings().setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, True)
         self.settings().setAttribute(QWebEngineSettings.JavascriptCanAccessClipboard, True)
+        # Wire the permission gate. QtWebEngine doesn't show a native prompt
+        # — it just emits this signal and waits for our answer. Without a
+        # connection getUserMedia stays pending forever.
+        self.featurePermissionRequested.connect(self._on_feature_permission)
 
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         print(f"[JS] {source_id}:{line_number} {message}")
+
+    def _on_feature_permission(self, security_origin, feature):
+        # Auto-grant media capture for the embedded localhost UI; deny
+        # anything else (geolocation / notifications would be misleading
+        # in a desktop overlay).
+        if feature in self._AUTO_GRANT_FEATURES:
+            policy = QWebEnginePage.PermissionGrantedByUser
+        else:
+            policy = QWebEnginePage.PermissionDeniedByUser
+        self.setFeaturePermission(security_origin, feature, policy)
 
     def createWindow(self, _type):
         view = QWebEngineView()

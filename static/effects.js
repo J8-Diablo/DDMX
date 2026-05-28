@@ -27,9 +27,15 @@ let intelligentExportSelection = new Set();
 //   - total is the number of groups (not devices)
 // If no groups, returns individual device index
 function getDeviceGroupIndex(deviceId, deviceOrder) {
-  const order = deviceOrder || [];
+  const order = Array.isArray(deviceOrder) ? deviceOrder.map(String) : [];
   const n = order.length || 1;
   const devIdStr = String(deviceId);
+  const effectMembers = Array.isArray(window._effectMemberIds) ? window._effectMemberIds.map(String) : [];
+
+  if (effectMembers.length) {
+    const idx = Math.max(0, effectMembers.indexOf(devIdStr));
+    return { idx, total: effectMembers.length || 1 };
+  }
 
   // Check if there are selection groups (from Vert ONE / Horiz ONE)
   const selGroups = window.selectionGroups;
@@ -51,18 +57,45 @@ function getDeviceGroupIndex(deviceId, deviceOrder) {
   return { idx, total: n };
 }
 
-const EFFECT_ATTRS = [
-  { key: "dimmer", label: "Dimmer" },
-  { key: "r", label: "Color R" },
-  { key: "g", label: "Color G" },
-  { key: "b", label: "Color B" },
-  { key: "pan", label: "Pan" },
-  { key: "tilt", label: "Tilt" },
-];
+function buildAttrLabelFromKey(key) {
+  const value = String(key || "").trim();
+  if (!value) return "Attr";
+  const lower = value.toLowerCase();
+  const sharedSpec = typeof getSharedFixtureTargetSpec === "function"
+    ? getSharedFixtureTargetSpec(lower)
+    : null;
+  if (sharedSpec?.label) return sharedSpec.label;
+  const builtins = {
+    dimmer: "Primary Dimmer",
+    r: "Primary Color R",
+    g: "Primary Color G",
+    b: "Primary Color B",
+    pan: "Primary Pan",
+    tilt: "Primary Tilt",
+  };
+  if (builtins[lower]) return builtins[lower];
+  const parts = value.split(".");
+  if (parts.length >= 2) {
+    const role = humanizeFixtureToken(parts.pop());
+    const group = humanizeFixtureToken(parts.join("."));
+    return `${group} - ${role}`;
+  }
+  return humanizeFixtureToken(value);
+}
 
 function getAttrLabel(key) {
-  const entry = EFFECT_ATTRS.find(a => a.key === key);
-  return entry?.label || key || "Attr";
+  const lowered = String(key || "").trim().toLowerCase();
+  const fromSelection = listSelectionEffectAttrs().find(attr => String(attr?.key || "").toLowerCase() === lowered);
+  return fromSelection?.label || buildAttrLabelFromKey(key);
+}
+
+function getLegacyGroupLabel(group) {
+  return getAttrLabel(getGroupTargetKey(group));
+}
+
+function isColorTargetKey(key) {
+  const lowered = String(key || "").trim().toLowerCase();
+  return ["r", "g", "b"].includes(lowered) || /\.(red|green|blue)$/.test(lowered);
 }
 
 function normalizeTargets(targets) {
@@ -74,7 +107,7 @@ function normalizeTargets(targets) {
     if (!key) continue;
     if (key === "color" || key === "rgb") {
       out.push("r", "g", "b");
-    } else if (["dimmer", "r", "g", "b", "pan", "tilt"].includes(key)) {
+    } else {
       out.push(key);
     }
   }
@@ -695,6 +728,14 @@ function isGroupSameAsSelection(group) {
   return true;
 }
 
+function selectionHasFixtureElements(deviceIds = selectedDeviceOrder) {
+  return (deviceIds || []).some(deviceId => {
+    const dev = rigDevices?.[deviceId];
+    if (!dev) return false;
+    return resolveFixtureElementsForDevice(dev).length > 1;
+  });
+}
+
 function renderEffectsTargets() {
   const container = $id("effects-targets");
   if (!container) return;
@@ -713,7 +754,17 @@ function renderEffectsTargets() {
 
   ensureVirtualGroupsRoot();
 
-  for (const attr of EFFECT_ATTRS) {
+  const attrs = listSelectionEffectAttrs();
+  if (!attrs.length) {
+    container.innerHTML = "<div class='muted'>No effect targets available on this selection.</div>";
+    renderActualEffectsPanel();
+    return;
+  }
+  if (!attrs.some(attr => attr.key === activeEffectAttr)) {
+    activeEffectAttr = attrs[0].key;
+  }
+
+  for (const attr of attrs) {
     const row = document.createElement("div");
     row.className = "effects-attr-row";
     if (activeEffectAttr === attr.key) row.classList.add("active");
@@ -721,6 +772,7 @@ function renderEffectsTargets() {
     const header = document.createElement("div");
     header.className = "effects-attr-header";
     header.onclick = () => {
+      if (activeEffectAttr === attr.key) return; // already active, skip rebuild
       activeEffectAttr = attr.key;
       renderEffectsTargets();
       toast(`Attribut actif: ${attr.label}`, "info");
@@ -730,7 +782,7 @@ function renderEffectsTargets() {
     title.textContent = attr.label;
 
     const groupsForAttr = Object.values(virtualGroups).filter(g => {
-      if (g.attrKey !== attr.key) return false;
+      if (getGroupTargetKey(g) !== attr.key) return false;
       if (!isGroupSameAsSelection(g)) return false;
       for (const devId of selectedDeviceOrder) {
         const set = deviceCurrentGroups[devId];
@@ -824,7 +876,7 @@ function buildEffectGroupCard(group, options = {}) {
   const sub = document.createElement("div");
   sub.className = "muted";
   sub.style.fontSize = "11px";
-  const defaultSubtitle = `Group ${group.id} - ${getAttrLabel(group.attrKey)} - devices: ${(group.deviceIds || []).join(', ')}`;
+  const defaultSubtitle = `Group ${group.id} - ${getLegacyGroupLabel(group)} - devices: ${(group.deviceIds || []).join(', ')}`;
   sub.textContent = subtitle || defaultSubtitle;
   card.appendChild(sub);
 
@@ -866,7 +918,7 @@ function buildEffectGroupCard(group, options = {}) {
         if (group[param.key] === opt) option.selected = true;
         input.appendChild(option);
       }
-      input.onchange = () => { group[param.key] = input.value; };
+      input.onchange = () => { group[param.key] = input.value; scheduleBackendSync(); };
     } else if (param.type === "range") {
       // Slider with number display
       const wrapper = document.createElement("div");
@@ -887,6 +939,7 @@ function buildEffectGroupCard(group, options = {}) {
         const v = parseFloat(input.value);
         group[param.key] = v;
         valDisplay.textContent = v;
+        scheduleBackendSync();
       };
 
       wrapper.appendChild(input);
@@ -900,14 +953,14 @@ function buildEffectGroupCard(group, options = {}) {
       input.min = param.min ?? 0;
       input.max = param.max ?? 99999;
       input.value = group[param.key] ?? param.default ?? 0;
-      input.oninput = () => { group[param.key] = parseFloat(input.value) || 0; };
+      input.oninput = () => { group[param.key] = parseFloat(input.value) || 0; scheduleBackendSync(); };
     } else {
       // Text input
       input = document.createElement("input");
       input.type = "text";
       input.value = group[param.key] != null ? String(group[param.key]) : "";
       input.placeholder = param.hint || "";
-      input.oninput = () => { group[param.key] = input.value; };
+      input.oninput = () => { group[param.key] = input.value; scheduleBackendSync(); };
     }
 
     row.appendChild(input);
@@ -918,11 +971,14 @@ function buildEffectGroupCard(group, options = {}) {
   const definedKeys = new Set(params.map(p => p.key));
   definedKeys.add("id");
   definedKeys.add("attrKey");
+  definedKeys.add("targetKey");
   definedKeys.add("type");
   definedKeys.add("deviceIds");
   definedKeys.add("mode");
   definedKeys.add("target");
   definedKeys.add("targets");
+  definedKeys.add("selectionScope");
+  definedKeys.add("effectMemberIds");
 
   for (const [k, v] of Object.entries(group)) {
     if (definedKeys.has(k)) continue;
@@ -932,7 +988,7 @@ function buildEffectGroupCard(group, options = {}) {
     lab.textContent = k;
     const inp = document.createElement("input");
     inp.value = String(v);
-    inp.oninput = () => { group[k] = typeof v === "number" ? (parseFloat(inp.value) || 0) : inp.value; };
+    inp.oninput = () => { group[k] = typeof v === "number" ? (parseFloat(inp.value) || 0) : inp.value; scheduleBackendSync(); };
     row.appendChild(lab);
     row.appendChild(inp);
     card.appendChild(row);
@@ -993,7 +1049,10 @@ async function applyEffectToSelection(effectName) {
       return;
     }
 
-    const attrKey = activeEffectAttr || "dimmer";
+    const attrs = listSelectionEffectAttrs();
+    const attrDef = attrs.find(attr => attr.key === activeEffectAttr) || attrs[0] || null;
+    const attrKey = attrDef?.key || "dimmer";
+    const scope = attrDef?.selectionScope === "fixture_elements" ? "fixture_elements" : "devices";
 
     await ensureEffectsLoaded();
     ensureVirtualGroupsRoot();
@@ -1007,11 +1066,16 @@ async function applyEffectToSelection(effectName) {
     // Build group with all parameters from definition
     const group = {
       id: groupId,
-      attrKey,
       type: effectName,
       deviceIds: [...selectedDeviceOrder].map(String),
     };
-    if (Array.isArray(window.selectionGroups) && window.selectionGroups.length) {
+    if (scope === "fixture_elements") {
+      group.selectionScope = "fixture_elements";
+      group.targetKey = attrDef?.targetKey || attrKey;
+    } else {
+      group.attrKey = attrKey;
+    }
+    if (scope === "devices" && Array.isArray(window.selectionGroups) && window.selectionGroups.length) {
       group.selection_groups = window.selectionGroups.map(g => Array.isArray(g) ? g.map(String) : []);
     }
 
@@ -1062,7 +1126,9 @@ async function applyIntelligentEffectToSelection(effectId) {
       targets: def.targets || ["dimmer"],
       deviceIds: [...selectedDeviceOrder].map(String),
     };
-    if (Array.isArray(window.selectionGroups) && window.selectionGroups.length) {
+    if (selectionHasFixtureElements(group.deviceIds)) {
+      group.selectionScope = "fixture_elements";
+    } else if (Array.isArray(window.selectionGroups) && window.selectionGroups.length) {
       group.selection_groups = window.selectionGroups.map(g => Array.isArray(g) ? g.map(String) : []);
     }
 
@@ -1128,8 +1194,10 @@ function gatherActiveEffectGroups() {
 function normalizeGroupForBackend(group) {
   if (!group || typeof group !== "object") return null;
   const out = { ...group };
+  delete out.effectMemberIds;
   out.id = String(out.id || "");
   out.mode = String(out.mode || "legacy").toLowerCase() === "intelligent" ? "intelligent" : "legacy";
+  out.selectionScope = getGroupSelectionScope(out);
   if (Array.isArray(out.deviceIds)) {
     out.deviceIds = out.deviceIds.map(String);
   } else if (Array.isArray(out.device_ids)) {
@@ -1149,7 +1217,12 @@ function normalizeGroupForBackend(group) {
 
 async function syncBackendLiveGroups() {
   if (typeof window.isBackendMode !== "function" || !window.isBackendMode()) return;
-  if (window.playbackActive) return;
+  // NOTE: previously returned early when window.playbackActive was true, which
+  // meant live effect edits (remove, add, param change) were silently dropped
+  // during cue playback — producing "rémanence" of removed effects. Live group
+  // sync is independent of cue groups in the engine, so it's safe to push at
+  // any time; the engine merges _cue_effect_groups + _live_effect_groups each
+  // frame.
   const active = gatherActiveEffectGroups();
   const groups = active.map(entry => normalizeGroupForBackend(entry.group)).filter(Boolean);
   try {
@@ -1164,6 +1237,16 @@ async function syncBackendLiveGroups() {
       window.fallbackToUiMode("Backend unavailable, fallback to UI render mode.");
     }
   }
+}
+
+let _backendSyncTimer = null;
+function scheduleBackendSync(delay = 80) {
+  if (typeof window.isBackendMode !== "function" || !window.isBackendMode()) return;
+  if (_backendSyncTimer) clearTimeout(_backendSyncTimer);
+  _backendSyncTimer = setTimeout(() => {
+    _backendSyncTimer = null;
+    syncBackendLiveGroups();
+  }, delay);
 }
 
 function countGroupUsageInCues(groupId) {
@@ -1221,6 +1304,15 @@ function disableGroupOnRig(groupId) {
       sendToEngineWithEffects(1.0);
     }
     syncBackendLiveGroups();
+    // Also purge from engine's cue pool so disable takes effect immediately
+    // even if a running cue had this group active.
+    if (typeof window.isBackendMode === "function" && window.isBackendMode()) {
+      fetch("/api/live/effects/groups/purge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ group_ids: [String(groupId)] })
+      }).catch(e => console.warn("[FX] purge failed:", e));
+    }
   }
 }
 
@@ -1266,6 +1358,15 @@ function removeEffectGroupCompletely(groupId) {
     sendToEngineWithEffects(1.0);
   }
   syncBackendLiveGroups();
+  // Purge the group from the engine's cue + live pools immediately so the
+  // effect stops even if a cue using it is currently playing (rémanence fix).
+  if (typeof window.isBackendMode === "function" && window.isBackendMode()) {
+    fetch("/api/live/effects/groups/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_ids: [String(groupId)] })
+    }).catch(e => console.warn("[FX] purge failed:", e));
+  }
 
   if (removedFromCues || removedLive) {
     toast(`Effet ${groupId} supprimé.`, "info");
@@ -1285,8 +1386,8 @@ function renderActualEffectsPanel() {
   }
 
   active.sort((a, b) => {
-    const aAttr = getAttrLabel(a.group.attrKey || "");
-    const bAttr = getAttrLabel(b.group.attrKey || "");
+    const aAttr = getLegacyGroupLabel(a.group);
+    const bAttr = getLegacyGroupLabel(b.group);
     if (aAttr !== bAttr) return aAttr.localeCompare(bAttr);
     return (a.group.type || "").localeCompare(b.group.type || "");
   });
@@ -1295,7 +1396,7 @@ function renderActualEffectsPanel() {
     const usage = countGroupUsageInCues(group.id);
     const targetsLabel = group.mode === "intelligent"
       ? formatGroupTargets(group)
-      : getAttrLabel(group.attrKey || "");
+      : getLegacyGroupLabel(group);
     const subtitle = group.mode === "intelligent"
       ? (window.t
           ? window.t("effects.actual.subtitleIntelligent", "Targets: {targets} - Devices: {devices}")
@@ -1351,10 +1452,18 @@ function renderActualEffectsPanel() {
  */
 function phaseOffsetForDevice(group, deviceId) {
   const ph = String(group.phase ?? "0").trim();
-  const order = Array.isArray(group.deviceIds) ? group.deviceIds.map(String) : [];
+  const effectMemberIds = Array.isArray(group?.effectMemberIds) ? group.effectMemberIds.map(String) : [];
+  const order = effectMemberIds.length
+    ? effectMemberIds
+    : (Array.isArray(group.deviceIds) ? group.deviceIds.map(String) : []);
 
-  // Use group index if selection groups exist (Vert ONE / Horiz ONE)
+  if (effectMemberIds.length) {
+    window._effectMemberIds = effectMemberIds;
+  }
   const groupInfo = getDeviceGroupIndex(deviceId, order);
+  if (effectMemberIds.length) {
+    delete window._effectMemberIds;
+  }
   const idx = groupInfo.idx;
   const n = groupInfo.total;
 
@@ -1462,12 +1571,18 @@ function applyFadeCurve(t, curve) {
 const chaserRandomSeeds = {};
 
 function evalChaserAdvanced(group, tMs, deviceId) {
-  const order = group.deviceIds || [];
+  const effectMemberIds = Array.isArray(group?.effectMemberIds) ? group.effectMemberIds.map(String) : [];
+  const order = effectMemberIds.length ? effectMemberIds : (group.deviceIds || []);
   const n = order.length;
   if (n === 0) return 0;
 
-  // Use global group index helper (respects Vert ONE / Horiz ONE grouping)
+  if (effectMemberIds.length) {
+    window._effectMemberIds = effectMemberIds;
+  }
   const groupInfo = getDeviceGroupIndex(deviceId, order);
+  if (effectMemberIds.length) {
+    delete window._effectMemberIds;
+  }
   const idx = groupInfo.idx;
   const effectiveN = groupInfo.total;
 
@@ -1665,6 +1780,43 @@ function evalGroupEffect(group, tMs, deviceId) {
     // Other effects: -1 to 1 range, scaled by amplitude
     const delta = (ampPct / 100) * 127.5;
     return delta * y;
+  }
+}
+
+function applyLegacyGroupToDevice(group, dev, tMs, perUniverseMap, options = null) {
+  if (!group || !dev) return;
+
+  const runtime = resolveEffectMembers(group);
+  const members = runtime.byDevice?.[String(dev.id)] || [];
+  if (!members.length) return;
+
+  const targetKey = getGroupTargetKey(group);
+  if (!targetKey) return;
+
+  const u = dev.universe || 0;
+  perUniverseMap[u] ||= {};
+
+  const scale = typeof options?.scale === "number" ? options.scale : 1;
+  const mix = options?.groupMix?.[group.id] != null ? options.groupMix[group.id] : 1;
+  const effScale = scale * mix;
+  if (effScale <= 0) return;
+
+  const runtimeGroup = runtime.scope === "fixture_elements"
+    ? { ...group, effectMemberIds: runtime.effectMemberIds }
+    : group;
+
+  for (const member of members) {
+    const absCh = member.targets?.[targetKey];
+    if (absCh == null) continue;
+
+    const scaledGroup = {
+      ...runtimeGroup,
+      amplitude: (parseFloat(group.amplitude ?? 0) || 0) * effScale,
+      frequency: parseFloat(group.frequency ?? 0) || 0,
+    };
+    const baseVal = perUniverseMap[u][absCh] ?? 0;
+    const delta = evalGroupEffect(scaledGroup, tMs, member.memberId);
+    perUniverseMap[u][absCh] = clamp(Math.round(baseVal + delta), 0, 255);
   }
 }
 
@@ -1881,6 +2033,7 @@ const intelligentFxHelpers = {
   chaserAdvanced: (ctx, params) => {
     const group = {
       ...params,
+      effectMemberIds: Array.isArray(ctx.group?.effectMemberIds) ? ctx.group.effectMemberIds.map(String) : undefined,
       deviceIds: Array.isArray(ctx.group?.deviceIds)
         ? ctx.group.deviceIds.map(String)
         : Array.from({ length: ctx.deviceCount }, (_, i) => String(i))
@@ -1907,7 +2060,7 @@ function buildIntelligentContext(group, def, devId, deviceIndex, deviceCount, tM
     group,
     params: group,
     helpers: intelligentFxHelpers,
-    isColor: target === "r" || target === "g" || target === "b",
+    isColor: isColorTargetKey(target),
     effect: def
   };
 }
@@ -1940,12 +2093,9 @@ function applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap, opt
   if (!group || !def || !dev) return;
   const u = dev.universe || 0;
   perUniverseMap[u] ||= {};
-  const absMap = getDeviceAttrAbsChannels(dev);
-
-  const order = Array.isArray(group.deviceIds) ? group.deviceIds.map(String) : [];
-  const groupInfo = getDeviceGroupIndex(dev.id, order);
-  const deviceIndex = groupInfo.idx;
-  const deviceCount = groupInfo.total;
+  const runtime = resolveEffectMembers(group);
+  const members = runtime.byDevice?.[String(dev.id)] || [];
+  if (!members.length) return;
 
   const targets = normalizeTargets(group.targets?.length ? group.targets : def.targets || []);
   if (!targets.length) return;
@@ -1953,21 +2103,28 @@ function applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap, opt
   const scale = typeof options?.scale === "number" ? options.scale : 1;
   const mix = options?.groupMix?.[group.id] != null ? options.groupMix[group.id] : 1;
   const effScale = scale * mix;
+  if (effScale <= 0) return;
 
-  for (const target of targets) {
-    const absCh = absMap[target];
-    if (absCh == null) continue;
-    const baseVal = perUniverseMap[u][absCh] ?? 0;
-    const ctx = buildIntelligentContext(group, def, dev.id, deviceIndex, deviceCount, tMs, target);
-    const raw = safeApplyIntelligentEffect(def, ctx);
-    let val;
-    if (String(def?.mode || "delta").toLowerCase() === "absolute") {
-      const rawVal = clamp(Math.round(Number(raw) || 0), 0, 255);
-      val = clamp(Math.round(baseVal + (rawVal - baseVal) * effScale), 0, 255);
-    } else {
-      val = applyIntelligentValue(def, baseVal, raw * effScale);
+  const runtimeGroup = runtime.scope === "fixture_elements"
+    ? { ...group, effectMemberIds: runtime.effectMemberIds }
+    : group;
+
+  for (const member of members) {
+    for (const target of targets) {
+      const absCh = member.targets?.[target];
+      if (absCh == null) continue;
+      const baseVal = perUniverseMap[u][absCh] ?? 0;
+      const ctx = buildIntelligentContext(runtimeGroup, def, member.memberId, member.index, runtime.count, tMs, target);
+      const raw = safeApplyIntelligentEffect(def, ctx);
+      let val;
+      if (String(def?.mode || "delta").toLowerCase() === "absolute") {
+        const rawVal = clamp(Math.round(Number(raw) || 0), 0, 255);
+        val = clamp(Math.round(baseVal + (rawVal - baseVal) * effScale), 0, 255);
+      } else {
+        val = applyIntelligentValue(def, baseVal, raw * effScale);
+      }
+      perUniverseMap[u][absCh] = val;
     }
-    perUniverseMap[u][absCh] = val;
   }
 }
 
@@ -2026,8 +2183,7 @@ async function effectTick() {
   
   for (const dev of Object.values(rigDevices)) {
     const fi = fixtures[dev.fixture] || {};
-    const funcs = fi.functions || {};
-    const absMap = getDeviceAttrAbsChannels(dev);
+    const previewChannels = getDevicePrimaryPreviewChannels(dev);
     const lv = deviceLocalValues[dev.id] || {};
     const devGroups = Array.from(deviceCurrentGroups[dev.id] || []);
     
@@ -2035,7 +2191,7 @@ async function effectTick() {
     perUniverseMap[u] ||= {};
     
     // Base
-    const addrCount = fi.addr_count || 1;
+    const addrCount = getFixtureFootprint(fi);
     for (let li = 0; li < addrCount; li++) {
       const absCh = dev.address + li;
       perUniverseMap[u][absCh] = lv[li] ?? 0;
@@ -2052,20 +2208,12 @@ async function effectTick() {
         applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap);
         continue;
       }
-
-      const attr = group.attrKey;
-      const absCh = absMap[attr];
-      if (absCh == null) continue;
-
-      const base = perUniverseMap[u][absCh] ?? 0;
-      const delta = evalGroupEffect(group, tMs, dev.id);
-      const val = clamp(Math.round(base + delta), 0, 255);
-      perUniverseMap[u][absCh] = val;
+      applyLegacyGroupToDevice(group, dev, tMs, perUniverseMap);
     }
     
     // Previews
-    if (funcs.rgb) {
-      const rAbs = absMap.r, gAbs = absMap.g, bAbs = absMap.b;
+    if (previewChannels.r != null && previewChannels.g != null && previewChannels.b != null) {
+      const rAbs = previewChannels.r, gAbs = previewChannels.g, bAbs = previewChannels.b;
       devicePreviewRGB[dev.id] = {
         r: rAbs != null ? (perUniverseMap[u][rAbs] ?? 0) : 0,
         g: gAbs != null ? (perUniverseMap[u][gAbs] ?? 0) : 0,
@@ -2073,8 +2221,8 @@ async function effectTick() {
       };
     }
     
-    if (funcs.dimmer) {
-      const dAbs = absMap.dimmer;
+    if (previewChannels.dimmer != null) {
+      const dAbs = previewChannels.dimmer;
       devicePreviewDimmer[dev.id] = dAbs != null ? (perUniverseMap[u][dAbs] ?? 0) : 0;
     }
   }

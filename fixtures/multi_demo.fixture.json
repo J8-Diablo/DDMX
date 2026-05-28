@@ -1,0 +1,91 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "Multi Demo",
+    "vendor": "DDMX",
+    "mode": "Example",
+    "author": "Codex"
+  },
+  "footprint": 13,
+  "primary": {
+    "dimmer": "dimmer.main",
+    "color": "color.head_a",
+    "position": "position.main"
+  },
+  "groups": [
+    {
+      "id": "dimmer.main",
+      "family": "dimmer",
+      "label": "Main Dimmer",
+      "channels": [
+        { "role": "level", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "dimmer.ring",
+      "family": "dimmer",
+      "label": "Ring Dimmer",
+      "channels": [
+        { "role": "level", "offset": 1, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.head_a",
+      "family": "color",
+      "label": "Head A",
+      "channels": [
+        { "role": "red", "offset": 2, "default": 255 },
+        { "role": "green", "offset": 3, "default": 255 },
+        { "role": "blue", "offset": 4, "default": 255 },
+        { "role": "white", "offset": 5, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.head_b",
+      "family": "color",
+      "label": "Head B",
+      "channels": [
+        { "role": "red", "offset": 6, "default": 255 },
+        { "role": "green", "offset": 7, "default": 255 },
+        { "role": "blue", "offset": 8, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.main",
+      "family": "position",
+      "label": "Pan / Tilt",
+      "channels": [
+        { "role": "pan", "offset": 9, "default": 128, "range_deg": 540 },
+        { "role": "tilt", "offset": 10, "default": 128, "range_deg": 270 }
+      ]
+    },
+    {
+      "id": "other.focus",
+      "family": "other",
+      "kind": "focus",
+      "label": "Focus",
+      "channels": [
+        { "role": "value", "offset": 11, "default": 128, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "other.prism",
+      "family": "other",
+      "kind": "prism",
+      "label": "Prism",
+      "channels": [
+        {
+          "role": "value",
+          "offset": 12,
+          "default": 0,
+          "ui": "slider",
+          "presets": [
+            { "label": "Open", "min": 0, "max": 31 },
+            { "label": "3 Facet", "min": 32, "max": 95 },
+            { "label": "Fast Rotate", "min": 160, "max": 255 }
+          ]
+        }
+      ]
+    }
+  ]
+}

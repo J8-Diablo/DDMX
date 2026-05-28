@@ -1,0 +1,199 @@
+{
+  "schema": "ddmx.fixture/v1",
+  "meta": {
+    "model": "mini moving bar",
+    "vendor": "Rushmead-Theatrical",
+    "mode": "Mode 5",
+    "author": "Conversion Tool"
+  },
+  "footprint": 35,
+  "primary": {
+    "dimmer": "dimmer.main",
+    "color": "color.main",
+    "position": "position.main"
+  },
+  "groups": [
+    {
+      "id": "dimmer.main",
+      "family": "dimmer",
+      "label": "Main Dimmer",
+      "channels": [
+        { "role": "level", "offset": 0, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.main",
+      "family": "color",
+      "label": "Color",
+      "channels": [
+        { "role": "red", "offset": 2, "default": 255 },
+        { "role": "green", "offset": 3, "default": 255 },
+        { "role": "blue", "offset": 4, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.main",
+      "family": "position",
+      "label": "Tilt",
+      "channels": [
+        { "role": "tilt", "offset": 1, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "dimmer.2",
+      "family": "dimmer",
+      "label": "Dimmer 2",
+      "channels": [
+        { "role": "level", "offset": 5, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.2",
+      "family": "color",
+      "label": "Color 2",
+      "channels": [
+        { "role": "red", "offset": 7, "default": 255 },
+        { "role": "green", "offset": 8, "default": 255 },
+        { "role": "blue", "offset": 9, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.2",
+      "family": "position",
+      "label": "Tilt 2",
+      "channels": [
+        { "role": "tilt", "offset": 6, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "dimmer.3",
+      "family": "dimmer",
+      "label": "Dimmer 3",
+      "channels": [
+        { "role": "level", "offset": 10, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.3",
+      "family": "color",
+      "label": "Color 3",
+      "channels": [
+        { "role": "red", "offset": 12, "default": 255 },
+        { "role": "green", "offset": 13, "default": 255 },
+        { "role": "blue", "offset": 14, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.3",
+      "family": "position",
+      "label": "Tilt 3",
+      "channels": [
+        { "role": "tilt", "offset": 11, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "dimmer.4",
+      "family": "dimmer",
+      "label": "Dimmer 4",
+      "channels": [
+        { "role": "level", "offset": 15, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.4",
+      "family": "color",
+      "label": "Color 4",
+      "channels": [
+        { "role": "red", "offset": 17, "default": 255 },
+        { "role": "green", "offset": 18, "default": 255 },
+        { "role": "blue", "offset": 19, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.4",
+      "family": "position",
+      "label": "Tilt 4",
+      "channels": [
+        { "role": "tilt", "offset": 16, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "dimmer.5",
+      "family": "dimmer",
+      "label": "Dimmer 5",
+      "channels": [
+        { "role": "level", "offset": 20, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.5",
+      "family": "color",
+      "label": "Color 5",
+      "channels": [
+        { "role": "red", "offset": 22, "default": 255 },
+        { "role": "green", "offset": 23, "default": 255 },
+        { "role": "blue", "offset": 24, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.5",
+      "family": "position",
+      "label": "Tilt 5",
+      "channels": [
+        { "role": "tilt", "offset": 21, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "dimmer.6",
+      "family": "dimmer",
+      "label": "Dimmer 6",
+      "channels": [
+        { "role": "level", "offset": 25, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.6",
+      "family": "color",
+      "label": "Color 6",
+      "channels": [
+        { "role": "red", "offset": 27, "default": 255 },
+        { "role": "green", "offset": 28, "default": 255 },
+        { "role": "blue", "offset": 29, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.6",
+      "family": "position",
+      "label": "Tilt 6",
+      "channels": [
+        { "role": "tilt", "offset": 26, "default": 128, "range_deg": 720 }
+      ]
+    },
+    {
+      "id": "dimmer.7",
+      "family": "dimmer",
+      "label": "Dimmer 7",
+      "channels": [
+        { "role": "level", "offset": 30, "default": 0, "ui": "slider" }
+      ]
+    },
+    {
+      "id": "color.7",
+      "family": "color",
+      "label": "Color 7",
+      "channels": [
+        { "role": "red", "offset": 32, "default": 255 },
+        { "role": "green", "offset": 33, "default": 255 },
+        { "role": "blue", "offset": 34, "default": 255 }
+      ]
+    },
+    {
+      "id": "position.7",
+      "family": "position",
+      "label": "Tilt 7",
+      "channels": [
+        { "role": "tilt", "offset": 31, "default": 128, "range_deg": 720 }
+      ]
+    }
+  ]
+}

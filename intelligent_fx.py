@@ -11,9 +11,9 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from runtime_paths import DATA_DIR
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-INTELLIGENT_EFFECTS_DIR = os.path.join(BASE_DIR, "intelligent_effects")
+INTELLIGENT_EFFECTS_DIR = os.path.join(DATA_DIR, "intelligent_effects")
 
 
 def clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -37,12 +37,19 @@ def normalize_targets(targets: Any) -> List[str]:
             continue
         if key in ("color", "rgb"):
             out.extend(["r", "g", "b"])
-        elif key in ("dimmer", "r", "g", "b", "pan", "tilt"):
+        else:
             out.append(key)
     return list(dict.fromkeys(out))
 
 
 def _group_index_for_device(group: Dict[str, Any], device_id: str) -> Tuple[int, int]:
+    effect_members = group.get("effect_member_ids") or group.get("effectMemberIds") or []
+    if isinstance(effect_members, list) and effect_members:
+        order = [str(x) for x in effect_members]
+        idx = order.index(str(device_id)) if str(device_id) in order else 0
+        total = len(order) if order else 1
+        return idx, total
+
     order = [str(x) for x in group.get("deviceIds") or group.get("device_ids") or []]
     selection_groups = group.get("selection_groups")
     if isinstance(selection_groups, list) and selection_groups:
@@ -375,7 +382,7 @@ def _ctx_fields(ctx: Dict[str, Any]) -> Tuple[Dict[str, Any], float, int, int, s
     t_ms = float(ctx.get("t_ms") or 0.0)
     device_index = int(ctx.get("device_index") or 0)
     device_count = max(1, int(ctx.get("device_count") or 1))
-    device_id = str(ctx.get("device_id") or "")
+    device_id = str(ctx.get("member_id") or ctx.get("device_id") or "")
     target = str(ctx.get("target") or "")
     return params, t_ms, device_index, device_count, device_id, target
 
