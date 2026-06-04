@@ -3928,3 +3928,42 @@ body.cue-editor-mode-timeline .main-grid {
 .cues-panel > [data-bgroup="sync"], .cues-panel > [data-bgroup="autolight"] {
   flex: 1 1 auto; max-height: none; overflow: auto; order: 5;
 }
+
+/* ============================================================
+   Global compaction — denser UI (smaller text/controls/paddings).
+   Appended last so it sets the new defaults; specific rules still win.
+   ============================================================ */
+body { font-size: 13px; }
+.topbar { padding: 5px 12px; }
+.topbar h1 { font-size: 15px; }
+.main-grid,
+body.cue-editor-mode-timeline .main-grid { height: calc(100vh - 46px); padding: 5px 7px; gap: 5px; }
+
+.panel { padding: 7px; gap: 5px; border-radius: 10px; }
+.panel-header h2 { font-size: 13px; }
+.panel-header .muted, .muted { font-size: 11px; }
+
+button { font-size: 12px; padding: 4px 9px; }
+input, select, textarea { font-size: 12px; padding: 3px 6px; }
+label { font-size: 12px; }
+h3 { font-size: 12px; }
+
+/* Controller density */
+.ctrl-box { padding: 6px; gap: 4px; }
+.ctrl-box h3 { font-size: 11px; margin: 0 0 3px; }
+.controller-tabs .tab-btn { padding: 3px 10px; font-size: 12px; }
+.fixture-group-card { padding: 6px; margin-bottom: 6px; }
+.fixture-group-title { font-size: 11px; margin-bottom: 5px; }
+.fixture-presets button { font-size: 10px; padding: 3px 6px; }
+
+/* Rig toolbars density */
+.add-device-bar { gap: 5px; }
+.add-device-bar label, .add-device-bar input, .add-device-bar select { font-size: 11px; }
+.add-device-bar button { padding: 4px 10px; }
+.rig-type-bar, .rig-sort-bar { font-size: 11px; }
+
+/* Cue toolbar / table density */
+.cue-toolbar-title { font-size: 11px; }
+.cue-table { font-size: 12px; }
+.cue-table th, .cue-table td { padding: 3px 8px; }
+.cue-view-btn, .cues-tab-btn { padding: 3px 10px; font-size: 11px; }
