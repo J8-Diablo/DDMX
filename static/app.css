@@ -3862,3 +3862,9 @@ body.cue-editor-mode-timeline .main-grid {
    properties panel) — hide it so the timeline fills the bottom panel. */
 body.cue-editor-mode-timeline .cues-panel > .cue-props { display: none; }
 .cues-panel > #timeline-editor:not(.hidden) { min-height: 180px; }
+
+/* Direct Cue list / Timeline view toggle in the cue toolbar. */
+.cue-view-toggle { display: inline-flex; margin-left: auto; border: 1px solid var(--border, rgba(148,163,184,0.3)); border-radius: 6px; overflow: hidden; }
+.cue-view-btn { padding: 4px 10px; font-size: 12px; background: transparent; border: none; color: var(--text-muted, #94a3b8); cursor: pointer; }
+.cue-view-btn + .cue-view-btn { border-left: 1px solid var(--border, rgba(148,163,184,0.3)); }
+.cue-view-btn.active { background: var(--accent, #2563eb); color: #fff; font-weight: 600; }

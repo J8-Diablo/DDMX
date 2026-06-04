@@ -338,5 +338,7 @@
   "timeline.propFadeIn": "Dissolvenza in (ms)",
   "timeline.propFadeOut": "Dissolvenza out (ms)",
   "timeline.propOperator": "Tipo dissolvenza",
-  "timeline.fadeCut": "Taglio"
+  "timeline.fadeCut": "Taglio",
+  "cues.viewClassic": "Lista cue",
+  "cues.viewTimeline": "Timeline"
 }

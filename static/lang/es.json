@@ -338,5 +338,7 @@
   "timeline.propFadeIn": "Fundido de entrada (ms)",
   "timeline.propFadeOut": "Fundido de salida (ms)",
   "timeline.propOperator": "Tipo de fundido",
-  "timeline.fadeCut": "Corte"
+  "timeline.fadeCut": "Corte",
+  "cues.viewClassic": "Lista de cues",
+  "cues.viewTimeline": "Timeline"
 }

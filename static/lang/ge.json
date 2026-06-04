@@ -338,5 +338,7 @@
   "timeline.propFadeIn": "Einblenden (ms)",
   "timeline.propFadeOut": "Ausblenden (ms)",
   "timeline.propOperator": "Blendtyp",
-  "timeline.fadeCut": "Schnitt"
+  "timeline.fadeCut": "Schnitt",
+  "cues.viewClassic": "Cue-Liste",
+  "cues.viewTimeline": "Timeline"
 }

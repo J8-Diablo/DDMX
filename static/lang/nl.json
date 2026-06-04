@@ -338,5 +338,7 @@
   "timeline.propFadeIn": "Infaden (ms)",
   "timeline.propFadeOut": "Uitfaden (ms)",
   "timeline.propOperator": "Fadetype",
-  "timeline.fadeCut": "Cut"
+  "timeline.fadeCut": "Cut",
+  "cues.viewClassic": "Cue-lijst",
+  "cues.viewTimeline": "Timeline"
 }

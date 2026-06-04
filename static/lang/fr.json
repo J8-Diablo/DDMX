@@ -394,5 +394,7 @@
   "timeline.propFadeIn": "Fondu d'entrée (ms)",
   "timeline.propFadeOut": "Fondu de sortie (ms)",
   "timeline.propOperator": "Type de fondu",
-  "timeline.fadeCut": "Coupe"
+  "timeline.fadeCut": "Coupe",
+  "cues.viewClassic": "Liste de cues",
+  "cues.viewTimeline": "Timeline"
 }

@@ -394,5 +394,7 @@
   "timeline.propFadeIn": "Fade in (ms)",
   "timeline.propFadeOut": "Fade out (ms)",
   "timeline.propOperator": "Fade type",
-  "timeline.fadeCut": "Cut"
+  "timeline.fadeCut": "Cut",
+  "cues.viewClassic": "Cue list",
+  "cues.viewTimeline": "Timeline"
 }

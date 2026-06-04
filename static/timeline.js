@@ -103,10 +103,19 @@
     return controller;
   }
 
+  function updateViewToggle() {
+    const tl = isTimelineEditorMode();
+    const c = document.getElementById("cue-view-classic");
+    const t = document.getElementById("cue-view-timeline");
+    if (c) c.classList.toggle("active", !tl);
+    if (t) t.classList.toggle("active", tl);
+  }
+
   function applyCueEditorLayout() {
     const body = cueEditorRoot();
     const mainGrid = document.querySelector(".main-grid");
     const controller = ensureControllerLayoutAnchors();
+    updateViewToggle();
     if (!body || !mainGrid || !controller) return;
 
     const timelineMode = isTimelineEditorMode();
@@ -1496,6 +1505,18 @@
         scheduleCueEditorSettingsPersist();
       });
     }
+    // Direct Cue list / Timeline view toggle (bypasses the settings modal).
+    [["cue-view-classic", "classic"], ["cue-view-timeline", "timeline"]].forEach(([id, mode]) => {
+      const btn = document.getElementById(id);
+      if (btn && btn.dataset.bound !== "1") {
+        btn.dataset.bound = "1";
+        btn.addEventListener("click", () => {
+          if (cueEditorSettings.view_mode === mode) return;
+          setCueEditorSettings({ ...cueEditorSettings, view_mode: mode }, { persist: true });
+        });
+      }
+    });
+    updateViewToggle();
   }
 
   async function loadCueEditorSettings() {
