@@ -2515,14 +2515,26 @@ input[type="range"].vertical.tilt-slider {
   display: flex;
 }
 
+/* The modals live inside .cues-panel (a .panel), so the generic
+   `.panel > * { position: relative; z-index: 1 }` rule matches them at equal
+   specificity. This higher-specificity guard guarantees the modal stays a
+   viewport-fixed top-layer element instead of being trapped/stacked behind
+   sibling panels (symptom: backdrop shows but the panel sits behind). */
+.panel > .autolight-modal {
+  position: fixed;
+  z-index: 9000;
+}
+
 .autolight-modal-backdrop {
   position: absolute;
   inset: 0;
+  z-index: 0;
   background: rgba(5, 8, 14, 0.72);
 }
 
 .autolight-modal-panel {
   position: relative;
+  z-index: 1;
   width: min(960px, 92vw);
   max-height: 88vh;
   display: flex;
@@ -3709,3 +3721,144 @@ input[type="range"].vertical.tilt-slider {
 .autolight-guardrails summary { cursor: pointer; opacity: 0.8; }
 .autolight-guardrails .autolight-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .autolight-guardrails input[type="range"] { flex: 1; }
+
+/* ============================================================
+   Position calibration panel (AutoLight 2.0) — inline, not modal
+   ============================================================ */
+.calib-panel { margin: 4px 0; font-size: 0.85rem; }
+.calib-panel > summary { cursor: pointer; opacity: 0.85; padding: 4px 0; }
+.calib-hint { font-size: 0.78rem; margin: 4px 0 8px; }
+.calib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.calib-table-wrap { max-height: 240px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; }
+.calib-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.calib-table th, .calib-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.calib-table thead th { position: sticky; top: 0; background: var(--panel, #11151d); opacity: 0.85; font-weight: 600; }
+.calib-table .calib-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calib-table .calib-num { width: 64px; }
+.calib-table .calib-inv { text-align: center; }
+
+/* ============================================================
+   Timeline 2.0 — Premiere-style clips + properties panel
+   ============================================================ */
+.timeline-block {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 7px;
+  border: 1px solid hsla(var(--clip-hue, 210), 70%, 60%, 0.55);
+  background: linear-gradient(180deg, hsla(var(--clip-hue, 210), 60%, 30%, 0.96), hsla(var(--clip-hue, 210), 58%, 15%, 0.96));
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  cursor: grab;
+}
+.timeline-block.selected { border-color: #ffd166; box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.6), 0 4px 12px rgba(0, 0, 0, 0.55); }
+.timeline-block.playing { border-color: #6ee7a8; box-shadow: 0 0 0 2px rgba(110, 231, 168, 0.5); }
+.timeline-block.loop-linked { border-style: dashed; }
+.tl-clip-title {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2;
+  display: flex; justify-content: space-between; gap: 6px;
+  padding: 3px 9px; font-size: 11px; font-weight: 600;
+  background: hsla(var(--clip-hue, 210), 60%, 22%, 0.88);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+}
+.tl-clip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-clip-dur { opacity: 0.7; font-weight: 500; }
+.tl-clip-fade { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+.tl-fade-area { fill: hsla(var(--clip-hue, 210), 85%, 65%, 0.18); }
+.tl-fade-line { fill: none; stroke: hsla(var(--clip-hue, 210), 92%, 78%, 0.92); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.tl-fade-handle {
+  position: absolute; top: 18px; width: 11px; height: 11px; margin-left: -6px; z-index: 4;
+  background: #ffd166; border: 1px solid rgba(0, 0, 0, 0.55); border-radius: 50%; cursor: ew-resize;
+}
+.tl-fade-handle:hover { background: #fff; transform: scale(1.15); }
+.tl-clip-resize { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 3; }
+.tl-resize-left { left: 0; }
+.tl-resize-right { right: 0; }
+.tl-clip-resize:hover { background: rgba(255, 255, 255, 0.28); }
+.tl-clip-op {
+  position: absolute; bottom: 2px; right: 4px; z-index: 2; pointer-events: none;
+  font-size: 10px; font-weight: 700; opacity: 0.85;
+  background: rgba(0, 0, 0, 0.45); padding: 0 5px; border-radius: 3px;
+}
+/* Properties panel */
+.timeline-props { border-top: 1px solid rgba(148, 163, 184, 0.2); padding: 8px 10px; background: rgba(2, 6, 23, 0.55); }
+.timeline-props-empty { font-size: 12px; padding: 6px; }
+.tl-props-head { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-bottom: 6px; }
+.tl-props-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.tl-prop { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+.tl-prop span { opacity: 0.7; }
+.tl-prop input, .tl-prop select { width: 100%; box-sizing: border-box; }
+.tl-prop-wide { grid-column: span 2; }
+
+/* ============================================================
+   Fixed-viewport layout — fit a maximized window without page scroll.
+   Unifies classic + timeline modes; overrides the older flex/grid rules.
+   ============================================================ */
+html, body { height: 100%; }
+body { overflow: hidden; }
+
+.main-grid,
+body.cue-editor-mode-timeline .main-grid {
+  height: calc(100vh - 50px);
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.85fr);
+  grid-template-rows: minmax(0, 1.12fr) minmax(0, 0.88fr);
+  grid-template-areas: "rig controller" "cues cues";
+  gap: 8px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  align-items: stretch;
+  overflow: hidden;
+}
+.main-grid > .rig-panel,
+body.cue-editor-mode-timeline .rig-panel {
+  grid-area: rig; margin: 0; min-height: 0; max-height: none; overflow: hidden;
+}
+.main-grid > .controller-panel,
+body.cue-editor-mode-timeline .controller-panel {
+  grid-area: controller; margin: 0; min-height: 0; max-height: none; overflow: auto;
+}
+.main-grid > .cues-panel,
+body.cue-editor-mode-timeline .cues-panel {
+  grid-area: cues; margin: 0; min-height: 0; max-height: none; overflow: auto;
+}
+
+/* Rig canvas fills its cell (toolbars stay fixed height above it). */
+.rig-panel { min-height: 0; }
+#rig-canvas { flex: 1 1 0; min-height: 0; width: 100%; height: 100%; }
+
+/* Cues panel: prioritise the cue table / timeline, push optional feature
+   sections (Sync Video, Auto-Light) to the bottom — visual reorder only. */
+.cues-panel { display: flex; flex-direction: column; gap: 6px; }
+.cues-panel > * { flex: 0 0 auto; }
+.cues-panel > .cue-files { order: 0; }
+.cues-panel > .cue-toolbar { order: 1; }
+.cues-panel > #playback-bar { order: 2; }
+.cues-panel > .cue-table-container { order: 3; flex: 1 1 0; min-height: 90px; max-height: none; overflow: auto; }
+.cues-panel > #timeline-editor:not(.hidden) { order: 3; flex: 1 1 0; min-height: 140px; }
+.cues-panel > .cue-props { order: 4; }
+.cues-panel > #sync-video-section { order: 5; max-height: 32vh; overflow: auto; }
+.cues-panel > #autolight-section { order: 6; }
+/* Timeline editor fills its region instead of forcing a 420px min-height. */
+.timeline-editor { min-height: 0; }
+.cues-panel > #timeline-editor:not(.hidden) { display: flex; flex-direction: column; }
+.timeline-scroll { flex: 1 1 0; min-height: 0; }
+
+/* Give the bottom (cues/timeline) a bit more height; cap optional sections. */
+.main-grid,
+body.cue-editor-mode-timeline .main-grid {
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1.08fr);
+}
+.cues-panel > #sync-video-section { max-height: 26vh; }
+.cues-panel > #autolight-section { max-height: 30vh; overflow: auto; }
+/* Compaction pass: tighter paddings + slightly smaller controls. */
+.panel { padding: 8px; gap: 6px; }
+.panel-header h2 { font-size: 14px; margin: 0; }
+.cue-toolbar, .cue-files { gap: 6px; }
+.cue-toolbar button, .cue-files button, .controller-actions button { padding: 4px 8px; font-size: 12px; }
+.ctrl-box { min-height: 0; padding: 6px; gap: 4px; }
+.ctrl-box h3 { font-size: 12px; margin: 0 0 4px; }
+
+/* In timeline mode the classic cue-props is redundant (the timeline has its own
+   properties panel) — hide it so the timeline fills the bottom panel. */
+body.cue-editor-mode-timeline .cues-panel > .cue-props { display: none; }
+.cues-panel > #timeline-editor:not(.hidden) { min-height: 180px; }

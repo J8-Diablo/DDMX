@@ -50,3 +50,8 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+# Throwaway dev/test helpers (not committed)
+_*.py
+_*.wav
+_*.png

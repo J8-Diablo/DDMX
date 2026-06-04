@@ -214,6 +214,10 @@ class TimelineBlock:
     end_ms: int
     fade_start_ms: int = 0
     fade_end_ms: int = 0
+    # Premiere-style edge fades (durations from each edge, in ms). When > 0 they
+    # take precedence over the legacy fade_start/fade_end ramp.
+    fade_in_ms: int = 0
+    fade_out_ms: int = 0
     fade_operator: str = ""
     cue_payload: Dict[str, Any] = field(default_factory=dict)
     device_order: List[str] = field(default_factory=list)
@@ -606,6 +610,8 @@ class DMXRenderEngine:
                 length_ms = max(1, int(raw.get("length_ms", 1) or 1))
                 fade_start_ms = max(0, int(raw.get("fade_start_ms", 0) or 0))
                 fade_end_ms = max(fade_start_ms, int(raw.get("fade_end_ms", 0) or 0))
+                fade_in_ms = max(0, int(raw.get("fade_in_ms", 0) or 0))
+                fade_out_ms = max(0, int(raw.get("fade_out_ms", 0) or 0))
                 lane = max(0, int(raw.get("lane", 0) or 0))
                 plan_index = int(raw.get("plan_index", len(normalized)) or 0)
                 cue_index = int(raw.get("cue_index", -1) or -1)
@@ -627,6 +633,8 @@ class DMXRenderEngine:
                     end_ms=start_ms + length_ms,
                     fade_start_ms=min(length_ms, fade_start_ms),
                     fade_end_ms=min(length_ms, fade_end_ms),
+                    fade_in_ms=min(length_ms, fade_in_ms),
+                    fade_out_ms=min(length_ms, fade_out_ms),
                     fade_operator=self._normalize_timeline_operator(raw.get("fade_operator")),
                     cue_payload=cue_payload,
                     device_order=[str(x) for x in device_order],
@@ -674,8 +682,25 @@ class DMXRenderEngine:
 
     def _timeline_block_fade_mix(self, block: TimelineBlock, elapsed_ms: int) -> float:
         local_ms = elapsed_ms - int(block.start_ms)
+        length = max(1, int(block.length_ms))
         if local_ms < 0:
             return 0.0
+        if local_ms >= length:
+            return 0.0
+
+        fade_in = max(0, int(getattr(block, "fade_in_ms", 0)))
+        fade_out = max(0, int(getattr(block, "fade_out_ms", 0)))
+        # Premiere-style edge fades take precedence when set.
+        if fade_in > 0 or fade_out > 0:
+            mix = 1.0
+            if fade_in > 0 and local_ms < fade_in:
+                mix = min(mix, float(local_ms) / float(fade_in))
+            remaining = length - local_ms
+            if fade_out > 0 and remaining < fade_out:
+                mix = min(mix, float(remaining) / float(fade_out))
+            return max(0.0, min(1.0, mix))
+
+        # Legacy single-ramp model (fade_start -> fade_end).
         fade_start = max(0, int(block.fade_start_ms))
         fade_end = max(fade_start, int(block.fade_end_ms))
         if fade_end <= fade_start:

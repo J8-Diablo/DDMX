@@ -17,6 +17,9 @@ const PROJECT_EXT = ".ddmxproj";
 
 let currentProjectFile = null;     // e.g. "MyShow.ddmxproj" (null = no named project)
 window.projectRigLocked = false;   // true while a project owns the rig
+// Cue lists belonging to the current project. The cue dropdown is scoped to
+// this (not the raw cue/ dir): a blank / absent project shows no cue lists.
+window.projectCueFiles = [];
 
 function $proj(id) { return document.getElementById(id); }
 function _pt(key, fallback) { return (typeof window.t === "function") ? window.t(key, fallback) : fallback; }
@@ -30,17 +33,16 @@ function updateProjectLabel() {
 // ---- Gather current state into a project document ---------------------------
 
 async function _projectFetchCueLists() {
+  // Only gather the cue lists that belong to THIS project (scoped), not every
+  // file in the shared cue/ directory.
   const out = {};
-  try {
-    const r = await fetch("/api/cue_files");
-    const files = (await r.json()).files || [];
-    for (const f of files) {
-      try {
-        const cr = await fetch(`/api/cues/${encodeURIComponent(f)}`);
-        if (cr.ok) out[f] = await cr.json();
-      } catch (e) { /* skip unreadable cue */ }
-    }
-  } catch (e) { console.warn("[project] cue list gather failed", e); }
+  const files = Array.isArray(window.projectCueFiles) ? window.projectCueFiles : [];
+  for (const f of files) {
+    try {
+      const cr = await fetch(`/api/cues/${encodeURIComponent(f)}`);
+      if (cr.ok) out[f] = await cr.json();
+    } catch (e) { /* skip unreadable cue */ }
+  }
   return out;
 }
 
@@ -102,8 +104,9 @@ async function applyProjectData(data, file) {
   }
   nextDeviceId = Number.isFinite(rig.next_device_id) ? rig.next_device_id : (maxId + 1);
 
-  // 3) Restore the project's cue lists into the cue store.
+  // 3) Restore the project's cue lists into the cue store + scope the dropdown.
   const cueLists = (data && data.cue_lists) || {};
+  window.projectCueFiles = Object.keys(cueLists);
   for (const [fname, content] of Object.entries(cueLists)) {
     try {
       await fetch(`/api/cues/${encodeURIComponent(fname)}`, {
@@ -132,6 +135,7 @@ async function applyProjectData(data, file) {
     if (sel) sel.value = active;
     await loadCueFile(active);
   }
+  if (typeof window.refreshCalibrationPanel === "function") window.refreshCalibrationPanel();
   updateProjectLabel();
 }
 
@@ -151,6 +155,7 @@ async function projectNewBlank() {
   virtualGroups = {};
   currentCueFilename = null;
   currentProjectFile = null;
+  window.projectCueFiles = [];      // blank project owns no cue lists
   selectedCueIndex = null;
   if (selectedCueIndices && typeof selectedCueIndices.clear === "function") selectedCueIndices.clear();
   window.projectRigLocked = true; // a (blank) project is active; rig is project-owned
@@ -158,7 +163,9 @@ async function projectNewBlank() {
   if (typeof syncRigToBackend === "function") { try { await syncRigToBackend(true); } catch (e) {} }
   if (typeof drawRig === "function") drawRig();
   if (typeof renderCueTable === "function") renderCueTable();
+  if (typeof refreshCueFileList === "function") { try { await refreshCueFileList(); } catch (e) {} }
   if (typeof refreshControllerFromSelection === "function") refreshControllerFromSelection();
+  if (typeof window.refreshCalibrationPanel === "function") window.refreshCalibrationPanel();
   updateProjectLabel();
   if (typeof toast === "function") toast(_pt("project.newDone", "New blank project — IDs reset to 1"), "success");
 }
@@ -343,6 +350,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const imp = $proj("project-import-input");
   if (imp) imp.addEventListener("change", projectHandleImportFile);
 
+  // The app boots into an implicit BLANK project (no project open): empty rig
+  // owned by the project, no cue lists. The user opens/imports a project or
+  // builds one and saves it. The cue dropdown is populated by the boot
+  // refreshCueFileList() from window.projectCueFiles (empty here).
+  currentProjectFile = null;
+  window.projectCueFiles = [];
+  window.projectRigLocked = true;
   updateProjectLabel();
 });
 

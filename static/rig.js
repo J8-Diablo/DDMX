@@ -2190,9 +2190,10 @@ function renderGlobalPositionGroupControls(container, groups) {
 // Distribute Pan/Tilt across selection
 ///////////////////////
 
+// Distribute works directly in DMX values (0-255), not degrees.
 let distributeState = {
-  pan:  { from: 0, to: 90, mode: "linear", seed: null },
-  tilt: { from: 0, to: 90, mode: "linear", seed: null },
+  pan:  { from: 0, to: 255, mode: "linear", seed: null },
+  tilt: { from: 0, to: 255, mode: "linear", seed: null },
 };
 
 function enumeratePositionSlots(role) {
@@ -2241,8 +2242,8 @@ function applyDistribute(role) {
   if (n < 2) return;
 
   const st = distributeState[role];
-  const fromDeg = st.from;
-  const toDeg = st.to;
+  const fromVal = st.from;
+  const toVal = st.to;
 
   let order = slots.map((_, i) => i);
   if (st.mode === "random") {
@@ -2253,8 +2254,8 @@ function applyDistribute(role) {
   for (let i = 0; i < n; i++) {
     const slot = slots[order[i]];
     const t = i / (n - 1);
-    const angle = fromDeg + (toDeg - fromDeg) * t;
-    const dmx = Math.max(0, Math.min(255, Math.round((angle / slot.rangeDeg) * 255)));
+    // from/to are DMX values directly; interpolate and clamp to 0-255.
+    const dmx = Math.max(0, Math.min(255, Math.round(fromVal + (toVal - fromVal) * t)));
     deviceLocalValues[slot.deviceId] ||= {};
     deviceLocalValues[slot.deviceId][slot.offset] = dmx;
   }
@@ -2302,6 +2303,8 @@ function addDistributeControls(container) {
     const fromInput = document.createElement("input");
     fromInput.type = "number";
     fromInput.step = "1";
+    fromInput.min = "0";
+    fromInput.max = "255";
     fromInput.className = "distribute-input";
     fromInput.value = st.from;
     row.appendChild(fromInput);
@@ -2319,14 +2322,16 @@ function addDistributeControls(container) {
     const toInput = document.createElement("input");
     toInput.type = "number";
     toInput.step = "1";
+    toInput.min = "0";
+    toInput.max = "255";
     toInput.className = "distribute-input";
     toInput.value = st.to;
     row.appendChild(toInput);
 
-    const deg = document.createElement("span");
-    deg.className = "distribute-small";
-    deg.textContent = "°";
-    row.appendChild(deg);
+    const unit = document.createElement("span");
+    unit.className = "distribute-small";
+    unit.textContent = "DMX";
+    row.appendChild(unit);
 
     block.appendChild(row);
 
@@ -2336,8 +2341,8 @@ function addDistributeControls(container) {
     const fromSlider = document.createElement("input");
     fromSlider.type = "range";
     fromSlider.className = "distribute-slider";
-    fromSlider.min = "-360";
-    fromSlider.max = "360";
+    fromSlider.min = "0";
+    fromSlider.max = "255";
     fromSlider.step = "1";
     fromSlider.value = st.from;
     sliderRow.appendChild(fromSlider);
@@ -2345,8 +2350,8 @@ function addDistributeControls(container) {
     const toSlider = document.createElement("input");
     toSlider.type = "range";
     toSlider.className = "distribute-slider";
-    toSlider.min = "-360";
-    toSlider.max = "360";
+    toSlider.min = "0";
+    toSlider.max = "255";
     toSlider.step = "1";
     toSlider.value = st.to;
     sliderRow.appendChild(toSlider);
@@ -2378,15 +2383,16 @@ function addDistributeControls(container) {
     btnRow.appendChild(randomBtn);
     block.appendChild(btnRow);
 
+    const clampDmx = (n) => Math.max(0, Math.min(255, n));
     function setFrom(v) {
       const n = parseInt(v, 10);
-      st.from = Number.isFinite(n) ? n : 0;
+      st.from = clampDmx(Number.isFinite(n) ? n : 0);
       fromInput.value = st.from;
       fromSlider.value = st.from;
     }
     function setTo(v) {
       const n = parseInt(v, 10);
-      st.to = Number.isFinite(n) ? n : 0;
+      st.to = clampDmx(Number.isFinite(n) ? n : 0);
       toInput.value = st.to;
       toSlider.value = st.to;
     }

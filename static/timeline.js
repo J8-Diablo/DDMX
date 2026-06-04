@@ -212,6 +212,14 @@
     const fallbackFadeEnd = durationMeta.total_ms > 0 ? durationMeta.total_ms : Math.min(meta.length_ms, Math.max(0, durationMeta.base_ms || 0));
     meta.fade_end_ms = clamp(parseInt(meta.fade_end_ms, 10) || fallbackFadeEnd || 0, meta.fade_start_ms, meta.length_ms);
     meta.fade_operator = OPERATOR_OPTIONS.includes(String(meta.fade_operator || "").trim()) ? String(meta.fade_operator || "").trim() : durationMeta.operator;
+    // Premiere-style edge fades (durations from each edge). Migrate from the
+    // legacy fade_start/fade_end ramp the first time we see this block.
+    let fadeIn = parseInt(meta.fade_in_ms, 10);
+    let fadeOut = parseInt(meta.fade_out_ms, 10);
+    if (!Number.isFinite(fadeIn)) fadeIn = Math.max(0, meta.fade_end_ms - meta.fade_start_ms);
+    if (!Number.isFinite(fadeOut)) fadeOut = 0;
+    meta.fade_in_ms = clamp(fadeIn, 0, meta.length_ms);
+    meta.fade_out_ms = clamp(fadeOut, 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
     return meta;
   }
 
@@ -222,6 +230,30 @@
     meta.length_ms = Math.max(MIN_BLOCK_MS, parseInt(meta.length_ms, 10) || MIN_BLOCK_MS);
     meta.fade_start_ms = clamp(parseInt(meta.fade_start_ms, 10) || 0, 0, meta.length_ms);
     meta.fade_end_ms = clamp(parseInt(meta.fade_end_ms, 10) || 0, meta.fade_start_ms, meta.length_ms);
+    meta.fade_in_ms = clamp(parseInt(meta.fade_in_ms, 10) || 0, 0, meta.length_ms);
+    meta.fade_out_ms = clamp(parseInt(meta.fade_out_ms, 10) || 0, 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
+  }
+
+  // Continuous Timeline -> CueList sync: keep each step's classic sleep/duration
+  // consistent with its timeline block so both views (and classic playback)
+  // stay in agreement. Ordering is by block start time.
+  function syncSequenceFromTimeline() {
+    const seq = Array.isArray(cuesObj?.sequence) ? cuesObj.sequence : [];
+    const order = seq
+      .map((step, idx) => ({ idx, meta: ensureStepTimeline(step) }))
+      .filter((e) => e.meta)
+      .sort((a, b) => (a.meta.start_ms - b.meta.start_ms) || (a.idx - b.idx));
+    let prevEnd = 0;
+    for (const { idx, meta } of order) {
+      const step = seq[idx];
+      if (!step) continue;
+      const sleep = Math.max(0, Math.round(meta.start_ms - prevEnd));
+      step.sleep = sleep;
+      // Encode fade timing into the classic duration string.
+      const op = meta.fade_operator || "";
+      step.duration = op ? `${meta.fade_in_ms} ${op} ${meta.fade_out_ms}` : String(meta.length_ms);
+      prevEnd = meta.start_ms + meta.length_ms;
+    }
   }
 
   function rebuildLinearTimelineFromSequence() {
@@ -355,6 +387,8 @@
               end_ms: absoluteStartMs + meta.length_ms,
               fade_start_ms: meta.fade_start_ms,
               fade_end_ms: meta.fade_end_ms,
+              fade_in_ms: meta.fade_in_ms,
+              fade_out_ms: meta.fade_out_ms,
               fade_operator: meta.fade_operator || "",
               cue_name: sourceStep.name || `Cue ${sourceIndex + 1}`,
               cue: sourceStep,
@@ -381,6 +415,8 @@
         end_ms: meta.start_ms + meta.length_ms,
         fade_start_ms: meta.fade_start_ms,
         fade_end_ms: meta.fade_end_ms,
+        fade_in_ms: meta.fade_in_ms,
+        fade_out_ms: meta.fade_out_ms,
         fade_operator: meta.fade_operator || "",
         cue_name: step.name || `Cue ${index + 1}`,
         cue: step,
@@ -1087,6 +1123,8 @@
       length_ms: meta.length_ms,
       fade_start_ms: meta.fade_start_ms,
       fade_end_ms: meta.fade_end_ms,
+      fade_in_ms: meta.fade_in_ms,
+      fade_out_ms: meta.fade_out_ms,
       origin_client_x: event.clientX,
       origin_client_y: event.clientY,
     };
@@ -1127,24 +1165,24 @@
       meta.lane = Math.max(0, dragState.lane + deltaLane);
     } else if (dragState.mode === "resize") {
       meta.length_ms = Math.max(MIN_BLOCK_MS, dragState.length_ms + deltaMs);
-    } else if (dragState.mode === "fade") {
-      const localCursorMs = clamp(
-        Math.round((event.clientX - dragState.origin_client_x) / pxPerMs()) + (dragState.fade_start_ms + dragState.fade_end_ms) / 2,
-        0,
-        meta.length_ms
-      );
-      const startDistance = Math.abs(localCursorMs - dragState.fade_start_ms);
-      const endDistance = Math.abs(localCursorMs - dragState.fade_end_ms);
-      if (startDistance <= endDistance) {
-        meta.fade_start_ms = clamp(localCursorMs, 0, meta.fade_end_ms);
-      } else {
-        meta.fade_end_ms = clamp(localCursorMs, meta.fade_start_ms, meta.length_ms);
-      }
+    } else if (dragState.mode === "resize-left") {
+      // Drag the left edge: move start, keep the right edge anchored.
+      const maxDelta = dragState.length_ms - MIN_BLOCK_MS;
+      const d = Math.min(maxDelta, Math.max(-dragState.start_ms, deltaMs));
+      meta.start_ms = Math.max(0, dragState.start_ms + d);
+      meta.length_ms = Math.max(MIN_BLOCK_MS, dragState.length_ms - d);
+    } else if (dragState.mode === "fade-in") {
+      meta.fade_in_ms = clamp(dragState.fade_in_ms + deltaMs, 0, meta.length_ms - meta.fade_out_ms);
+    } else if (dragState.mode === "fade-out") {
+      // Out handle sits at (length - fade_out); dragging it left grows fade-out.
+      meta.fade_out_ms = clamp(dragState.fade_out_ms - deltaMs, 0, meta.length_ms - meta.fade_in_ms);
     }
 
     syncStepTimelineBounds(step);
     resolveTimelineLaneConflicts(dragState.source_index);
+    syncSequenceFromTimeline();
     if (typeof window.renderCueTable === "function") window.renderCueTable();
+    renderTimelinePropertiesPanel();
   }
 
   function stopTimelinePointerDrag() {
@@ -1180,6 +1218,52 @@
     const summary = document.getElementById("timeline-summary");
     if (!summary) return;
     summary.textContent = `${occurrences.length} blocks - ${laneCount} lanes - ${formatMs(totalDurationMs)} - cursor ${formatMs(timelineCursorMs)}`;
+  }
+
+  function renderTimelinePropertiesPanel() {
+    const panel = document.getElementById("timeline-props");
+    if (!panel) return;
+    const tl = (k, f) => (typeof window.t === "function" ? window.t(k, f) : f);
+    const idx = selectedCueIndex;
+    const step = (Number.isInteger(idx) && idx >= 0) ? cuesObj?.sequence?.[idx] : null;
+    if (!step) {
+      panel.innerHTML = `<div class="timeline-props-empty muted">${escapeHtml(tl("timeline.propsEmpty", "Select a clip to edit its properties."))}</div>`;
+      return;
+    }
+    const meta = ensureStepTimeline(step);
+    const opOptions = OPERATOR_OPTIONS
+      .map((op) => `<option value="${op}" ${op === (meta.fade_operator || "") ? "selected" : ""}>${op === "" ? tl("timeline.fadeCut", "Cut") : op}</option>`)
+      .join("");
+    panel.innerHTML = `
+      <div class="tl-props-head">${escapeHtml(tl("timeline.propsTitle", "Clip properties"))}</div>
+      <div class="tl-props-grid">
+        <label class="tl-prop tl-prop-wide"><span>${tl("timeline.propName", "Name")}</span><input id="tlp-name" type="text" value="${escapeHtml(step.name || "")}"></label>
+        <label class="tl-prop"><span>${tl("timeline.propStart", "Start (ms)")}</span><input id="tlp-start" type="number" min="0" step="25" value="${Math.round(meta.start_ms)}"></label>
+        <label class="tl-prop"><span>${tl("timeline.propLength", "Length (ms)")}</span><input id="tlp-length" type="number" min="100" step="25" value="${Math.round(meta.length_ms)}"></label>
+        <label class="tl-prop"><span>${tl("timeline.propLane", "Lane")}</span><input id="tlp-lane" type="number" min="0" step="1" value="${meta.lane}"></label>
+        <label class="tl-prop"><span>${tl("timeline.propFadeIn", "Fade in (ms)")}</span><input id="tlp-fadein" type="number" min="0" step="25" value="${Math.round(meta.fade_in_ms)}"></label>
+        <label class="tl-prop"><span>${tl("timeline.propFadeOut", "Fade out (ms)")}</span><input id="tlp-fadeout" type="number" min="0" step="25" value="${Math.round(meta.fade_out_ms)}"></label>
+        <label class="tl-prop"><span>${tl("timeline.propOperator", "Fade type")}</span><select id="tlp-op">${opOptions}</select></label>
+      </div>
+    `;
+    const apply = () => {
+      const num = (id, def) => { const v = parseInt(document.getElementById(id)?.value, 10); return Number.isFinite(v) ? v : def; };
+      const nameEl = document.getElementById("tlp-name");
+      if (nameEl) step.name = nameEl.value;
+      meta.start_ms = Math.max(0, num("tlp-start", meta.start_ms));
+      meta.length_ms = Math.max(MIN_BLOCK_MS, num("tlp-length", meta.length_ms));
+      meta.lane = Math.max(0, num("tlp-lane", meta.lane));
+      meta.fade_in_ms = clamp(num("tlp-fadein", meta.fade_in_ms), 0, meta.length_ms);
+      meta.fade_out_ms = clamp(num("tlp-fadeout", meta.fade_out_ms), 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
+      const opv = document.getElementById("tlp-op")?.value ?? "";
+      meta.fade_operator = OPERATOR_OPTIONS.includes(opv) ? opv : "";
+      syncStepTimelineBounds(step);
+      resolveTimelineLaneConflicts(idx);
+      syncSequenceFromTimeline();
+      renderTimelineEditor();
+      if (typeof window.renderCueTable === "function") window.renderCueTable();
+    };
+    panel.querySelectorAll("input, select").forEach((el) => el.addEventListener("change", apply));
   }
 
   function renderTimelineEditor() {
@@ -1266,33 +1350,36 @@
       block.style.width = `${Math.max(56, occurrence.length_ms * pxPerMs())}px`;
       block.style.height = `${Math.max(54, laneHeightPx() - 16)}px`;
 
-      const fadeStartPercent = occurrence.length_ms > 0 ? (occurrence.fade_start_ms / occurrence.length_ms) * 100 : 0;
-      const fadeEndPercent = occurrence.length_ms > 0 ? (occurrence.fade_end_ms / occurrence.length_ms) * 100 : 0;
-      const graphPath = `M0,34 L${fadeStartPercent},34 L${fadeEndPercent},6 L100,6`;
+      const len = Math.max(1, occurrence.length_ms);
+      const fiPct = clamp((occurrence.fade_in_ms / len) * 100, 0, 100);
+      const foPct = clamp((occurrence.fade_out_ms / len) * 100, 0, 100);
+      const fiX = fiPct;            // x where fade-in reaches full
+      const foX = 100 - foPct;      // x where fade-out begins
+      // Level envelope (Premiere fade): rises over fade-in, holds, drops over fade-out.
+      const envArea = `M0,100 L${fiX},2 L${foX},2 L100,100 Z`;
+      const envLine = `0,100 ${fiX},2 ${foX},2 100,100`;
+      // Colour the clip by its lane for quick visual grouping.
+      block.style.setProperty("--clip-hue", String((occurrence.lane * 47) % 360));
 
       block.innerHTML = `
-        <div class="timeline-block-header">
-          <div class="timeline-block-name">${escapeHtml(occurrence.cue_name)}</div>
-          <div class="timeline-block-meta">${formatMs(occurrence.length_ms)}</div>
+        <div class="tl-clip-resize tl-resize-left"></div>
+        <div class="tl-clip-resize tl-resize-right"></div>
+        <div class="tl-clip-title">
+          <span class="tl-clip-name">${escapeHtml(occurrence.cue_name)}</span>
+          <span class="tl-clip-dur">${formatMs(occurrence.length_ms)}</span>
         </div>
-        <div class="timeline-block-body">
-          <div class="timeline-block-graph">
-            <svg viewBox="0 0 100 40" preserveAspectRatio="none">
-              <path d="${graphPath}" fill="none" stroke="rgba(147, 197, 253, 0.95)" stroke-width="2" />
-            </svg>
-            <div class="timeline-fade-handle" style="left:${fadeStartPercent}%"></div>
-            <div class="timeline-fade-handle" style="left:${fadeEndPercent}%"></div>
-          </div>
-          <div class="timeline-block-footer">
-            <span>${formatMs(occurrence.start_ms)}</span>
-            <span>${occurrence.fade_operator || "Cut"}</span>
-          </div>
-        </div>
-        <div class="timeline-block-resize"></div>
+        <svg class="tl-clip-fade" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <path class="tl-fade-area" d="${envArea}" />
+          <polyline class="tl-fade-line" points="${envLine}" />
+        </svg>
+        <div class="tl-fade-handle tl-fade-in" style="left:${fiX}%" title="Fade in"></div>
+        <div class="tl-fade-handle tl-fade-out" style="left:${foX}%" title="Fade out"></div>
+        ${occurrence.fade_operator ? `<span class="tl-clip-op">${escapeHtml(occurrence.fade_operator)}</span>` : ""}
       `;
 
       block.addEventListener("click", () => {
         selectTimelineCue(occurrence.source_index);
+        renderTimelinePropertiesPanel();
         if (typeof window.renderCueTable === "function") window.renderCueTable();
       });
       block.addEventListener("contextmenu", (ev) => {
@@ -1300,17 +1387,25 @@
         selectTimelineCue(occurrence.source_index);
         openTimelineContextMenu(ev, occurrence);
       });
-      block.querySelector(".timeline-block-resize")?.addEventListener("mousedown", (ev) => {
-        ev.preventDefault();
+      block.querySelector(".tl-resize-right")?.addEventListener("mousedown", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
         startTimelinePointerDrag("resize", occurrence, ev);
       });
-      block.querySelector(".timeline-block-graph")?.addEventListener("mousedown", (ev) => {
-        ev.preventDefault();
-        startTimelinePointerDrag("fade", occurrence, ev);
+      block.querySelector(".tl-resize-left")?.addEventListener("mousedown", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        startTimelinePointerDrag("resize-left", occurrence, ev);
+      });
+      block.querySelector(".tl-fade-in")?.addEventListener("mousedown", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        startTimelinePointerDrag("fade-in", occurrence, ev);
+      });
+      block.querySelector(".tl-fade-out")?.addEventListener("mousedown", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        startTimelinePointerDrag("fade-out", occurrence, ev);
       });
       block.addEventListener("mousedown", (ev) => {
         if (ev.button !== 0) return;
-        if (ev.target instanceof HTMLElement && ev.target.closest(".timeline-block-resize, .timeline-block-graph")) return;
+        if (ev.target instanceof HTMLElement && ev.target.closest(".tl-clip-resize, .tl-fade-handle")) return;
         ev.preventDefault();
         startTimelinePointerDrag("move", occurrence, ev);
       });
@@ -1322,6 +1417,7 @@
     bindTimelineViewportInteractions();
     updateTimelineSummary(occurrences, laneCount, totalDurationMs);
     updateTimelineZoomInputs();
+    renderTimelinePropertiesPanel();
   }
 
   function buildTimelinePlaybackRequest(startCueIndex = 0) {
@@ -1352,6 +1448,8 @@
         length_ms: occurrence.length_ms,
         fade_start_ms: occurrence.fade_start_ms,
         fade_end_ms: occurrence.fade_end_ms,
+        fade_in_ms: occurrence.fade_in_ms,
+        fade_out_ms: occurrence.fade_out_ms,
         fade_operator: occurrence.fade_operator || "",
         cue_payload: cuePayload,
         device_order: cuePayload.device_order || [],

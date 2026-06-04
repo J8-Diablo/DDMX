@@ -325,24 +325,26 @@ async function refreshCueFileList() {
   const sel = $id("cue-file-select");
   if (!sel) return;
   sel.innerHTML = "";
-  
+
+  // The cue dropdown is scoped to the ACTIVE PROJECT's cue lists, not the raw
+  // cue/ directory. With no project (or a blank one) the list is empty, and we
+  // never auto-load a cue. Loose cue files only appear once part of a project.
+  const scoped = Array.isArray(window.projectCueFiles) ? window.projectCueFiles : [];
   try {
     const r = await fetch("/api/cue_files");
     const data = await r.json();
-    const files = data.files || [];
-    
+    const onDisk = new Set(data.files || []);
+    const files = scoped.filter((f) => onDisk.has(f));
+
     for (const f of files) {
       const opt = document.createElement("option");
       opt.value = f;
       opt.textContent = f;
       sel.appendChild(opt);
     }
-    
-    if (files.length && !currentCueFilename) {
-      currentCueFilename = files[0];
-      sel.value = currentCueFilename;
-      await loadCueFile(currentCueFilename);
-    }
+
+    sel.value = (currentCueFilename && files.includes(currentCueFilename))
+      ? currentCueFilename : "";
   } catch (e) {
     console.error(e);
   }
@@ -445,8 +447,11 @@ async function saveCueFileAs() {
       body: JSON.stringify(cuesObj),
     });
     currentCueFilename = name;
+    // Register the new cue list into the active project's scope.
+    if (!Array.isArray(window.projectCueFiles)) window.projectCueFiles = [];
+    if (!window.projectCueFiles.includes(name)) window.projectCueFiles.push(name);
     await refreshCueFileList();
-    
+
     const sel = $id("cue-file-select");
     if (sel) sel.value = name;
     toast("Saved as " + name, "success");

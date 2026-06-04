@@ -187,6 +187,27 @@ def test_strobe_focus_opens_over_build():
     assert late[0][22] > early[0][22]
 
 
+def test_phrase_variation_avoids_loop():
+    # Same intent + energy but different phrase index must NOT render an
+    # identical frame (this is the anti-"same thing in a loop" guarantee).
+    devs = {str(i): _wash(base=i * 4) for i in range(6)}
+    d1 = _drct(intent=GROOVE, energy=0.5, phrase_index=0, beat_in_bar=1, beat_phase=0.2)
+    d2 = _drct(intent=GROOVE, energy=0.5, phrase_index=2, beat_in_bar=1, beat_phase=0.2)
+    w1 = ShowRenderer().render(1.0, d1, devs)
+    w2 = ShowRenderer().render(1.0, d2, devs)
+    assert w1 != w2
+
+
+def test_movement_direction_varies_by_phrase():
+    devs = {"0": _mover(home_pan=128), "1": _mover(home_pan=128)}
+    d_even = _drct(intent=GROOVE, energy=1.0, phrase_index=0, beat_in_bar=1, beat_phase=0.25)
+    d_odd = _drct(intent=GROOVE, energy=1.0, phrase_index=1, beat_in_bar=1, beat_phase=0.25)
+    we = ShowRenderer().render(1.0, d_even, devs)
+    wo = ShowRenderer().render(1.0, d_odd, devs)
+    # Different phrase → different chase pattern → different pan values.
+    assert we != wo
+
+
 def test_strobe_silent_when_not_allowed():
     devs = {"0": _strobe(base=20)}
     r = ShowRenderer()

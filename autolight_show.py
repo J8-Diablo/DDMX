@@ -111,6 +111,7 @@ class ShowRenderer:
         self._order: List[str] = []
         self._hue_phase: float = 200.0  # current base hue, evolves over time
         self._last_now: Optional[float] = None
+        self._phrase: int = 0            # current phrase index (drives variation)
 
     def on_rig_changed(self, devices: Dict[str, Any], topo: Any = None) -> None:
         self._roles = assign_roles(devices)
@@ -129,7 +130,11 @@ class ShowRenderer:
 
         self._advance_hue(now, directive)
         n = len(self._order) or len(devices)
-        base_hue = self._hue_for(directive)
+        # Phrase-driven variation: the look evolves every phrase instead of
+        # looping identically at steady energy (hue family, active subset and
+        # movement direction all rotate with the phrase index).
+        self._phrase = int(getattr(directive, "phrase_index", 0) or 0)
+        base_hue = (self._hue_for(directive) + self._phrase * 47.0) % 360.0
 
         writes: Dict[int, Dict[int, int]] = {}
         for idx, dev_id in enumerate(self._order):
@@ -219,9 +224,13 @@ class ShowRenderer:
         amp = d.energy if d.intent not in (SILENCE, CALM) else (d.energy * 0.25)
         pan_amp = _MAX_PAN_AMP * amp
         tilt_amp = _MAX_TILT_AMP * amp
-        # Phase: spread across the rig (chase) + bar-level oscillation.
+        # Phase: spread across the rig (chase) + bar-level oscillation. The
+        # spread span and chase direction rotate with the phrase so the spatial
+        # movement pattern changes phrase-to-phrase (1, 2 or 3 lobes; L→R / R→L).
         bar_phase = (d.beat_in_bar + d.beat_phase) / 4.0 if d.beat_in_bar >= 0 else 0.0
-        spread = (idx / max(1, n)) * 2.0 * math.pi
+        lobes = 1.0 + (self._phrase % 3)
+        chase_dir = 1.0 if (self._phrase % 2 == 0) else -1.0
+        spread = (idx / max(1, n)) * 2.0 * math.pi * lobes * chase_dir
         wave = math.sin(2.0 * math.pi * bar_phase + spread)
         # Mirror pairs: right side moves opposite.
         side = -1.0 if (idx % 2 == 1) else 1.0
@@ -240,9 +249,12 @@ class ShowRenderer:
         if role == ROLE_STROBE and not d.allow_strobe:
             return False
         # Activation threshold spread by ambient priority + order so low energy
-        # lights few fixtures (contrast), full energy lights the whole rig.
+        # lights few fixtures (contrast), full energy lights the whole rig. The
+        # order index is rotated by the phrase so a *different* subset stays lit
+        # each phrase (avoids the same fixtures always being the ambient ones).
         prio = _ROLE_PRIORITY.get(role, 2)
-        threshold = (prio * 0.18) + (idx / max(1, n)) * 0.35
+        rot = (idx + self._phrase * 3) % max(1, n)
+        threshold = (prio * 0.18) + (rot / max(1, n)) * 0.35
         return d.energy >= threshold * 0.9
 
     def _dimmer_level(self, d: Directive, role, idx, n, active, now) -> float:

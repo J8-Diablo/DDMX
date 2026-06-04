@@ -61,6 +61,11 @@ class Directive:
     build_progress: float = 0.0   # 0..1 across an anticipated build
     bars_to_drop: int = -1        # bars until the anticipated phrase boundary (-1 = n/a)
     contrast: float = 1.0         # 0..1 how hard calm↔peak is spread
+    # Structural position (passthrough from the grid) so the show can EVOLVE
+    # phrase-to-phrase instead of looping the same look at steady energy.
+    bar_index: int = 0
+    phrase_index: int = 0
+    phrase_len: int = 16
     palette: Dict[str, Any] = field(default_factory=dict)
     # Passthrough timing for the show layer.
     bpm: float = 0.0
@@ -173,6 +178,9 @@ class MusicBrain:
             build_progress=round(build_progress, 3),
             bars_to_drop=bars_to_drop,
             contrast=self.contrast,
+            bar_index=int(grid.get("bar_index", 0) or 0),
+            phrase_index=int(grid.get("phrase_index", 0) or 0),
+            phrase_len=int(grid.get("phrase_len", 16) or 16),
             palette=self._palette(intent, energy, metadata),
             bpm=float(grid.get("bpm", 0.0) or 0.0),
             beat_in_bar=int(grid.get("beat_in_bar", -1)),

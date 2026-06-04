@@ -155,6 +155,37 @@
       <button id="rig-sort-reverse" disabled data-i18n="rig.sortReverse">Revert</button>
     </div>
 
+    <!-- Per-fixture "audience" home position + axis inversion (AutoLight 2.0).
+         Inline panel (not a modal) so it never depends on modal stacking. -->
+    <details class="calib-panel" id="calib-panel">
+      <summary data-i18n="calib.title">Position calibration (audience home)</summary>
+      <div class="calib-hint muted" data-i18n="calib.hint">
+        Aim each moving head toward the audience, then save it as its home. Use Invert for fixtures mounted upside-down or facing the other way. Stored in the project.
+      </div>
+      <div class="calib-toolbar">
+        <label class="autolight-toggle" title="Move fixtures live while you adjust">
+          <input id="calib-live-aim" type="checkbox" checked><span data-i18n="calib.liveAim">Live aim</span>
+        </label>
+        <button id="calib-capture-selected" class="secondary" type="button" data-i18n="calib.captureSelected">Capture current → home (selected)</button>
+        <button id="calib-apply-selected" class="secondary" type="button" data-i18n="calib.applySelected">Apply row values to selection</button>
+        <span id="calib-empty" class="muted" hidden data-i18n="calib.none">No moving fixtures in the rig.</span>
+      </div>
+      <div class="calib-table-wrap">
+        <table class="calib-table">
+          <thead>
+            <tr>
+              <th data-i18n="calib.fixture">Fixture</th>
+              <th data-i18n="calib.pan">Pan</th>
+              <th data-i18n="calib.tilt">Tilt</th>
+              <th title="Invert pan">⇄</th>
+              <th title="Invert tilt">⇅</th>
+            </tr>
+          </thead>
+          <tbody id="calib-tbody"></tbody>
+        </table>
+      </div>
+    </details>
+
     <canvas id="rig-canvas" width="900" height="520"></canvas>
   </section>
 
@@ -667,6 +698,10 @@
         <div id="timeline-ruler" class="timeline-ruler"></div>
         <div id="timeline-canvas" class="timeline-canvas"></div>
       </div>
+      <!-- Premiere-style properties panel for the selected clip. -->
+      <div id="timeline-props" class="timeline-props">
+        <div class="timeline-props-empty muted" data-i18n="timeline.propsEmpty">Select a clip to edit its properties.</div>
+      </div>
       <div id="timeline-context-menu" class="timeline-context-menu hidden"></div>
     </div>
 
@@ -692,9 +727,7 @@
     </div>
   </section>
 
-</main>
-
-<section class="panel controller-panel">
+  <section class="panel controller-panel">
   <div class="panel-header">
     <h2 data-i18n="controller.title">Controller</h2>
     <div id="controller-info" class="muted" data-i18n="controller.info">Select device(s) in rig.</div>
@@ -768,6 +801,7 @@
   </div>
 </section>
 
+</main>
 
 <!-- SortableJS (drag & drop des cues) -->
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
@@ -779,6 +813,7 @@
 <script src="{{ url_for('static', filename='effects.js') }}"></script>
 <script src="{{ url_for('static', filename='cues.js') }}"></script>
 <script src="{{ url_for('static', filename='project.js') }}"></script>
+<script src="{{ url_for('static', filename='calibration.js') }}"></script>
 <script src="{{ url_for('static', filename='timeline.js') }}"></script>
 <script src="{{ url_for('static', filename='sync_video.js') }}"></script>
 <script src="{{ url_for('static', filename='whats_new.js') }}"></script>
