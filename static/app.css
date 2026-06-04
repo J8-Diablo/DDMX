@@ -3967,3 +3967,39 @@ h3 { font-size: 12px; }
 .cue-table { font-size: 12px; }
 .cue-table th, .cue-table td { padding: 3px 8px; }
 .cue-view-btn, .cues-tab-btn { padding: 3px 10px; font-size: 11px; }
+
+/* ============================================================
+   Compaction pass 2 — tighter still.
+   ============================================================ */
+body { font-size: 11.5px; }
+.topbar { padding: 4px 10px; }
+.topbar h1 { font-size: 13px; }
+.main-grid,
+body.cue-editor-mode-timeline .main-grid { height: calc(100vh - 40px); padding: 4px 6px; gap: 4px; }
+
+.panel { padding: 6px; gap: 4px; border-radius: 9px; }
+.panel-header h2 { font-size: 12px; }
+.panel-header .muted, .muted { font-size: 10px; }
+
+button { font-size: 11px; padding: 3px 7px; }
+input, select, textarea { font-size: 11px; padding: 2px 5px; }
+label { font-size: 11px; }
+h3 { font-size: 11px; }
+
+.ctrl-box { padding: 5px; gap: 3px; }
+.ctrl-box h3 { font-size: 10px; margin: 0 0 2px; }
+.controller-tabs .tab-btn { padding: 2px 9px; font-size: 11px; }
+.fixture-group-card { padding: 5px; margin-bottom: 5px; }
+.fixture-group-title { font-size: 10px; margin-bottom: 4px; }
+
+.add-device-bar label, .add-device-bar input, .add-device-bar select { font-size: 10px; }
+.rig-type-bar, .rig-sort-bar { font-size: 10px; }
+.rig-sort-bar button, .rig-type-bar .rig-type-buttons button { padding: 2px 6px; font-size: 10px; }
+
+.cue-toolbar-title { font-size: 10px; }
+.cue-table { font-size: 11px; }
+.cue-table th, .cue-table td { padding: 2px 7px; }
+.cue-view-btn, .cues-tab-btn { padding: 2px 9px; font-size: 11px; }
+
+/* Tighter sliders/range controls */
+input[type="range"] { height: 14px; }
