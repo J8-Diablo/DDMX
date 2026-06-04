@@ -340,5 +340,8 @@
   "timeline.propOperator": "Tipo de fade",
   "timeline.fadeCut": "Corte",
   "cues.viewClassic": "Lista de cues",
-  "cues.viewTimeline": "Timeline"
+  "cues.viewTimeline": "Timeline",
+  "bottomTab.cues": "Cues",
+  "bottomTab.sync": "Sync Video",
+  "bottomTab.autolight": "Auto-Light"
 }

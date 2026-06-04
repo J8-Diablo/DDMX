@@ -3868,3 +3868,63 @@ body.cue-editor-mode-timeline .cues-panel > .cue-props { display: none; }
 .cue-view-btn { padding: 4px 10px; font-size: 12px; background: transparent; border: none; color: var(--text-muted, #94a3b8); cursor: pointer; }
 .cue-view-btn + .cue-view-btn { border-left: 1px solid var(--border, rgba(148,163,184,0.3)); }
 .cue-view-btn.active { background: var(--accent, #2563eb); color: #fff; font-weight: 600; }
+
+/* ============================================================
+   Layout v2 — RIG-dominant, resizable splitters, tabbed bottom.
+   (Supersedes the earlier fixed grid.)
+   ============================================================ */
+.main-grid,
+body.cue-editor-mode-timeline .main-grid {
+  height: calc(100vh - 50px);
+  display: grid;
+  grid-template-columns: var(--rig-w, 1.55fr) 5px 1fr;
+  grid-template-rows: var(--top-h, 1.7fr) 5px 1fr;
+  grid-template-areas:
+    "rig vsplit controller"
+    "hsplit hsplit hsplit"
+    "cues cues cues";
+  gap: 6px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.main-grid > .rig-panel,        body.cue-editor-mode-timeline .rig-panel        { grid-area: rig; }
+.main-grid > .controller-panel, body.cue-editor-mode-timeline .controller-panel { grid-area: controller; }
+.main-grid > .cues-panel,       body.cue-editor-mode-timeline .cues-panel       { grid-area: cues; }
+.main-grid > .panel { margin: 0; min-height: 0; max-height: none; }
+
+/* Resize splitters */
+.tl-vsplit, .tl-hsplit { background: rgba(148, 163, 184, 0.14); border-radius: 3px; z-index: 5; }
+.tl-vsplit { grid-area: vsplit; cursor: col-resize; }
+.tl-hsplit { grid-area: hsplit; cursor: row-resize; }
+.tl-vsplit:hover, .tl-hsplit:hover { background: var(--accent, #2563eb); }
+
+/* RIG canvas dominates its (now tall) cell. */
+.rig-panel { overflow: hidden; }
+#rig-canvas { flex: 1 1 0; min-height: 120px; width: 100%; height: 100%; }
+/* Compact rig toolbars so the canvas gets the space. */
+.add-device-bar { gap: 6px; }
+.add-device-bar label { font-size: 11px; }
+.rig-type-bar, .rig-sort-bar { font-size: 11px; gap: 4px; }
+.rig-sort-bar button, .rig-type-bar .rig-type-buttons button { padding: 2px 7px; font-size: 11px; }
+.calib-panel > summary { font-size: 12px; }
+
+/* Controller fills its cell, scrolls internally only if needed. */
+.controller-panel { overflow: auto; }
+
+/* ---- Bottom tabbed area (Cues / Sync Video / Auto-Light) ---- */
+.cues-panel { overflow: hidden; }
+.cues-tabbar { display: flex; gap: 4px; flex: 0 0 auto; margin-bottom: 4px; order: -1; }
+.cues-tab-btn {
+  padding: 4px 12px; font-size: 12px; border: 1px solid var(--border, rgba(148,163,184,0.3));
+  border-radius: 6px 6px 0 0; background: transparent; color: var(--text-muted, #94a3b8); cursor: pointer;
+}
+.cues-tab-btn.active { background: var(--accent, #2563eb); color: #fff; font-weight: 600; }
+/* Show only the active group; the tabbar (no data-bgroup) always stays. */
+.cues-panel[data-tab="cues"]      > [data-bgroup]:not([data-bgroup="cues"])      { display: none !important; }
+.cues-panel[data-tab="sync"]      > [data-bgroup]:not([data-bgroup="sync"])      { display: none !important; }
+.cues-panel[data-tab="autolight"] > [data-bgroup]:not([data-bgroup="autolight"]) { display: none !important; }
+/* Active feature sections fill the bottom (no more vh caps in tab mode). */
+.cues-panel > [data-bgroup="sync"], .cues-panel > [data-bgroup="autolight"] {
+  flex: 1 1 auto; max-height: none; overflow: auto; order: 5;
+}

@@ -340,5 +340,8 @@
   "timeline.propOperator": "Tipo dissolvenza",
   "timeline.fadeCut": "Taglio",
   "cues.viewClassic": "Lista cue",
-  "cues.viewTimeline": "Timeline"
+  "cues.viewTimeline": "Timeline",
+  "bottomTab.cues": "Cue",
+  "bottomTab.sync": "Sync Video",
+  "bottomTab.autolight": "Auto-Light"
 }

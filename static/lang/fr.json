@@ -396,5 +396,8 @@
   "timeline.propOperator": "Type de fondu",
   "timeline.fadeCut": "Coupe",
   "cues.viewClassic": "Liste de cues",
-  "cues.viewTimeline": "Timeline"
+  "cues.viewTimeline": "Timeline",
+  "bottomTab.cues": "Cues",
+  "bottomTab.sync": "Sync Vidéo",
+  "bottomTab.autolight": "Auto-Light"
 }

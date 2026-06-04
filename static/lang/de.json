@@ -340,5 +340,8 @@
   "timeline.propOperator": "Blendtyp",
   "timeline.fadeCut": "Schnitt",
   "cues.viewClassic": "Cue-Liste",
-  "cues.viewTimeline": "Timeline"
+  "cues.viewTimeline": "Timeline",
+  "bottomTab.cues": "Cues",
+  "bottomTab.sync": "Sync Video",
+  "bottomTab.autolight": "Auto-Light"
 }
