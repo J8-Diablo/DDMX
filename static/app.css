@@ -4082,3 +4082,22 @@ button {
 input, select, textarea { font-size: 11px !important; padding: 2px 6px !important; }
 
 .playback-btn { min-width: 70px !important; font-weight: 600 !important; letter-spacing: 0 !important; }
+
+/* ============================================================
+   Cues panel — reclaim wasted vertical space (denser toolbar).
+   ============================================================ */
+.cues-panel { gap: 4px; }
+.cues-panel > .panel-header { margin: 0; flex-direction: row; align-items: baseline; gap: 8px; }
+.cues-panel > .panel-header h2 { font-size: 12px; margin: 0; }
+.cues-panel > .panel-header .muted { display: none; }       /* hide "/cue/*.json" */
+.cue-files { gap: 5px; margin: 0; }
+.cue-loop-actions { margin: 0; }
+/* Playback + Edit on one wrapping row, tiny inline section titles. */
+.cue-toolbar { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 5px 16px; margin: 0; padding: 0; }
+.cue-toolbar-group { display: flex; flex-direction: row; align-items: center; gap: 6px; }
+.cue-toolbar-title { font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.5; margin: 0 2px 0 0; }
+.cue-actions, .cue-actions-playback { display: flex; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 5px; margin: 0; }
+.playback-controls-row { gap: 5px; }
+.cue-speed-control { gap: 4px; }
+/* Timeline toolbar (zoom) compact. */
+.timeline-toolbar { gap: 10px; padding: 2px 0; }
