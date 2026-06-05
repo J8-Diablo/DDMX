@@ -4033,3 +4033,34 @@ input[type="range"] { height: 14px; }
   background: var(--panel, #11151d); border: 1px solid var(--border, rgba(148,163,184,0.3));
   border-radius: 8px; box-shadow: 0 14px 34px rgba(0,0,0,0.55);
 }
+
+/* ============================================================
+   Buttons restyle — flat & compact (Premiere-like), replacing the
+   pill/gradient/heavy-shadow look.
+   ============================================================ */
+button, button.secondary, button.danger, button.primary {
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: var(--text, #e5e7eb);
+  font-weight: 500;
+}
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.11) !important;
+  border-color: rgba(148, 163, 184, 0.5) !important;
+  transform: none !important;
+  box-shadow: none !important;
+}
+button:active:not(:disabled) {
+  transform: none !important;
+  background: rgba(255, 255, 255, 0.16) !important;
+  box-shadow: none !important;
+}
+button.secondary { background: rgba(255, 255, 255, 0.03); color: var(--text-muted, #94a3b8); }
+button.primary { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
+button.primary:hover:not(:disabled) { background: #1d4ed8 !important; border-color: #1d4ed8 !important; }
+button.danger { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; }
+button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.24) !important; border-color: #ef4444 !important; }
+/* Flatten inputs/selects too. */
+input, select, textarea { border-radius: 4px !important; box-shadow: none !important; }
