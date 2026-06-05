@@ -3021,3 +3021,153 @@ if (typeof window.addRenderModeListener === "function") {
     }
   });
 }
+
+/* ============================================================
+   RIG canvas right-click menu (replaces the top toolbar).
+   Name / Universe / Address are auto-assigned on add.
+   ============================================================ */
+function _rmT(key, fb) { return (typeof window.t === "function") ? window.t(key, fb) : fb; }
+
+function addDeviceAuto(fixtureName, wx, wy) {
+  if (!fixtureName || !fixtures[fixtureName]) { toast("Unknown fixture.", "error"); return; }
+  const fi = fixtures[fixtureName] || {};
+  const addrCount = getFixtureFootprint(fi);
+  // Auto universe + address: first universe with a free block.
+  let universe = 0, address = null;
+  for (let u = 0; u < 64; u++) {
+    const free = findNextFreeAddress(u, addrCount);
+    if (free != null) { universe = u; address = free; break; }
+  }
+  if (address == null) { toast("No free DMX address.", "error"); return; }
+  const id = String(nextDeviceId++);
+  rigDevices[id] = {
+    id, fixture: fixtureName, cname: `Device ${id}`, universe, address,
+    x: Number.isFinite(wx) ? Math.round(wx) : 100,
+    y: Number.isFinite(wy) ? Math.round(wy) : 100,
+  };
+  deviceLocalValues[id] = {};
+  deviceCurrentGroups[id] = new Set();
+  initDeviceDefaults(id, fixtureName);
+  scheduleMovementSync(); scheduleDummySync(); scheduleRigSync();
+  selectedDeviceOrder = [id]; selectedDeviceSet = new Set(selectedDeviceOrder);
+  refreshControllerFromSelection(); drawRig();
+  if (typeof renderRigTypeButtons === "function") renderRigTypeButtons();
+  toast(`Device ${id} added (U${universe}.${address})`, "success");
+}
+
+function selectDevicesByType(fixtureName) {
+  selectedDeviceOrder = Object.values(rigDevices)
+    .filter((d) => d && d.fixture === fixtureName).map((d) => String(d.id));
+  selectedDeviceSet = new Set(selectedDeviceOrder);
+  refreshControllerFromSelection(); drawRig();
+  if (typeof updateRigSortButtonsState === "function") updateRigSortButtonsState();
+}
+
+function openRigCalibration() {
+  const p = document.getElementById("calib-panel");
+  if (!p) return;
+  p.classList.add("calib-floating-open");
+  p.open = true;
+  if (typeof window.refreshCalibrationPanel === "function") window.refreshCalibrationPanel();
+}
+
+let _rigMenuEl = null;
+function closeRigMenu() {
+  if (_rigMenuEl) { _rigMenuEl.remove(); _rigMenuEl = null; }
+  document.removeEventListener("mousedown", _rigMenuOutside, true);
+  document.removeEventListener("keydown", _rigMenuKey, true);
+}
+function _rigMenuOutside(e) { if (_rigMenuEl && !_rigMenuEl.contains(e.target)) closeRigMenu(); }
+function _rigMenuKey(e) { if (e.key === "Escape") closeRigMenu(); }
+
+function _rmItem(label, onClick, opts) {
+  opts = opts || {};
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "rig-menu-item" + (opts.back ? " rig-menu-back" : "");
+  b.textContent = label + (opts.arrow ? "   ▸" : "");
+  if (opts.disabled) b.disabled = true;
+  else b.addEventListener("click", (ev) => { ev.stopPropagation(); onClick(); });
+  return b;
+}
+function _rmSep() { const d = document.createElement("div"); d.className = "rig-menu-sep"; return d; }
+
+function _rmRoot(menu) {
+  const wx = menu._wx, wy = menu._wy;
+  menu.innerHTML = "";
+  const nSel = (selectedDeviceOrder || []).length;
+  const hasDevices = Object.keys(rigDevices || {}).length > 0;
+  menu.appendChild(_rmItem(_rmT("rigmenu.add", "Add device"), () => _rmFixtures(menu), { arrow: true }));
+  menu.appendChild(_rmItem(_rmT("rigmenu.selectType", "Select by type"), () => _rmTypes(menu), { arrow: true, disabled: !hasDevices }));
+  menu.appendChild(_rmItem(_rmT("rigmenu.order", "Order selection"), () => _rmOrder(menu), { arrow: true, disabled: nSel < 2 }));
+  menu.appendChild(_rmSep());
+  menu.appendChild(_rmItem(_rmT("rigmenu.delete", "Delete selected"), () => { closeRigMenu(); deleteSelectedDevices(); }, { disabled: nSel === 0 }));
+  menu.appendChild(_rmItem(_rmT("calib.title", "Position calibration"), () => { closeRigMenu(); openRigCalibration(); }));
+}
+function _rmFixtures(menu) {
+  const wx = menu._wx, wy = menu._wy;
+  menu.innerHTML = "";
+  menu.appendChild(_rmItem(_rmT("rigmenu.back", "Back"), () => _rmRoot(menu), { back: true }));
+  const names = Object.keys(fixtures || {}).sort();
+  if (!names.length) { menu.appendChild(_rmItem(_rmT("rigmenu.noFixtures", "No fixtures loaded"), () => {}, { disabled: true })); return; }
+  for (const n of names) {
+    const label = (typeof prettifyFixtureName === "function") ? prettifyFixtureName(n) : n;
+    menu.appendChild(_rmItem(label, () => { closeRigMenu(); addDeviceAuto(n, wx, wy); }));
+  }
+}
+function _rmTypes(menu) {
+  menu.innerHTML = "";
+  menu.appendChild(_rmItem(_rmT("rigmenu.back", "Back"), () => _rmRoot(menu), { back: true }));
+  const counts = {};
+  Object.values(rigDevices || {}).forEach((d) => { if (d) counts[d.fixture] = (counts[d.fixture] || 0) + 1; });
+  const types = Object.keys(counts).sort();
+  for (const tp of types) {
+    const label = ((typeof prettifyFixtureName === "function") ? prettifyFixtureName(tp) : tp) + ` (${counts[tp]})`;
+    menu.appendChild(_rmItem(label, () => { closeRigMenu(); selectDevicesByType(tp); }));
+  }
+}
+function _rmOrder(menu) {
+  menu.innerHTML = "";
+  menu.appendChild(_rmItem(_rmT("rigmenu.back", "Back"), () => _rmRoot(menu), { back: true }));
+  const items = [
+    ["rig.sortVertical", "Vertical", sortSelectionVertical],
+    ["rig.sortHorizontal", "Horizontal", sortSelectionHorizontal],
+    ["rig.sortVertOne", "Vert ONE", sortSelectionVerticalOne],
+    ["rig.sortHorizOne", "Horiz ONE", sortSelectionHorizontalOne],
+    ["rig.sortId", "ID", sortSelectionById],
+    ["rig.sortRandom", "Random", shuffleSelection],
+    ["rig.sortReverse", "Revert", reverseSelectionOrder],
+  ];
+  for (const [k, lbl, fn] of items) {
+    menu.appendChild(_rmItem(_rmT(k, lbl), () => { closeRigMenu(); try { fn(); } catch (e) {} }));
+  }
+}
+
+function openRigContextMenu(e) {
+  e.preventDefault();
+  closeRigMenu();
+  const w = (typeof eventToWorld === "function") ? eventToWorld(e) : { wx: 100, wy: 100 };
+  const menu = document.createElement("div");
+  menu.className = "rig-context-menu";
+  menu._wx = w.wx; menu._wy = w.wy;
+  _rigMenuEl = menu;
+  _rmRoot(menu);
+  document.body.appendChild(menu);
+  let x = e.clientX, y = e.clientY;
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  if (x + mw > window.innerWidth) x = Math.max(4, window.innerWidth - mw - 4);
+  if (y + mh > window.innerHeight) y = Math.max(4, window.innerHeight - mh - 4);
+  menu.style.left = x + "px"; menu.style.top = y + "px";
+  setTimeout(() => {
+    document.addEventListener("mousedown", _rigMenuOutside, true);
+    document.addEventListener("keydown", _rigMenuKey, true);
+  }, 0);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const cv = document.getElementById("rig-canvas");
+  if (cv) cv.addEventListener("contextmenu", openRigContextMenu);
+  // Collapsing the floating calibration panel removes its overlay state.
+  const calib = document.getElementById("calib-panel");
+  if (calib) calib.addEventListener("toggle", () => { if (!calib.open) calib.classList.remove("calib-floating-open"); });
+});

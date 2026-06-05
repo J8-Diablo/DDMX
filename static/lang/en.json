@@ -399,5 +399,11 @@
   "cues.viewTimeline": "Timeline",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Video",
-  "bottomTab.autolight": "Auto-Light"
+  "bottomTab.autolight": "Auto-Light",
+  "rigmenu.add": "Add device",
+  "rigmenu.selectType": "Select by type",
+  "rigmenu.order": "Order selection",
+  "rigmenu.delete": "Delete selected",
+  "rigmenu.back": "Back",
+  "rigmenu.noFixtures": "No fixtures loaded"
 }

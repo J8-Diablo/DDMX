@@ -4003,3 +4003,33 @@ h3 { font-size: 11px; }
 
 /* Tighter sliders/range controls */
 input[type="range"] { height: 14px; }
+
+/* ============================================================
+   RIG: toolbar moved to a right-click context menu on the canvas.
+   ============================================================ */
+.add-device-bar, .rig-type-bar, .rig-sort-bar { display: none !important; }
+.rig-panel #rig-canvas { flex: 1 1 0; }
+
+.rig-context-menu {
+  position: fixed; z-index: 1200; min-width: 190px; max-height: 80vh; overflow-y: auto;
+  background: var(--panel, #11151d); border: 1px solid var(--border, rgba(148,163,184,0.3));
+  border-radius: 8px; padding: 4px; box-shadow: 0 14px 34px rgba(0,0,0,0.55);
+}
+.rig-menu-item {
+  display: block; width: 100%; text-align: left; padding: 5px 11px; margin: 1px 0;
+  border: none; background: transparent; color: inherit; font-size: 12px;
+  border-radius: 5px; cursor: pointer; white-space: nowrap;
+}
+.rig-menu-item:hover:not(:disabled) { background: var(--accent-soft, rgba(255,255,255,0.08)); }
+.rig-menu-item:disabled { opacity: 0.4; cursor: default; }
+.rig-menu-back { opacity: 0.75; font-style: italic; }
+.rig-menu-sep { height: 1px; margin: 4px 6px; background: var(--border, rgba(148,163,184,0.2)); }
+
+/* Calibration becomes a floating overlay over the canvas (opened from menu). */
+.calib-panel { display: none; }
+.calib-panel.calib-floating-open {
+  display: block; position: absolute; z-index: 30; left: 8px; right: 8px; top: 36px;
+  max-height: 72%; overflow: auto; padding: 8px;
+  background: var(--panel, #11151d); border: 1px solid var(--border, rgba(148,163,184,0.3));
+  border-radius: 8px; box-shadow: 0 14px 34px rgba(0,0,0,0.55);
+}
