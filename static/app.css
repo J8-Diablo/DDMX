@@ -4064,3 +4064,21 @@ button.danger { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68,
 button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.24) !important; border-color: #ef4444 !important; }
 /* Flatten inputs/selects too. */
 input, select, textarea { border-radius: 4px !important; box-shadow: none !important; }
+
+/* ============================================================
+   Button SIZE compaction — smaller everywhere (final override).
+   ============================================================ */
+button {
+  padding: 3px 9px !important;
+  font-size: 11px !important;
+  min-height: 0 !important;
+  line-height: 1.35 !important;
+  font-weight: 500 !important;
+}
+.playback-btn { min-height: 24px !important; padding: 4px 12px !important; font-size: 12px !important; }
+.ctc-stop-button { min-width: 120px !important; min-height: 28px !important; padding: 4px 12px !important; font-size: 12px !important; letter-spacing: 0.04em !important; }
+.playback-bar button { padding: 2px 7px !important; }
+.cue-view-btn, .cues-tab-btn { padding: 3px 10px !important; font-size: 11px !important; }
+input, select, textarea { font-size: 11px !important; padding: 2px 6px !important; }
+
+.playback-btn { min-width: 70px !important; font-weight: 600 !important; letter-spacing: 0 !important; }
