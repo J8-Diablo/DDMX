@@ -4134,3 +4134,20 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
   flex: 0 0 auto;
 }
 .cue-bar button { white-space: nowrap; }
+
+/* ── Timeline playback performance ─────────────────────────────────────────
+   A dense timeline (hundreds of clips, each with an SVG fade envelope) made
+   playback lag badly: every playhead frame repainted all clips. Two fixes:
+   1) content-visibility:auto — the browser skips painting/layout of clips that
+      are scrolled off-screen (only the ~handful visible cost anything). Clip
+      geometry is set inline (left/top/width/height) so off-screen boxes keep
+      their size; contain-intrinsic-size is just the fallback while skipped.
+   2) The playhead now moves via transform (see timeline.js), so promote it to
+      its own compositor layer and never let its sweep repaint the clips. */
+.timeline-block {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
+}
+.timeline-playhead {
+  will-change: transform;
+}

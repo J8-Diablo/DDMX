@@ -751,7 +751,7 @@ function renderCueTable() {
     if (typeof window.renderTimelineEditor === "function") {
       window.renderTimelineEditor();
     }
-    updatePlayingHighlight();
+    updatePlayingHighlight(true);
     return;
   }
 
@@ -852,7 +852,7 @@ function renderCueTable() {
 
   updateCueSelectionCount();
   updatePlayFromButtonState();
-  updatePlayingHighlight();
+  updatePlayingHighlight(true);
 }
 
 function updateCueSelectionCount() {
@@ -1192,7 +1192,15 @@ function updatePlayFromButtonState() {
 // The duplicate kept here as a stub for any direct in-file reference.
 // (Real implementation lives below.)
 
-function updatePlayingHighlight() {
+let _lastHighlightIndex = undefined;       // cue index currently highlighted
+// `force` re-applies even if the index is unchanged (after a table/timeline
+// rebuild). Otherwise this is a no-op when the playing cue hasn't changed,
+// which keeps timeline playback cheap: the costly per-source-index query over
+// every block no longer runs on each SSE frame, only when the cue changes.
+function updatePlayingHighlight(force = false) {
+  if (!force && playbackCueIndex === _lastHighlightIndex) return;
+  _lastHighlightIndex = playbackCueIndex;
+
   const tbody = $id("cue-table-body");
   if (tbody) {
     const rows = Array.from(tbody.children);
@@ -1203,6 +1211,7 @@ function updatePlayingHighlight() {
     }
   }
 
+  // Clearing only matches the (1-2) currently highlighted blocks — cheap.
   document.querySelectorAll(".timeline-block.playing").forEach((el) => el.classList.remove("playing"));
   if (playbackCueIndex == null || playbackCueIndex < 0) return;
   document.querySelectorAll(`.timeline-block[data-source-index="${playbackCueIndex}"]`).forEach((el) => {

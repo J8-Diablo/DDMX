@@ -550,8 +550,10 @@
     const canvasPlayhead = document.getElementById("timeline-playhead-canvas");
     const label = document.getElementById("timeline-playhead-label");
     const leftPx = timelineCursorMs * pxPerMs();
-    if (rulerPlayhead) rulerPlayhead.style.left = `${leftPx}px`;
-    if (canvasPlayhead) canvasPlayhead.style.left = `${leftPx}px`;
+    // Move via transform (compositor-only) so sweeping the playhead does NOT
+    // repaint the 340 timeline blocks every frame.
+    if (rulerPlayhead) rulerPlayhead.style.transform = `translateX(${leftPx}px)`;
+    if (canvasPlayhead) canvasPlayhead.style.transform = `translateX(${leftPx}px)`;
     if (label) label.textContent = formatMs(timelineCursorMs);
     updateTimelineSummary(occurrencesCache, timelineMetrics.lane_count, timelineMetrics.duration_ms);
   }
@@ -1331,7 +1333,8 @@
       const rulerPlayhead = document.createElement("div");
       rulerPlayhead.id = "timeline-playhead-ruler";
       rulerPlayhead.className = "timeline-playhead timeline-playhead-ruler";
-      rulerPlayhead.style.left = `${leftPx}px`;
+      rulerPlayhead.style.left = "0";
+      rulerPlayhead.style.transform = `translateX(${leftPx}px)`;
       rulerPlayhead.innerHTML = `
         <div class="timeline-playhead-handle">
           <span id="timeline-playhead-label">${formatMs(timelineCursorMs)}</span>
@@ -1343,7 +1346,8 @@
     const canvasPlayhead = document.createElement("div");
     canvasPlayhead.id = "timeline-playhead-canvas";
     canvasPlayhead.className = "timeline-playhead timeline-playhead-canvas";
-    canvasPlayhead.style.left = `${leftPx}px`;
+    canvasPlayhead.style.left = "0";
+    canvasPlayhead.style.transform = `translateX(${leftPx}px)`;
     canvas.appendChild(canvasPlayhead);
 
     for (const occurrence of occurrences) {
