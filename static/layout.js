@@ -124,7 +124,23 @@
     h.addEventListener("mousedown", start("h"));
   }
 
+  // Merge the cue file row + loop actions + playback/edit toolbar into a single
+  // horizontal bar to reclaim vertical space.
+  function mergeCueBar() {
+    const panel = document.querySelector(".cues-panel");
+    if (!panel || panel.querySelector(".cue-bar")) return;
+    const files = panel.querySelector(".cue-files");
+    const loop = panel.querySelector(".cue-loop-actions");
+    const toolbar = panel.querySelector(".cue-toolbar");
+    if (!files) return;
+    const bar = document.createElement("div");
+    bar.className = "cue-bar";
+    panel.insertBefore(bar, files);
+    [files, loop, toolbar].forEach((el) => { if (el) bar.appendChild(el); });
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
+    mergeCueBar();
     buildBottomTabs();
     buildSplitters();
   });
