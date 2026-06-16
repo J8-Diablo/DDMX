@@ -40,7 +40,11 @@
   }
 
   function snapMs(value) {
-    return Math.max(0, Math.round(Number(value || 0) / TIMELINE_SNAP_MS) * TIMELINE_SNAP_MS);
+    // Snap to the grid WITHOUT clamping the sign: this runs on drag *deltas*
+    // (which are negative when dragging a clip earlier in time), so clamping to
+    // >= 0 here would silently forbid moving / growing a clip into the past.
+    // Absolute-time callers clamp to [0, duration] themselves.
+    return Math.round(Number(value || 0) / TIMELINE_SNAP_MS) * TIMELINE_SNAP_MS;
   }
 
   function safeNumber(value, fallback) {
