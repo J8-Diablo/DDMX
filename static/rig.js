@@ -2473,6 +2473,21 @@ async function applySelectionToEngine(silent = false) {
   // ========================================
   // PROTECTION : Verrou DMX
   // ========================================
+  // A *paused* backend playback still owns the rig (backendPlaybackOwned) and
+  // applyUniverseState() would silently drop this write — the rig looks frozen
+  // and manual edits do nothing ("rien ne joue mais je ne peux rien changer").
+  // The user grabbing a control means "hand me manual control now": stop the
+  // frozen playback so the edit actually lands. An actively-running playback is
+  // intentionally left alone (manual edits shouldn't fight live cues).
+  if (
+    window.backendPlaybackOwned &&
+    typeof playbackPaused !== "undefined" && playbackPaused &&
+    typeof stopRun === "function"
+  ) {
+    try { await stopRun(true); }
+    catch (e) { console.warn("[RIG] could not release paused playback for manual edit:", e); }
+  }
+
   if (window.dmxLocked) {
     console.log('[RIG] Blocked by DMX lock - transition in progress');
     return;
