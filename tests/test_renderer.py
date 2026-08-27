@@ -387,3 +387,81 @@ def test_touched_js_still_parses():
     for path in sorted(glob.glob(os.path.join(_REPO_ROOT, "static", "*.js"))):
         result = subprocess.run([_NODE, "-c", path], capture_output=True, text=True)
         assert result.returncode == 0, f"{os.path.basename(path)}: {result.stderr}"
+
+
+# -----------------------------------------------------------------------------
+# Loading a cue vs the manual layer
+# -----------------------------------------------------------------------------
+
+def test_loading_a_cue_takes_over_the_channels_it_addresses(engine):
+    """The layer that lets a fader win must not outlive the next cue.
+
+    The manual layer is applied on top of the cue base, so a held value wins --
+    but a device that had been touched once (or merely selected, which pushes
+    its values as intents) used to ignore every cue afterwards: the blackout
+    cue left it lit and the next look left it dark.
+    """
+    engine.set_manual_attrs([
+        {"device_id": "1", "attr": "dimmer", "value": 255},
+        {"device_id": "2", "attr": "dimmer", "value": 255},
+    ])
+    engine._render_frame()
+    assert (engine._universes[0][0], engine._universes[0][10]) == (255, 255)
+
+    engine.go_cue({"devices": {
+        "1": {"channels": {"Universe": 0, "0": 0}},
+        "2": {"channels": {"Universe": 0, "10": 0}},
+    }, "fade": "0"}, ["1", "2"])
+    engine._render_frame()
+
+    assert (engine._universes[0][0], engine._universes[0][10]) == (0, 0), "the blackout must land"
+    assert engine.get_manual_attrs() == {}
+
+    # And the other way round: a look after a hand-held blackout.
+    engine.set_manual_attrs([{"device_id": "1", "attr": "dimmer", "value": 0}])
+    engine.go_cue({"devices": {"1": {"channels": {"Universe": 0, "0": 200}}}, "fade": "0"}, ["1"])
+    engine._render_frame()
+    assert engine._universes[0][0] == 200
+
+
+def test_a_cue_only_releases_the_channels_it_writes(engine):
+    """A pan held by hand survives a cue that only speaks about dimmers."""
+    engine.set_manual_attrs([
+        {"device_id": "1", "attr": "dimmer", "value": 255},
+        {"device_id": "1", "attr": "position.main.pan", "value": 128},
+    ])
+    engine.go_cue({"devices": {"1": {"channels": {"Universe": 0, "0": 0}}}, "fade": "0"}, ["1"])
+    engine._render_frame()
+
+    assert engine._universes[0][0] == 0, "the dimmer belongs to the cue now"
+    assert engine._universes[0][5] == 128, "the pan is still held"
+    assert engine.get_manual_attrs() == {"1": {"position.main.pan": 128}}
+
+
+def test_a_cue_leaves_devices_it_never_mentions_alone(engine):
+    engine.set_manual_attrs([{"device_id": "3", "attr": "dimmer", "value": 200}])
+    engine.go_cue({"devices": {"1": {"channels": {"Universe": 0, "0": 0}}}, "fade": "0"}, ["1"])
+    engine._render_frame()
+
+    assert engine._universes[0][20] == 200, "device 3 was not addressed"
+    assert engine.get_manual_attrs() == {"3": {"dimmer": 200}}
+
+
+def test_an_alias_on_the_same_channel_is_released_too(engine):
+    """attr_map holds both "dimmer" and "dimmer.main.level" on one channel."""
+    engine.set_manual_attrs([{"device_id": "1", "attr": "dimmer.main.level", "value": 255}])
+    engine.go_cue({"devices": {"1": {"channels": {"Universe": 0, "0": 12}}}, "fade": "0"}, ["1"])
+    engine._render_frame()
+    assert engine._universes[0][0] == 12
+
+
+def test_raw_channel_overrides_are_released_by_a_cue(engine):
+    engine.start()
+    engine.set_channel("probe", 0, 0, 255)
+    engine._render_frame()
+    assert engine._universes[0][0] == 255
+
+    engine.go_cue({"devices": {"1": {"channels": {"Universe": 0, "0": 30}}}, "fade": "0"}, ["1"])
+    engine._render_frame()
+    assert engine._universes[0][0] == 30
+    assert not engine._direct_channels.get(0)

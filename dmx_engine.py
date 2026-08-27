@@ -1642,6 +1642,57 @@ class DMXRenderEngine:
         predicted = target + delta
         return max(0, min(255, int(predicted)))
 
+    def _release_overrides_for_cue_locked(self, written: Dict[str, set]) -> int:
+        """Hand the channels a cue addresses back to the cue.
+
+        The manual layer is applied ON TOP of the cue base so that a fader held
+        on the desk wins -- otherwise the next frame would snap it back. But
+        loading a cue is the operator's newest instruction, so what it addresses
+        stops being held by hand. Without this, a device that was touched once
+        (or merely selected, which pushes its values as intents) ignored every
+        cue for the rest of the session: the blackout cue left it lit, and the
+        next look left it dark.
+
+        Only the channels the cue actually writes are released: a pan held by
+        hand survives a cue that speaks about dimmers, and devices the cue does
+        not address are left alone.
+        """
+        released = 0
+        for dev_id, channels in written.items():
+            if not channels:
+                continue
+            dev = self._devices.get(dev_id)
+            if dev is None:
+                continue
+
+            held = self._manual_attrs.get(dev_id)
+            if held:
+                attr_map = dev.attr_map or {}
+                for attr_key in list(held.keys()):
+                    ch = attr_map.get(attr_key)
+                    if ch is None:
+                        continue
+                    try:
+                        ch = int(ch)
+                    except (TypeError, ValueError):
+                        continue
+                    if ch in channels:
+                        held.pop(attr_key, None)
+                        released += 1
+                if not held:
+                    self._manual_attrs.pop(dev_id, None)
+
+            # Raw channel overrides on the same channels go the same way.
+            direct = self._direct_channels.get(int(dev.universe or 0))
+            if direct:
+                for ch in list(direct.keys()):
+                    if ch in channels:
+                        direct.pop(ch, None)
+                        released += 1
+                if not direct:
+                    self._direct_channels.pop(int(dev.universe or 0), None)
+        return released
+
     def _build_base_universe_map(self, now: float, apply_fade: bool = True) -> Dict[int, Dict[int, int]]:
         """Build base universe map from device channels (+ direct overrides)."""
         out: Dict[int, Dict[int, int]] = {}
@@ -2719,6 +2770,7 @@ class DMXRenderEngine:
         new_cue_effects: Dict[str, Dict[int, List[LiveEffect]]] = {}
 
         ordered_ids = [str(x) for x in (device_order or list(devices.keys()))]
+        written_channels: Dict[str, set] = {}
 
         prev_groups_by_device = deepcopy(self._cue_groups_by_device)
         prev_group_pool = dict(self._cue_effect_groups)
@@ -2745,6 +2797,7 @@ class DMXRenderEngine:
                     val = int(val)
                     end_values[universe][ch] = val
                     self._devices[dev_id].channels[ch] = val
+                    written_channels.setdefault(dev_id, set()).add(ch)
                 except (ValueError, TypeError):
                     continue
 
@@ -2770,6 +2823,10 @@ class DMXRenderEngine:
                                         if k not in ("type", "amplitude", "frequency", "phase")},
                                 start_time=now
                             ))
+
+        # The cue owns what it just wrote; a hand-held value on those channels
+        # would otherwise override it on every single frame.
+        self._release_overrides_for_cue_locked(written_channels)
 
         new_groups = self._normalize_groups(effect_groups_raw)
         groups_by_device_payload = self._build_group_device_map(new_groups)
