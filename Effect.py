@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import random
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -153,135 +152,8 @@ def _swing(u: float, omega_t: float, hold: float = 0.1) -> float:
 def _swing_up(u: float, omega_t: float) -> float:
     return _clamp(_swing(u, omega_t, 0.15)*0.7 + 0.3, -1.0, 1.0)
 
-# --------- Advanced Chaser ----------
-# Seed storage for random mode (per effect instance)
-_chaser_random_seeds: Dict[int, List[int]] = {}
-
-def _apply_fade_curve(t: float, curve: str) -> float:
-    """Apply fade curve to normalized time t in [0,1]"""
-    curve = curve.lower() if curve else "linear"
-    if curve == "linear":
-        return t
-    elif curve == "easein":
-        return t * t
-    elif curve == "easeout":
-        return 1 - (1 - t) * (1 - t)
-    elif curve == "easeinout":
-        return t * t * (3 - 2 * t)
-    elif curve == "snap":
-        return 1.0 if t > 0.5 else 0.0
-    elif curve == "smooth":
-        return t * t * t * (t * (t * 6 - 15) + 10)
-    return t
-
-def _chaser_advanced(t_ms: float, idx: int, count: int, effect: Dict[str, Any]) -> float:
-    """
-    Advanced chaser with multiple parameters:
-    - duration: total cycle duration (ms)
-    - fade: fade in/out time per step (ms)
-    - fadeCurve: Linear, EaseIn, EaseOut, EaseInOut, Snap, Smooth
-    - size: how many devices lit at once
-    - stepSize: jump by N devices per step
-    - breakStep: pause every N steps (0=none)
-    - breakSize: break duration (ms)
-    - playMode: Normal, Reverse, Bounce, In, Out, InOut, Random, Switch
-    """
-    if count <= 0:
-        return -1.0
-
-    duration = max(100, _to_float(effect.get("duration", 2000), 2000))
-    fade_ms = max(0, _to_float(effect.get("fade", 100), 100))
-    fade_curve = str(effect.get("fadeCurve", "Linear"))
-    size = max(1, int(_to_float(effect.get("size", 1), 1)))
-    step_size = max(1, int(_to_float(effect.get("stepSize", 1), 1)))
-    break_step = int(_to_float(effect.get("breakStep", 0), 0))
-    break_size = max(0, _to_float(effect.get("breakSize", 500), 500))
-    play_mode = str(effect.get("playMode", "Normal")).lower()
-
-    # Calculate number of steps
-    num_steps = max(1, (count + step_size - 1) // step_size)
-
-    # Calculate step duration (accounting for breaks)
-    breaks_per_cycle = num_steps // break_step if break_step > 0 else 0
-    total_break_time = breaks_per_cycle * break_size
-    step_duration = (duration - total_break_time) / num_steps
-    step_duration = max(1, step_duration)
-
-    # Calculate current position in cycle
-    cycle_time = t_ms % duration
-
-    # Account for breaks
-    accumulated_time = 0
-    current_step = 0
-    for s in range(num_steps):
-        if break_step > 0 and s > 0 and s % break_step == 0:
-            accumulated_time += break_size
-        if cycle_time < accumulated_time + step_duration:
-            current_step = s
-            break
-        accumulated_time += step_duration
-        current_step = s
-
-    time_in_step = cycle_time - (accumulated_time - step_duration if current_step > 0 else 0)
-
-    # Apply play mode to get the actual step
-    if play_mode == "reverse":
-        current_step = num_steps - 1 - current_step
-    elif play_mode == "bounce":
-        cycle_pos = (t_ms // duration) % 2
-        if cycle_pos == 1:
-            current_step = num_steps - 1 - current_step
-    elif play_mode == "in":
-        current_step = current_step // 2
-    elif play_mode == "out":
-        current_step = num_steps - 1 - current_step // 2
-    elif play_mode == "inout":
-        half = num_steps // 2
-        if current_step < half:
-            current_step = current_step
-        else:
-            current_step = num_steps - 1 - (current_step - half)
-    elif play_mode == "random":
-        effect_id = id(effect)
-        if effect_id not in _chaser_random_seeds or len(_chaser_random_seeds[effect_id]) != num_steps:
-            _chaser_random_seeds[effect_id] = list(range(num_steps))
-            random.shuffle(_chaser_random_seeds[effect_id])
-        current_step = _chaser_random_seeds[effect_id][current_step % num_steps]
-    elif play_mode == "switch":
-        current_step = (current_step * 2) % num_steps if current_step < num_steps // 2 else ((current_step - num_steps // 2) * 2 + 1) % num_steps
-
-    # Calculate which devices are lit
-    start_device = (current_step * step_size) % count
-    lit_devices = set()
-    for i in range(size):
-        lit_devices.add((start_device + i) % count)
-
-    # Check if this device (idx) is lit
-    is_lit = idx in lit_devices
-
-    # Apply fade
-    if fade_ms > 0 and step_duration > 0:
-        fade_ratio = min(fade_ms / step_duration, 0.5)
-        fade_in_end = fade_ratio
-        fade_out_start = 1.0 - fade_ratio
-        progress = time_in_step / step_duration
-
-        if is_lit:
-            if progress < fade_in_end:
-                fade_t = progress / fade_in_end
-                return -1.0 + 2.0 * _apply_fade_curve(fade_t, fade_curve)
-            elif progress > fade_out_start:
-                fade_t = (progress - fade_out_start) / fade_ratio
-                return 1.0 - 2.0 * _apply_fade_curve(fade_t, fade_curve)
-            else:
-                return 1.0
-        else:
-            return -1.0
-
-    return 1.0 if is_lit else -1.0
-
-def _chaser_simple(u: float, idx: int, count: int, width: float = 0.2) -> float:
-    """Simple chaser fallback for legacy compatibility"""
+def _chaser(u: float, _omega_t: float, idx: int = 0, count: int = 1, width: float = 0.2) -> float:
+    """Chaser: one lit window of `width` sweeping across `count` devices."""
     width = max(0.01, min(1.0, width))
     if count <= 0:
         return 0.0

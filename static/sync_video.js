@@ -755,16 +755,6 @@
     if (freezeToggle) {
       freezeToggle.checked = Boolean(status.freeze_global);
     }
-    const effectsOnlyToggle = document.getElementById("autolight-effects-only-toggle");
-    if (effectsOnlyToggle) {
-      const cached = (dmxSettingsCache && dmxSettingsCache.autolight && "effects_only" in dmxSettingsCache.autolight)
-        ? Boolean(dmxSettingsCache.autolight.effects_only)
-        : false;
-      if (effectsOnlyToggle.dataset.userInteracting !== "1" && effectsOnlyToggle.checked !== cached) {
-        effectsOnlyToggle.checked = cached;
-      }
-    }
-
     // Render-mode (pipeline) tri-state: highlight the active button.
     const renderMode = String(
       (status.render && status.render.render_mode)
@@ -2683,29 +2673,6 @@
     }
   }
 
-  async function postAutolightEffectsOnly(enabled) {
-    try {
-      const current = (dmxSettingsCache && dmxSettingsCache.autolight) ? { ...dmxSettingsCache.autolight } : {};
-      current.effects_only = Boolean(enabled);
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autolight: current }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast(data.error || "Effects-only toggle failed", "error");
-        return;
-      }
-      if (dmxSettingsCache && typeof dmxSettingsCache === "object" && data.autolight) {
-        dmxSettingsCache.autolight = data.autolight;
-      }
-      fetchAutolightStatus(true);
-    } catch (err) {
-      toast("Effects-only toggle failed", "error");
-    }
-  }
-
   async function postAutolightSoundCloudClientId(value) {
     try {
       const current = (dmxSettingsCache && dmxSettingsCache.autolight) ? { ...dmxSettingsCache.autolight } : {};
@@ -3492,12 +3459,13 @@
           <div class="dmx-settings-row">
             <div>
               <div class="dmx-settings-label">View mode</div>
-              <div class="dmx-settings-desc">Classic keeps the list editor. Timeline unlocks lanes, zoom and block editing.</div>
+              <div class="dmx-settings-desc">Classic keeps the list editor. Timeline unlocks lanes, zoom and block editing. Rapid Fire shows one launch pad per cue list.</div>
             </div>
             <div class="dmx-segmented">
-              <input id="cue-editor-view-mode" type="hidden" value="${cueEditorViewMode === "timeline" ? "timeline" : "classic"}">
+              <input id="cue-editor-view-mode" type="hidden" value="${["timeline", "rapidfire"].includes(cueEditorViewMode) ? cueEditorViewMode : "classic"}">
               <button type="button" class="dmx-segmented-btn" data-value="classic">Classic</button>
               <button type="button" class="dmx-segmented-btn" data-value="timeline">Timeline</button>
+              <button type="button" class="dmx-segmented-btn" data-value="rapidfire">Rapid Fire</button>
             </div>
           </div>
           <div class="dmx-settings-row">
@@ -3965,15 +3933,6 @@
             freezeToggle.checked = !freezeToggle.checked;
           }
         });
-      });
-    }
-
-    const effectsOnlyToggle = document.getElementById("autolight-effects-only-toggle");
-    if (effectsOnlyToggle) {
-      effectsOnlyToggle.addEventListener("focus", () => { effectsOnlyToggle.dataset.userInteracting = "1"; });
-      effectsOnlyToggle.addEventListener("blur", () => { effectsOnlyToggle.dataset.userInteracting = "0"; });
-      effectsOnlyToggle.addEventListener("change", () => {
-        postAutolightEffectsOnly(Boolean(effectsOnlyToggle.checked));
       });
     }
 

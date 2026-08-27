@@ -21,10 +21,11 @@
     "language": "en"
   },
   "cue_editor": {
-    "view_mode": "classic",
+    "view_mode": "rapidfire",
     "timeline_priority_mode": "top",
-    "zoom_x": 20.0,
-    "zoom_y": 104.0
+    "zoom_x": 65.0,
+    "zoom_y": 104.0,
+    "rapidfire_loop": false
   },
   "autolight": {
     "enabled": false,
@@ -40,7 +41,6 @@
     "audio_device_index": 115,
     "soundcloud_client_id": "",
     "effect_config": {},
-    "effects_only": true,
     "audio_tuning": {
       "bass_band_lo": 30.0,
       "bass_band_hi": 250.0,
@@ -83,7 +83,13 @@
     },
     "render_mode": "off",
     "memory_persistence": true,
-    "structural_prior_mode": "auto"
+    "structural_prior_mode": "auto",
+    "intensity_ceiling": 1.0,
+    "contrast": 1.0,
+    "small_venue": false,
+    "allow_strobe": true,
+    "metadata_enabled": true,
+    "getsongbpm_key": ""
   },
   "dmx_runtime": {
     "render_mode": "ui",

@@ -4,7 +4,11 @@
     timeline_priority_mode: "top",
     zoom_x: 120,
     zoom_y: 88,
+    // Rapid Fire: fire pads on repeat until stopped.
+    rapidfire_loop: false,
   };
+  // Cue panel views: classic table, timeline, and Rapid Fire launch pads.
+  const VIEW_MODES = ["classic", "timeline", "rapidfire"];
   const MIN_BLOCK_MS = 100;
   const TIMELINE_PERSIST_DEBOUNCE_MS = 250;
   const TIMELINE_SNAP_MS = 25;
@@ -63,12 +67,14 @@
 
   function normalizeCueEditorSettings(raw) {
     const next = { ...DEFAULT_SETTINGS, ...(raw && typeof raw === "object" ? raw : {}) };
-    next.view_mode = String(next.view_mode || "classic").trim().toLowerCase() === "timeline" ? "timeline" : "classic";
+    const mode = String(next.view_mode || "classic").trim().toLowerCase();
+    next.view_mode = VIEW_MODES.includes(mode) ? mode : "classic";
     next.timeline_priority_mode = ["top", "bottom", "merge"].includes(String(next.timeline_priority_mode || "").trim().toLowerCase())
       ? String(next.timeline_priority_mode || "").trim().toLowerCase()
       : "top";
     next.zoom_x = clamp(safeNumber(next.zoom_x, DEFAULT_SETTINGS.zoom_x), 20, 480);
     next.zoom_y = clamp(safeNumber(next.zoom_y, DEFAULT_SETTINGS.zoom_y), 48, 240);
+    next.rapidfire_loop = Boolean(next.rapidfire_loop);
     return next;
   }
 
@@ -108,11 +114,12 @@
   }
 
   function updateViewToggle() {
-    const tl = isTimelineEditorMode();
-    const c = document.getElementById("cue-view-classic");
-    const t = document.getElementById("cue-view-timeline");
-    if (c) c.classList.toggle("active", !tl);
-    if (t) t.classList.toggle("active", tl);
+    const active = cueEditorSettings.view_mode;
+    [["cue-view-classic", "classic"], ["cue-view-timeline", "timeline"], ["cue-view-rapidfire", "rapidfire"]]
+      .forEach(([id, mode]) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.classList.toggle("active", active === mode);
+      });
   }
 
   function applyCueEditorLayout() {
@@ -124,6 +131,7 @@
 
     const timelineMode = isTimelineEditorMode();
     body.classList.toggle("cue-editor-mode-timeline", timelineMode);
+    body.classList.toggle("cue-editor-mode-rapidfire", cueEditorSettings.view_mode === "rapidfire");
 
     if (timelineMode) {
       if (controller.parentNode !== mainGrid) {
@@ -847,7 +855,6 @@
     request.payload.start_ms = clampTimelineCursor(startMs);
     request.payload.paused = true;
     backendPlaybackPlan = request.ui_plan || [];
-    backendAppliedPlanIndex = -1;
     backendLastCueToken = 0;
     backendPlaybackStarting = true;
 
@@ -1513,8 +1520,8 @@
         scheduleCueEditorSettingsPersist();
       });
     }
-    // Direct Cue list / Timeline view toggle (bypasses the settings modal).
-    [["cue-view-classic", "classic"], ["cue-view-timeline", "timeline"]].forEach(([id, mode]) => {
+    // Direct Cue list / Timeline / Rapid Fire view toggle (bypasses the settings modal).
+    [["cue-view-classic", "classic"], ["cue-view-timeline", "timeline"], ["cue-view-rapidfire", "rapidfire"]].forEach(([id, mode]) => {
       const btn = document.getElementById(id);
       if (btn && btn.dataset.bound !== "1") {
         btn.dataset.bound = "1";

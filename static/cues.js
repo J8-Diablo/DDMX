@@ -15,14 +15,9 @@ let playbackPhase = "idle";       // "idle" | "waiting" | "fading"
 let playbackWaitRemaining = 0;    // Remaining phase time (ms)
 let playbackPhaseEndHostMs = 0;
 let playbackCueName = "";
-let playbackPrevPhase = "idle";
 let backendLastCueToken = 0;      // Incremented by backend when a cue starts
 let backendPlaybackStarting = false;
 let backendPlaybackPlan = [];
-let backendAppliedPlanIndex = -1;
-let uiFollowRunId = 0;
-let uiFollowStopFlag = false;
-let skipToNextCue = false;
 let playbackSpeed = 1.0;
 let ctcEnabled = false;
 let ctcKeybind = "F8";
@@ -316,7 +311,6 @@ async function runSyncVideoCue(step) {
   }
 }
 
-
 ///////////////////////
 // FICHIERS DE CUE
 ///////////////////////
@@ -345,6 +339,12 @@ async function refreshCueFileList() {
 
     sel.value = (currentCueFilename && files.includes(currentCueFilename))
       ? currentCueFilename : "";
+
+    // The Rapid Fire grid mirrors this list — rebuild it when the scope changes
+    // (project loaded / cue list added or removed).
+    if (typeof window.renderRapidFireGrid === "function") {
+      window.renderRapidFireGrid({ reload: true });
+    }
   } catch (e) {
     console.error(e);
   }
@@ -425,6 +425,9 @@ async function saveCurrentCueFile() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
     });
+    if (typeof window.invalidateRapidFireCache === "function") {
+      window.invalidateRapidFireCache(currentCueFilename);
+    }
     toast("Saved", "success");
   } catch (e) {
     console.error(e);
@@ -739,10 +742,23 @@ function renderCueTable() {
   if (!tbody) return;
 
   const timelineMode = typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode();
+  const rapidFireMode = typeof window.isRapidFireMode === "function" && window.isRapidFireMode();
   const timelineEditor = $id("timeline-editor");
+  const rapidFireGrid = $id("rapidfire-grid");
   const tableContainer = document.querySelector(".cue-table-container");
   if (timelineEditor) timelineEditor.classList.toggle("hidden", !timelineMode);
-  if (tableContainer) tableContainer.classList.toggle("hidden", timelineMode);
+  if (rapidFireGrid) rapidFireGrid.classList.toggle("hidden", !rapidFireMode);
+  if (tableContainer) tableContainer.classList.toggle("hidden", timelineMode || rapidFireMode);
+
+  if (rapidFireMode) {
+    tbody.innerHTML = "";
+    updateCueSelectionCount();
+    updatePlayFromButtonState();
+    if (typeof window.renderRapidFireGrid === "function") {
+      window.renderRapidFireGrid();
+    }
+    return;
+  }
 
   if (timelineMode) {
     tbody.innerHTML = "";
@@ -954,133 +970,6 @@ function newJSON() {
 // PLAYBACK CONTROL
 ///////////////////////
 
-async function runCuesFromUI() {
-  const seq = cuesObj.sequence || [];
-  if (!seq.length) return toast("No cues to play.", "error");
-  if (isBackendRenderMode()) {
-    if (playbackActive) return toast("Playback already active.", "warning");
-    try {
-      await sendBackendCuePayload(buildBackendCuePayloadFromCurrentState());
-      playbackActive = true;
-      playbackPaused = false;
-      playbackPhase = "waiting";
-      playbackCueIndex = -1;
-      playbackWaitRemaining = 0;
-      liveWaitAdjust = 0;
-      startEffectRenderLoop();
-      showPlaybackBar();
-      updatePlaybackUI();
-      await runBackendSequence(seq, 0);
-      toast("Playback started", "info");
-    } catch (e) {
-      playbackActive = false;
-      hidePlaybackBar();
-      updatePlaybackUI();
-      console.error("[BACKEND-PLAYBACK]", e);
-      toast("Backend playback failed", "error");
-    }
-    return;
-  }
-  if (playbackActive) return toast("Playback déjà actif.", "warning");
-  
-  playbackActive = true;
-  uiFollowStopFlag = false;
-  const runId = ++uiFollowRunId;
-
-  // Démarrer la boucle d'animation des effets (si pas déjà démarrée)
-  startEffectRenderLoop();
-  
-  // Pilotage 100% côté UI
-  uiFollowSequence(seq, runId, 0).catch(e => console.error("[UI-FOLLOW]", e));
-  toast("Playback started", "info");
-  showPlaybackBar();
-}
-
-async function stopRun() {
-  uiFollowStopFlag = true;
-  uiFollowRunId++;
-  playbackActive = false;
-  playbackPaused = false;
-  playbackCueIndex = -1;
-  playbackPhase = "idle";
-  liveWaitAdjust = 0;
-  skipToNextCue = false;
-  backendPlaybackPlan = [];
-  backendLastCueToken = 0;
-  backendPlaybackStarting = false;
-
-  // Libérer le verrou DMX au cas où
-  window.dmxLocked = false;
-
-  hidePlaybackBar();
-  updatePlaybackUI();
-
-  if (isBackendRenderMode()) {
-    await fetch("/api/playback/stop", { method: "POST" });
-  } else {
-    await fetch("/api/stop_run", { method: "POST" });
-  }
-  toast("Stopped", "info");
-}
-
-function resetRigStateForPlayback() {
-  deviceLocalValues = {};
-  deviceCurrentGroups = {};
-
-  for (const [devId, dev] of Object.entries(rigDevices)) {
-    const fi = fixtures[dev.fixture] || {};
-    const addrCount = fi.addr_count || 1;
-    const local = {};
-    for (let li = 0; li < addrCount; li++) local[li] = 0;
-    deviceLocalValues[devId] = local;
-    deviceCurrentGroups[devId] = new Set();
-  }
-
-  if (typeof renderActualEffectsPanel === "function") {
-    renderActualEffectsPanel();
-  }
-}
-
-function applyCueFinalStateInstant(step) {
-  if (!step) return;
-
-  for (const devId of Object.keys(step.devices || {})) {
-    const dev = rigDevices[devId];
-    if (!dev) continue;
-    deviceLocalValues[devId] = localValuesFromStepForDevice(dev, step);
-  }
-
-  restoreDeviceGroupsFromStep(step);
-}
-
-function fastForwardSequenceToIndex(seq, targetIdx) {
-  let i = 0;
-  while (i < targetIdx && i < seq.length) {
-    const step = seq[i];
-    if (step.loopGroup) {
-      const groupId = step.loopGroup;
-      const groupStart = i;
-      let groupEnd = i;
-      while (groupEnd + 1 < seq.length && seq[groupEnd + 1].loopGroup === groupId) {
-        groupEnd++;
-      }
-      const loopCount = step.loopCount || 1;
-
-      for (let loopIter = 0; loopIter < loopCount; loopIter++) {
-        for (let j = groupStart; j <= groupEnd && j < targetIdx; j++) {
-          applyCueFinalStateInstant(seq[j]);
-        }
-        if (targetIdx <= groupEnd) break; // Target is inside this loop group
-      }
-
-      i = groupEnd + 1;
-    } else {
-      applyCueFinalStateInstant(step);
-      i++;
-    }
-  }
-}
-
 function findLoopGroupStart(seq, idx) {
   const step = seq[idx];
   if (!step?.loopGroup) return idx;
@@ -1090,64 +979,6 @@ function findLoopGroupStart(seq, idx) {
     start--;
   }
   return start;
-}
-
-async function playFromSelectedCue() {
-  const seq = cuesObj.sequence || [];
-  if (!seq.length) return toast("No cues to play.", "error");
-  if (selectedCueIndex == null) return toast("Select a cue first.", "error");
-
-  // If selection is inside a loop group, start from the beginning of that group
-  const startIdx = findLoopGroupStart(seq, Math.min(selectedCueIndex, seq.length - 1));
-
-  if (playbackActive) {
-    await stopRun();
-  }
-
-  liveWaitAdjust = 0;
-  playbackPaused = false;
-  skipToNextCue = false;
-
-  resetRigStateForPlayback();
-  fastForwardSequenceToIndex(seq, startIdx);
-
-  drawRig();
-  syncRgbWidgetFromFirstDevice();
-  syncPosWidgetFromFirstDevice();
-  refreshControllerFromSelection();
-  if (isBackendRenderMode()) {
-    try {
-      await sendBackendCuePayload(buildBackendCuePayloadFromCurrentState());
-      playbackActive = true;
-      playbackCueIndex = startIdx;
-      playbackPhase = "waiting";
-      playbackWaitRemaining = 0;
-      startEffectRenderLoop();
-      showPlaybackBar();
-      updatePlaybackUI();
-      await runBackendSequence(seq.slice(startIdx), startIdx);
-      toast(`Playback from cue ${startIdx + 1}`, "info");
-    } catch (e) {
-      playbackActive = false;
-      hidePlaybackBar();
-      updatePlaybackUI();
-      console.error("[BACKEND-PLAYBACK]", e);
-      toast("Backend playback failed", "error");
-    }
-    return;
-  }
-  await sendToEngineWithEffects(1.0);
-
-  playbackActive = true;
-  const runId = ++uiFollowRunId;
-  playbackCueIndex = startIdx;
-
-  startEffectRenderLoop();
-  showPlaybackBar();
-  updatePlaybackUI();
-
-  uiFollowSequence(seq.slice(startIdx), runId, startIdx).catch(e => console.error("[UI-FOLLOW]", e));
-  toast(`Playback from cue ${startIdx + 1}`, "info");
 }
 
 // ============================================================================
@@ -1164,20 +995,6 @@ function hidePlaybackBar() {
   const bar = $id("playback-bar");
   if (bar) bar.classList.add("hidden");
   updatePlaybackButtons();
-}
-
-function updatePlaybackButtons() {
-  const pauseBtn = $id("pause-cues");
-  const skipBtn = $id("skip-cue");
-
-  if (pauseBtn) {
-    pauseBtn.disabled = !playbackActive;
-    pauseBtn.textContent = playbackPaused ? "▶ Resume" : "⏸ Pause";
-  }
-  if (skipBtn) {
-    skipBtn.disabled = !playbackActive;
-  }
-  updatePlayFromButtonState();
 }
 
 function updatePlayFromButtonState() {
@@ -1219,29 +1036,6 @@ function updatePlayingHighlight(force = false) {
   });
 }
 
-async function handleBackendCueStart(playbackState) {
-  const planIndex = parseInt(playbackState?.plan_index, 10);
-  if (!Number.isFinite(planIndex) || planIndex < 0 || planIndex >= backendPlaybackPlan.length) return;
-
-  const step = backendPlaybackPlan[planIndex];
-  if (!step) return;
-
-  for (const id of Object.keys(rigDevices)) {
-    const dev = rigDevices[id];
-    if (!dev) continue;
-    deviceLocalValues[id] = localValuesFromStepForDevice(dev, step);
-  }
-  restoreDeviceGroupsFromStep(step);
-  drawRig();
-  refreshControllerFromSelection();
-
-  try {
-    await runSyncVideoCue(step);
-  } catch (err) {
-    console.warn("[SYNC-VIDEO] cue action failed:", err);
-  }
-}
-
 window.applyBackendPlaybackState = function applyBackendPlaybackState(playbackState) {
   if (!playbackState || typeof playbackState !== "object") return;
 
@@ -1271,39 +1065,6 @@ window.applyBackendPlaybackState = function applyBackendPlaybackState(playbackSt
   backendLastCueToken = cueToken;
   handleBackendCueStart(playbackState).catch((err) => console.warn("[BACKEND-CUE]", err));
 };
-
-function loadCueIntoUIAndRun(idx) {
-  const step = cuesObj.sequence[idx];
-  if (!step?.devices) return;
-
-  const order = Array.isArray(step.device_order) && step.device_order.length
-    ? step.device_order.map(String)
-    : Object.keys(step.devices);
-
-  selectedDeviceOrder = order.filter(id => rigDevices[id]);
-  selectedDeviceSet = new Set(selectedDeviceOrder);
-
-  for (const id of Object.keys(rigDevices)) {
-    const dev = rigDevices[id];
-    if (!dev) continue;
-    deviceLocalValues[id] = localValuesFromStepForDevice(dev, step);
-  }
-
-  restoreDeviceGroupsFromStep(step);
-  drawRig();
-  refreshControllerFromSelection();
-
-  playbackActive = true;
-  const runId = ++uiFollowRunId;
-  uiFollowStopFlag = false;
-
-  // Démarrer la boucle d'animation des effets si besoin
-  startEffectRenderLoop();
-
-  // Lecture d'une seule cue en pilotage 100% UI
-  uiFollowSequence([step], runId, idx).catch(e => console.error("[UI-FOLLOW]", e));
-  toast(`Played ${step.name || "cue"}`, "info");
-}
 
 ///////////////////////
 // HELPERS
@@ -1351,147 +1112,9 @@ function restoreDeviceGroupsFromStep(step) {
   }
 }
 
-/**
- * Calcule le pattern de fade à partir d'un champ duration.
- * 
- * Exemples :
- *  "500"          -> baseFadeMs=500, totalMs=500, offsets=0
- *  "500 > 5000"   -> baseFadeMs=500, totalMs=5500, offsets selon ordre
- *  "500 < 5000"   -> idem mais ordre inversé
- *  "500 >< 5000"  -> extrémités -> centre
- *  "500 <> 5000"  -> centre -> extrémités
- *  "500 | 5000"   -> 1 device sur 2 (alternance)
- *  "500 || 5000"  -> moitié / moitié
- *  "500 ? 5000"   -> ordre aléatoire
- */
-function computeFadePattern(fadeField, deviceIds) {
-  const ids = deviceIds || [];
-  const str = String(fadeField ?? "0").trim();
-
-  let baseFadeMs = 0;
-  let spreadMs = 0;
-  let op = null;
-
-  let parts = [];
-  if (str.includes("><")) {
-    op = "><";
-    parts = str.split("><");
-  } else if (str.includes("<>")) {
-    op = "<>";
-    parts = str.split("<>");
-  } else if (str.includes("||")) {
-    op = "||";
-    parts = str.split("||");
-  } else if (str.includes("|")) {
-    op = "|";
-    parts = str.split("|");
-  } else if (str.includes(">")) {
-    op = ">";
-    parts = str.split(">");
-  } else if (str.includes("<")) {
-    op = "<";
-    parts = str.split("<");
-  } else if (str.includes("?")) {
-    op = "?";
-    parts = str.split("?");
-  }
-
-  if (op && parts.length >= 2) {
-    baseFadeMs = parseInt(String(parts[0]).trim(), 10) || 0;
-    spreadMs = parseInt(String(parts[1]).trim(), 10) || 0;
-  } else if (/^\d+$/.test(str)) {
-    baseFadeMs = parseInt(str, 10) || 0;
-  } else {
-    baseFadeMs = 0;
-  }
-
-  const offsets = {};
-  const n = ids.length;
-
-  if (n <= 1 || spreadMs <= 0 || !op) {
-    for (const id of ids) offsets[id] = 0;
-    return { baseFadeMs, totalMs: baseFadeMs, offsets };
-  }
-
-  const indices = [];
-
-  if (op === ">" || op === "<") {
-    for (let i = 0; i < n; i++) indices.push(i);
-    if (op === "<") indices.reverse();
-  } else if (op === "><") {
-    // extrémités -> centre
-    let left = 0, right = n - 1;
-    while (left <= right) {
-      if (left === right) {
-        indices.push(left);
-      } else {
-        indices.push(left);
-        indices.push(right);
-      }
-      left++;
-      right--;
-    }
-  } else if (op === "<>") {
-    // centre -> extrémités
-    if (n % 2 === 1) {
-      const mid = (n - 1) / 2;
-      indices.push(mid);
-      for (let step = 1; step <= mid; step++) {
-        if (mid - step >= 0) indices.push(mid - step);
-        if (mid + step < n) indices.push(mid + step);
-      }
-    } else {
-      const midLeft = n / 2 - 1;
-      const midRight = n / 2;
-      indices.push(midLeft, midRight);
-      for (let step = 1; step <= midLeft; step++) {
-        if (midLeft - step >= 0) indices.push(midLeft - step);
-        if (midRight + step < n) indices.push(midRight + step);
-      }
-    }
-  } else if (op === "|") {
-    // 1 device sur 2 (alternance)
-    for (let i = 0; i < n; i++) {
-      const devId = ids[i];
-      offsets[devId] = (i % 2 === 0) ? 0 : spreadMs;
-    }
-    return { baseFadeMs, totalMs: baseFadeMs + spreadMs, offsets };
-  } else if (op === "||") {
-    // moitié / moitié
-    const split = Math.ceil(n / 2);
-    for (let i = 0; i < n; i++) {
-      const devId = ids[i];
-      offsets[devId] = i < split ? 0 : spreadMs;
-    }
-    return { baseFadeMs, totalMs: baseFadeMs + spreadMs, offsets };
-  } else if (op === "?") {
-    for (let i = 0; i < n; i++) indices.push(i);
-    // shuffle Fisher-Yates
-    for (let i = n - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [indices[i], indices[j]] = [indices[j], indices[i]];
-    }
-  } else {
-    for (let i = 0; i < n; i++) indices.push(i);
-  }
-
-  const denom = Math.max(n - 1, 1);
-  indices.forEach((idxInOrder, rank) => {
-    const devId = ids[idxInOrder];
-    const offset = (spreadMs * rank) / denom;
-    offsets[devId] = offset;
-  });
-
-  return { baseFadeMs, totalMs: baseFadeMs + spreadMs, offsets };
-}
-
 ///////////////////////
-// UI FOLLOW SEQUENCE
+// BACKEND CUE PAYLOAD + PLAYBACK CONTROL
 ///////////////////////
-
-function isBackendRenderMode() {
-  return typeof window.isBackendMode === "function" && window.isBackendMode();
-}
 
 function buildBackendEffectGroupsFromStep(step) {
   const map = step?.device_groups || {};
@@ -1626,45 +1249,6 @@ async function sendCueToBackend(step) {
   await sendBackendCuePayload(cue);
 }
 
-async function runBackendSequence(seq, indexOffset = 0) {
-  backendPlaybackPlan = flattenPlaybackSequence(seq, indexOffset);
-  backendLastCueToken = 0;
-  backendPlaybackStarting = true;
-  if (backendPlaybackPlan.length) {
-    const firstCueIndex = Number(backendPlaybackPlan[0]?.playback_index);
-    if (Number.isFinite(firstCueIndex)) {
-      playbackCueIndex = firstCueIndex;
-    }
-    if (playbackPhase === "waiting") {
-      playbackWaitRemaining = Math.max(0, parseInt(backendPlaybackPlan[0]?.sleep, 10) || 0);
-    }
-    updatePlaybackUI();
-  }
-
-  const payload = {
-    sequence: backendPlaybackPlan.map((step) => {
-      const cue = buildBackendCuePayload(step);
-      return {
-        ...cue,
-        sleep: step?.sleep ?? "0",
-        playback_index: step?.playback_index ?? -1,
-        sync_video: step?.sync_video || null,
-      };
-    }),
-  };
-
-  const res = await fetch("/api/playback/run", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    backendPlaybackStarting = false;
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "backend playback failed");
-  }
-}
-
 async function controlBackendPlayback(action, deltaMs = 0, extraPayload = null) {
   const res = await fetch("/api/playback/control", {
     method: "POST",
@@ -1679,699 +1263,6 @@ async function controlBackendPlayback(action, deltaMs = 0, extraPayload = null) 
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || "backend playback control failed");
   }
-}
-
-async function uiFollowSequence(seq, runId, indexOffset = 0) {
-  uiFollowStopFlag = false;
-  skipToNextCue = false;
-  if (!Array.isArray(seq)) return;
-  const plan = flattenPlaybackSequence(seq, indexOffset);
-  
-  for (let planIndex = 0; planIndex < plan.length; planIndex++) {
-    const step = plan[planIndex];
-    if (uiFollowStopFlag || runId !== uiFollowRunId) break;
-    playbackCueIndex = Number.isFinite(Number(step?.playback_index))
-      ? Number(step.playback_index)
-      : -1;
-    updatePlaybackUI();
-    await uiFollowStep(step, runId, {
-      hasNext: planIndex < plan.length - 1,
-    });
-  }
-
-  if (runId === uiFollowRunId) {
-    playbackActive = false;
-    playbackCueIndex = -1;
-    playbackPhase = "idle";
-    hidePlaybackBar();
-    updatePlaybackUI();
-  }
-}
-
-// ============================================================================
-// DOUBLE FADE avec VERROU DMX + presets de transition + mix d'effets
-// ============================================================================
-
-async function uiFollowStep(step, runId, timeline = null) {
-  if (isBackendRenderMode()) {
-    return await uiFollowStepBackend(step, runId);
-  }
-  if (uiFollowStopFlag || runId !== uiFollowRunId) return;
-
-  const hasTimeline = Boolean(
-    timeline &&
-    Number.isFinite(timeline.anchorMs) &&
-    Number.isFinite(timeline.cursorMs)
-  );
-  const sleepMs = Math.max(0, parseInt(step.sleep, 10) || 0);
-
-  // 1. SLEEP (SANS verrou) avec support pause/skip/adjust
-  let pauseStartedMs = null;
-  let waitBaseTargetMs = hasTimeline
-    ? timeline.anchorMs + timeline.cursorMs + sleepMs
-    : performance.now() + sleepMs;
-  const totalSleepMs = Math.max(0, sleepMs + liveWaitAdjust);
-
-  if (totalSleepMs > 0) {
-    playbackPhase = "waiting";
-    updatePlaybackUI();
-
-    while (true) {
-      if (uiFollowStopFlag || runId !== uiFollowRunId) return;
-      if (skipToNextCue) {
-        skipToNextCue = false;
-        if (hasTimeline) {
-          timeline.cursorMs = Math.max(0, performance.now() - timeline.anchorMs);
-        }
-        break;
-      }
-
-      const now = performance.now();
-      if (playbackPaused) {
-        if (pauseStartedMs == null) pauseStartedMs = now;
-        updatePlaybackUI();
-        await new Promise(r => setTimeout(r, 50));
-        continue;
-      }
-
-      if (pauseStartedMs != null) {
-        const pausedForMs = now - pauseStartedMs;
-        if (hasTimeline) {
-          timeline.anchorMs += pausedForMs;
-        }
-        waitBaseTargetMs += pausedForMs;
-        pauseStartedMs = null;
-      }
-
-      const waitTargetMs = waitBaseTargetMs + liveWaitAdjust;
-      playbackWaitRemaining = Math.max(0, waitTargetMs - now);
-      updatePlaybackUI();
-
-      if (now >= waitTargetMs) {
-        if (hasTimeline) {
-          timeline.cursorMs = Math.max(0, waitTargetMs - timeline.anchorMs);
-        }
-        break;
-      }
-      await new Promise(r => setTimeout(r, 20));
-    }
-  }
-
-  playbackPhase = "fading";
-  playbackWaitRemaining = 0;
-  updatePlaybackUI();
-
-  await runSyncVideoCue(step);
-
-  if (!step.devices) return;
-  
-  // === Snapshot des groupes AVANT la cue (état A) ===
-  const prevGroupsSnapshot = {};
-  for (const devId of Object.keys(rigDevices)) {
-    const set = deviceCurrentGroups[devId] || new Set();
-    prevGroupsSnapshot[devId] = new Set(set);
-  }
-
-  // 2. PRÉPARER LES DONNÉES
-  const order = Array.isArray(step.device_order) && step.device_order.length
-    ? step.device_order.map(String)
-    : Object.keys(step.devices);
-  
-  const targets = {};
-  const startVals = {};
-  
-  for (const id of order) {
-    const dev = rigDevices[id];
-    const entry = step.devices[id];
-    if (!dev || !entry) continue;
-    
-    const fi = fixtures[dev.fixture] || {};
-    const addrCount = fi.addr_count || 1;
-    
-    targets[id] = {};
-    startVals[id] = {};
-    
-    for (let li = 0; li < addrCount; li++) {
-      const absCh = dev.address + li;
-      const vEnd = parseInt(entry.channels?.[String(absCh)], 10) || 0;
-      targets[id][li] = vEnd;
-      startVals[id][li] = deviceLocalValues[id]?.[li] ?? 0;
-    }
-  }
-  
-  // Appliquer les groupes de la cue (état B)
-  restoreDeviceGroupsFromStep(step);
-  ensureVirtualGroupsRoot?.();
-
-  // === Snapshot des groupes APRÈS la cue (état B) ===
-  const nextGroupsSnapshot = {};
-  for (const devId of Object.keys(rigDevices)) {
-    const set = deviceCurrentGroups[devId] || new Set();
-    nextGroupsSnapshot[devId] = new Set(set);
-  }
-
-  // Union A ∪ B pour avoir tous les effets actifs pendant le fade
-  const unionGroups = {};
-  for (const devId of Object.keys(rigDevices)) {
-    const sA = prevGroupsSnapshot[devId] || new Set();
-    const sB = nextGroupsSnapshot[devId] || new Set();
-    unionGroups[devId] = new Set([...sA, ...sB]);
-  }
-
-  // Pendant le fade, on se met sur UNION(A,B)
-  deviceCurrentGroups = {};
-  for (const [devId, setU] of Object.entries(unionGroups)) {
-    deviceCurrentGroups[devId] = new Set(setU);
-  }
-
-  if (typeof renderActualEffectsPanel === "function") {
-    renderActualEffectsPanel();
-  }
-
-  // === Calcul du pattern de fade (simple ou preset) ===
-  const { baseFadeMs, totalMs: fadeTotalMs, offsets } =
-    computeFadePattern(step.duration || "0", order);
-
-  // ========================================
-  // 🔒 ACTIVER LE VERROU DMX
-  // ========================================
-  window.dmxLocked = true;
-  console.log(`[CUE] 🔒 DMX LOCKED for ${fadeTotalMs}ms transition (base=${baseFadeMs}ms)`);
-
-  try {
-    // 3. CUT (pas de fade)
-    if (fadeTotalMs <= 0 || baseFadeMs <= 0) {
-      for (const [id, localMap] of Object.entries(targets)) {
-        deviceLocalValues[id] ||= {};
-        for (const [li, v] of Object.entries(localMap)) {
-          deviceLocalValues[id][parseInt(li, 10)] = v;
-        }
-      }
-
-      // On termine en état B (groupes de la cue)
-      deviceCurrentGroups = {};
-      for (const [devId, setB] of Object.entries(nextGroupsSnapshot)) {
-        deviceCurrentGroups[devId] = new Set(setB);
-      }
-      
-      await sendToEngineWithEffects(1.0);
-      
-      drawRig();
-      syncRgbWidgetFromFirstDevice();
-      syncPosWidgetFromFirstDevice();
-      return;
-    }
-    
-    // 4. FADE PROGRESSIF avec offsets par device
-  let fadeStartMs = hasTimeline
-    ? timeline.anchorMs + timeline.cursorMs
-    : performance.now();
-  let fadeEndMs = fadeStartMs + fadeTotalMs;
-  pauseStartedMs = null;
-    
-  while (!uiFollowStopFlag && runId === uiFollowRunId) {
-      // Check for skip during fade
-      if (skipToNextCue) {
-        skipToNextCue = false;
-        // Jump to final state
-        for (const [id, localMap] of Object.entries(targets)) {
-          deviceLocalValues[id] ||= {};
-          for (const [liStr, vEnd] of Object.entries(localMap)) {
-            deviceLocalValues[id][parseInt(liStr, 10)] = vEnd;
-          }
-        }
-        if (hasTimeline) {
-          timeline.cursorMs = Math.max(0, performance.now() - timeline.anchorMs);
-        }
-        break;
-      }
-
-      const now = performance.now();
-      if (playbackPaused) {
-        if (pauseStartedMs == null) pauseStartedMs = now;
-        updatePlaybackUI();
-        await new Promise(r => setTimeout(r, 50));
-        continue;
-      }
-
-      if (pauseStartedMs != null) {
-        const pausedForMs = now - pauseStartedMs;
-        if (hasTimeline) {
-          timeline.anchorMs += pausedForMs;
-        }
-        fadeStartMs += pausedForMs;
-        fadeEndMs += pausedForMs;
-        pauseStartedMs = null;
-      }
-
-      const elapsed = now - fadeStartMs;
-
-      // A. Fade des valeurs de base par device
-      for (const [id, localMap] of Object.entries(targets)) {
-        const offset = offsets[id] || 0;
-        const tDev = elapsed - offset;
-
-        let devProgress;
-        if (tDev <= 0) devProgress = 0;
-        else if (tDev >= baseFadeMs) devProgress = 1;
-        else devProgress = tDev / baseFadeMs;
-
-        deviceLocalValues[id] ||= {};
-        for (const [liStr, vEnd] of Object.entries(localMap)) {
-          const li = parseInt(liStr, 10);
-          const v0 = startVals[id][li] ?? 0;
-          deviceLocalValues[id][li] = Math.round(v0 + (vEnd - v0) * devProgress);
-        }
-      }
-
-      // B. Mix d’effets entre A et B, par device
-      const groupMix = {};
-      for (const devId of Object.keys(rigDevices)) {
-        const offset = offsets[devId] || 0;
-        const tDev = elapsed - offset;
-
-        let devProgress;
-        if (tDev <= 0) devProgress = 0;
-        else if (tDev >= baseFadeMs) devProgress = 1;
-        else devProgress = tDev / baseFadeMs;
-
-        const sA = prevGroupsSnapshot[devId] || new Set();
-        const sB = nextGroupsSnapshot[devId] || new Set();
-        const sU = unionGroups[devId] || new Set();
-
-        if (!sU.size) continue;
-
-        const gmForDev = {};
-        for (const gId of sU) {
-          if (sA.has(gId) && sB.has(gId)) {
-            // Même effet dans A et B -> amplitude constante
-            gmForDev[gId] = 1;
-          } else if (sA.has(gId) && !sB.has(gId)) {
-            // Effet seulement dans A -> fade-out
-            gmForDev[gId] = 1 - devProgress;
-          } else if (!sA.has(gId) && sB.has(gId)) {
-            // Effet seulement dans B -> fade-in
-            gmForDev[gId] = devProgress;
-          }
-        }
-
-        if (Object.keys(gmForDev).length) {
-          groupMix[devId] = gmForDev;
-        }
-      }
-      
-      // C. Appliquer avec effets mixés (phase continue)
-      await sendToEngineWithEffects(1.0, groupMix);
-      
-      drawRig();
-      syncRgbWidgetFromFirstDevice();
-      syncPosWidgetFromFirstDevice();
-      
-      if (now >= fadeEndMs) {
-        if (hasTimeline) {
-          timeline.cursorMs = Math.max(0, fadeEndMs - timeline.anchorMs);
-        }
-        break;
-      }
-      await new Promise(r => setTimeout(r, 20));
-    }
-    
-    // 5. FINALISER
-    for (const [id, localMap] of Object.entries(targets)) {
-      deviceLocalValues[id] ||= {};
-      for (const [li, v] of Object.entries(localMap)) {
-        deviceLocalValues[id][parseInt(li, 10)] = v;
-      }
-    }
-
-    // On termine en état B pur (groupes de la cue)
-    deviceCurrentGroups = {};
-    for (const [devId, setB] of Object.entries(nextGroupsSnapshot)) {
-      deviceCurrentGroups[devId] = new Set(setB);
-    }
-
-    if (typeof renderActualEffectsPanel === "function") {
-      renderActualEffectsPanel();
-    }
-
-    await sendToEngineWithEffects(1.0);
-    
-    drawRig();
-    syncRgbWidgetFromFirstDevice();
-    syncPosWidgetFromFirstDevice();
-    
-  } finally {
-    // ========================================
-    // 🔓 LIBÉRER LE VERROU DMX
-    // ========================================
-    window.dmxLocked = false;
-    console.log('[CUE] 🔓 DMX UNLOCKED');
-  }
-}
-
-async function uiFollowStep(step, runId, options = {}) {
-  if (isBackendRenderMode()) {
-    return await uiFollowStepBackend(step, runId);
-  }
-  if (uiFollowStopFlag || runId !== uiFollowRunId) return;
-
-  const hasNext = options?.hasNext !== false;
-  const sleepMs = Math.max(0, parseInt(step.sleep, 10) || 0);
-  let pauseStartedMs = null;
-  let skipPostWait = false;
-
-  playbackPhase = "fading";
-  playbackWaitRemaining = 0;
-  updatePlaybackUI();
-
-  await runSyncVideoCue(step);
-
-  if (step.devices) {
-    const prevGroupsSnapshot = {};
-    for (const devId of Object.keys(rigDevices)) {
-      const set = deviceCurrentGroups[devId] || new Set();
-      prevGroupsSnapshot[devId] = new Set(set);
-    }
-
-    const order = Array.isArray(step.device_order) && step.device_order.length
-      ? step.device_order.map(String)
-      : Object.keys(step.devices);
-
-    const targets = {};
-    const startVals = {};
-
-    for (const id of order) {
-      const dev = rigDevices[id];
-      const entry = step.devices[id];
-      if (!dev || !entry) continue;
-
-      const fi = fixtures[dev.fixture] || {};
-      const addrCount = fi.addr_count || 1;
-
-      targets[id] = {};
-      startVals[id] = {};
-
-      for (let li = 0; li < addrCount; li++) {
-        const absCh = dev.address + li;
-        const vEnd = parseInt(entry.channels?.[String(absCh)], 10) || 0;
-        targets[id][li] = vEnd;
-        startVals[id][li] = deviceLocalValues[id]?.[li] ?? 0;
-      }
-    }
-
-    restoreDeviceGroupsFromStep(step);
-    ensureVirtualGroupsRoot?.();
-
-    const nextGroupsSnapshot = {};
-    for (const devId of Object.keys(rigDevices)) {
-      const set = deviceCurrentGroups[devId] || new Set();
-      nextGroupsSnapshot[devId] = new Set(set);
-    }
-
-    const unionGroups = {};
-    for (const devId of Object.keys(rigDevices)) {
-      const sA = prevGroupsSnapshot[devId] || new Set();
-      const sB = nextGroupsSnapshot[devId] || new Set();
-      unionGroups[devId] = new Set([...sA, ...sB]);
-    }
-
-    deviceCurrentGroups = {};
-    for (const [devId, setU] of Object.entries(unionGroups)) {
-      deviceCurrentGroups[devId] = new Set(setU);
-    }
-
-    if (typeof renderActualEffectsPanel === "function") {
-      renderActualEffectsPanel();
-    }
-
-    const { baseFadeMs, totalMs: fadeTotalMs, offsets } =
-      computeFadePattern(step.duration || "0", order);
-
-    window.dmxLocked = true;
-    console.log(`[CUE] DMX LOCKED for ${fadeTotalMs}ms transition (base=${baseFadeMs}ms)`);
-
-    try {
-      if (fadeTotalMs <= 0 || baseFadeMs <= 0) {
-        for (const [id, localMap] of Object.entries(targets)) {
-          deviceLocalValues[id] ||= {};
-          for (const [li, v] of Object.entries(localMap)) {
-            deviceLocalValues[id][parseInt(li, 10)] = v;
-          }
-        }
-
-        deviceCurrentGroups = {};
-        for (const [devId, setB] of Object.entries(nextGroupsSnapshot)) {
-          deviceCurrentGroups[devId] = new Set(setB);
-        }
-
-        await sendToEngineWithEffects(1.0);
-        drawRig();
-        syncRgbWidgetFromFirstDevice();
-        syncPosWidgetFromFirstDevice();
-      } else {
-        let fadeStartMs = performance.now();
-        let fadeEndMs = fadeStartMs + fadeTotalMs;
-        pauseStartedMs = null;
-
-        while (!uiFollowStopFlag && runId === uiFollowRunId) {
-          if (skipToNextCue) {
-            skipToNextCue = false;
-            skipPostWait = true;
-            for (const [id, localMap] of Object.entries(targets)) {
-              deviceLocalValues[id] ||= {};
-              for (const [liStr, vEnd] of Object.entries(localMap)) {
-                deviceLocalValues[id][parseInt(liStr, 10)] = vEnd;
-              }
-            }
-            break;
-          }
-
-          const now = performance.now();
-          if (playbackPaused) {
-            if (pauseStartedMs == null) pauseStartedMs = now;
-            updatePlaybackUI();
-            await new Promise(r => setTimeout(r, 50));
-            continue;
-          }
-
-          if (pauseStartedMs != null) {
-            const pausedForMs = now - pauseStartedMs;
-            fadeStartMs += pausedForMs;
-            fadeEndMs += pausedForMs;
-            pauseStartedMs = null;
-          }
-
-          const elapsed = now - fadeStartMs;
-
-          for (const [id, localMap] of Object.entries(targets)) {
-            const offset = offsets[id] || 0;
-            const tDev = elapsed - offset;
-
-            let devProgress;
-            if (tDev <= 0) devProgress = 0;
-            else if (tDev >= baseFadeMs) devProgress = 1;
-            else devProgress = tDev / baseFadeMs;
-
-            deviceLocalValues[id] ||= {};
-            for (const [liStr, vEnd] of Object.entries(localMap)) {
-              const li = parseInt(liStr, 10);
-              const v0 = startVals[id][li] ?? 0;
-              deviceLocalValues[id][li] = Math.round(v0 + (vEnd - v0) * devProgress);
-            }
-          }
-
-          const groupMix = {};
-          for (const devId of Object.keys(rigDevices)) {
-            const offset = offsets[devId] || 0;
-            const tDev = elapsed - offset;
-
-            let devProgress;
-            if (tDev <= 0) devProgress = 0;
-            else if (tDev >= baseFadeMs) devProgress = 1;
-            else devProgress = tDev / baseFadeMs;
-
-            const sA = prevGroupsSnapshot[devId] || new Set();
-            const sB = nextGroupsSnapshot[devId] || new Set();
-            const sU = unionGroups[devId] || new Set();
-            if (!sU.size) continue;
-
-            const gmForDev = {};
-            for (const gId of sU) {
-              if (sA.has(gId) && sB.has(gId)) {
-                gmForDev[gId] = 1;
-              } else if (sA.has(gId) && !sB.has(gId)) {
-                gmForDev[gId] = 1 - devProgress;
-              } else if (!sA.has(gId) && sB.has(gId)) {
-                gmForDev[gId] = devProgress;
-              }
-            }
-
-            if (Object.keys(gmForDev).length) {
-              groupMix[devId] = gmForDev;
-            }
-          }
-
-          await sendToEngineWithEffects(1.0, groupMix);
-          drawRig();
-          syncRgbWidgetFromFirstDevice();
-          syncPosWidgetFromFirstDevice();
-
-          if (now >= fadeEndMs) break;
-          await new Promise(r => setTimeout(r, 20));
-        }
-
-        for (const [id, localMap] of Object.entries(targets)) {
-          deviceLocalValues[id] ||= {};
-          for (const [li, v] of Object.entries(localMap)) {
-            deviceLocalValues[id][parseInt(li, 10)] = v;
-          }
-        }
-
-        deviceCurrentGroups = {};
-        for (const [devId, setB] of Object.entries(nextGroupsSnapshot)) {
-          deviceCurrentGroups[devId] = new Set(setB);
-        }
-
-        if (typeof renderActualEffectsPanel === "function") {
-          renderActualEffectsPanel();
-        }
-
-        await sendToEngineWithEffects(1.0);
-        drawRig();
-        syncRgbWidgetFromFirstDevice();
-        syncPosWidgetFromFirstDevice();
-      }
-    } finally {
-      window.dmxLocked = false;
-      console.log("[CUE] DMX UNLOCKED");
-    }
-  }
-
-  if (uiFollowStopFlag || runId !== uiFollowRunId || !hasNext || skipPostWait) return;
-
-  const totalSleepMs = Math.max(0, sleepMs + liveWaitAdjust);
-  if (totalSleepMs <= 0) return;
-
-  playbackPhase = "waiting";
-  playbackWaitRemaining = totalSleepMs;
-  updatePlaybackUI();
-
-  let waitBaseTargetMs = performance.now() + sleepMs;
-  pauseStartedMs = null;
-
-  while (true) {
-    if (uiFollowStopFlag || runId !== uiFollowRunId) return;
-    if (skipToNextCue) {
-      skipToNextCue = false;
-      break;
-    }
-
-    const now = performance.now();
-    if (playbackPaused) {
-      if (pauseStartedMs == null) pauseStartedMs = now;
-      updatePlaybackUI();
-      await new Promise(r => setTimeout(r, 50));
-      continue;
-    }
-
-    if (pauseStartedMs != null) {
-      const pausedForMs = now - pauseStartedMs;
-      waitBaseTargetMs += pausedForMs;
-      pauseStartedMs = null;
-    }
-
-    const waitTargetMs = waitBaseTargetMs + liveWaitAdjust;
-    playbackWaitRemaining = Math.max(0, waitTargetMs - now);
-    updatePlaybackUI();
-
-    if (now >= waitTargetMs) break;
-    await new Promise(r => setTimeout(r, 20));
-  }
-}
-
-async function uiFollowStepBackend(step, runId) {
-  if (uiFollowStopFlag || runId !== uiFollowRunId) return;
-
-  const baseSleepMs = parseInt(step.sleep, 10) || 0;
-  const totalSleepMs = Math.max(0, baseSleepMs + liveWaitAdjust);
-
-  if (totalSleepMs > 0) {
-    playbackPhase = "waiting";
-    const start = performance.now();
-
-    while (true) {
-      if (uiFollowStopFlag || runId !== uiFollowRunId) return;
-      if (skipToNextCue) {
-        skipToNextCue = false;
-        break;
-      }
-
-      while (playbackPaused && !uiFollowStopFlag && runId === uiFollowRunId) {
-        updatePlaybackUI();
-        await new Promise(r => setTimeout(r, 50));
-      }
-
-      const elapsed = performance.now() - start;
-      const currentTotal = Math.max(0, baseSleepMs + liveWaitAdjust);
-      playbackWaitRemaining = Math.max(0, currentTotal - elapsed);
-      updatePlaybackUI();
-
-      if (elapsed >= currentTotal) break;
-      await new Promise(r => setTimeout(r, 20));
-    }
-  }
-
-  playbackPhase = "fading";
-  playbackWaitRemaining = 0;
-  updatePlaybackUI();
-
-  await runSyncVideoCue(step);
-
-  if (!step.devices) return;
-
-  const order = Array.isArray(step.device_order) && step.device_order.length
-    ? step.device_order.map(String)
-    : Object.keys(step.devices);
-
-  const { totalMs: fadeTotalMs } = computeFadePattern(step.duration || "0", order);
-
-  window.dmxLocked = true;
-  try {
-    await sendCueToBackend(step);
-  } catch (err) {
-    console.warn("[BACKEND] cue send failed:", err);
-    if (typeof window.fallbackToUiMode === "function") {
-      window.fallbackToUiMode("Backend cue failed, fallback to UI render mode.");
-    }
-  }
-
-  for (const id of Object.keys(rigDevices)) {
-    const dev = rigDevices[id];
-    if (!dev) continue;
-    deviceLocalValues[id] = localValuesFromStepForDevice(dev, step);
-  }
-  restoreDeviceGroupsFromStep(step);
-  drawRig();
-  refreshControllerFromSelection();
-
-  const fadeStart = performance.now();
-  while (!uiFollowStopFlag && runId === uiFollowRunId) {
-    if (skipToNextCue) {
-      skipToNextCue = false;
-      break;
-    }
-    while (playbackPaused && !uiFollowStopFlag && runId === uiFollowRunId) {
-      updatePlaybackUI();
-      await new Promise(r => setTimeout(r, 50));
-    }
-    const elapsed = performance.now() - fadeStart;
-    playbackWaitRemaining = Math.max(0, fadeTotalMs - elapsed);
-    updatePlaybackUI();
-    if (elapsed >= fadeTotalMs) break;
-    await new Promise(r => setTimeout(r, 20));
-  }
-
-  window.dmxLocked = false;
 }
 
 // ============================================================================
@@ -2398,7 +1289,7 @@ async function sendToEngineWithEffects(effectScale, groupMix) {
     const u = dev.universe || 0;
     perUniverseMap[u] ||= {};
 
-    // Base brute (valeurs locales interpolées par uiFollowStep)
+    // Base brute (valeurs locales du device, telles que stockées)
     const addrCount = fi.addr_count || 1;
     for (let li = 0; li < addrCount; li++) {
       const absCh = dev.address + li;
@@ -2601,36 +1492,6 @@ function getPlaybackCueLabel() {
   return "--";
 }
 
-function resetRigStateForPlaybackUi() {
-  deviceLocalValues = {};
-  deviceCurrentGroups = {};
-
-  for (const [devId, dev] of Object.entries(rigDevices)) {
-    const fi = fixtures[dev.fixture] || {};
-    const addrCount = getFixtureFootprint(fi);
-    const local = {};
-    for (let li = 0; li < addrCount; li++) local[li] = 0;
-    deviceLocalValues[devId] = local;
-    deviceCurrentGroups[devId] = new Set();
-  }
-}
-
-function applyPlaybackUiStep(step) {
-  if (!step || typeof step !== "object") return;
-
-  for (const devId of Object.keys(step.devices || {})) {
-    const dev = rigDevices[devId];
-    if (!dev) continue;
-    deviceLocalValues[devId] = localValuesFromStepForDevice(dev, step);
-  }
-  restoreDeviceGroupsFromStep(step);
-}
-
-function rebuildPlaybackUiState(planIndex) {
-  if (!Number.isFinite(planIndex) || planIndex < 0) return;
-  backendAppliedPlanIndex = Math.min(planIndex, backendPlaybackPlan.length - 1);
-}
-
 async function handleBackendCueStart(playbackState) {
   const planIndex = parseInt(playbackState?.plan_index, 10);
   const step = getPlaybackStepByPlanIndex(planIndex);
@@ -2639,8 +1500,6 @@ async function handleBackendCueStart(playbackState) {
   if (ctcActive) {
     resetCtcSplitBase(performance.now());
   }
-
-  rebuildPlaybackUiState(planIndex);
 
   try {
     await runSyncVideoCue(step);
@@ -2742,18 +1601,27 @@ function updatePlaybackUI() {
 
   updatePlaybackButtons();
   updatePlayingHighlight();
+  if (typeof window.refreshRapidFirePads === "function") {
+    window.refreshRapidFirePads();
+  }
 }
 
-async function runBackendSequence(seq, startIndex = 0) {
+// `options.timeline` forces the pipeline instead of following the active view
+// (omitted → the current view decides, as before). `options.loop` /
+// `options.loopCount` repeat the whole cue list — Rapid Fire uses both.
+async function runBackendSequence(seq, startIndex = 0, options = {}) {
   const cleanSequence = Array.isArray(seq) ? seq.filter((step) => step && typeof step === "object") : [];
   if (!cleanSequence.length) {
     throw new Error("empty playback sequence");
   }
+  const useTimeline = (options && typeof options.timeline === "boolean")
+    ? options.timeline
+    : (typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode());
   playbackSpeed = getSelectedPlaybackSpeed();
   const ctcStartedForRun = maybeStartCtcForPlayback();
 
   try {
-    if (typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode()) {
+    if (useTimeline) {
       const timelineRequest = typeof window.buildTimelinePlaybackRequest === "function"
         ? window.buildTimelinePlaybackRequest(startIndex)
         : null;
@@ -2762,7 +1630,6 @@ async function runBackendSequence(seq, startIndex = 0) {
       }
 
       backendPlaybackPlan = timelineRequest.ui_plan || [];
-      backendAppliedPlanIndex = -1;
       backendLastCueToken = 0;
       backendPlaybackStarting = true;
       window.backendPlaybackOwned = true;
@@ -2807,7 +1674,6 @@ async function runBackendSequence(seq, startIndex = 0) {
 
     const resolvedStartIndex = findLoopGroupStart(cleanSequence, Math.max(0, Math.min(startIndex, cleanSequence.length - 1)));
     backendPlaybackPlan = flattenPlaybackSequence(cleanSequence, 0);
-    backendAppliedPlanIndex = -1;
     backendLastCueToken = 0;
     backendPlaybackStarting = true;
     window.backendPlaybackOwned = true;
@@ -2833,6 +1699,9 @@ async function runBackendSequence(seq, startIndex = 0) {
         virtual_groups: virtualGroups || {},
         speed: playbackSpeed,
         mode: "classic",
+        // Whole-sequence loop (Rapid Fire); loop_count 0 = forever.
+        loop: Boolean(options && options.loop),
+        loop_count: Math.max(0, parseInt(options && options.loopCount, 10) || 0),
       }),
     });
 
@@ -2895,13 +1764,9 @@ async function runCuesFromUI() {
 }
 
 async function stopRun(silent = false) {
-  uiFollowStopFlag = true;
-  uiFollowRunId++;
-  skipToNextCue = false;
   backendPlaybackStarting = false;
   backendLastCueToken = 0;
   backendPlaybackPlan = [];
-  backendAppliedPlanIndex = -1;
   window.backendPlaybackOwned = false;
   playbackActive = false;
   playbackPaused = false;
@@ -3042,7 +1907,6 @@ window.applyBackendPlaybackState = function applyBackendPlaybackState(playbackSt
     liveWaitAdjust = 0;
     backendLastCueToken = 0;
     backendPlaybackPlan = [];
-    backendAppliedPlanIndex = -1;
     devicePreviewRGB = {};
     devicePreviewDimmer = {};
     hidePlaybackBar();
@@ -3057,7 +1921,6 @@ window.applyBackendPlaybackState = function applyBackendPlaybackState(playbackSt
   ) {
     resetCtcSplitBase(performance.now());
   }
-  playbackPrevPhase = playbackPhase;
 
   updatePlaybackUI();
 
@@ -3066,7 +1929,6 @@ window.applyBackendPlaybackState = function applyBackendPlaybackState(playbackSt
   backendLastCueToken = cueToken;
   handleBackendCueStart(playbackState).catch((err) => console.warn("[BACKEND-CUE]", err));
 }
-
 
 document.addEventListener("DOMContentLoaded", () => {
   normalizeCuePanelPlaybackLayout();
@@ -3237,43 +2099,17 @@ window.isCuePlaybackActive = function isCuePlaybackActive() {
     });
   }
 
-  // Pause/Resume button
-  const pauseBtn = $id("pause-cues");
-  if (pauseBtn) {
-    pauseBtn.addEventListener("click", async () => {
-      if (!playbackActive) return;
-      if (isBackendRenderMode()) {
-        const nextPaused = !playbackPaused;
-        try {
-          await controlBackendPlayback(nextPaused ? "pause" : "resume");
-          toast(nextPaused ? "Playback paused" : "Playback resumed", "info");
-        } catch (err) {
-          console.warn("[BACKEND-PLAYBACK] pause/resume failed:", err);
-        }
-        return;
-      }
-      playbackPaused = !playbackPaused;
-      updatePlaybackUI();
-      toast(playbackPaused ? "Playback paused" : "Playback resumed", "info");
-    });
-  }
-
   // Skip to next cue button
   const skipCueBtn = $id("skip-cue");
   if (skipCueBtn) {
     skipCueBtn.addEventListener("click", async () => {
       if (!playbackActive) return;
-      if (isBackendRenderMode()) {
-        try {
-          await controlBackendPlayback("skip");
-          toast("Skipping to next cue...", "info");
-        } catch (err) {
-          console.warn("[BACKEND-PLAYBACK] skip failed:", err);
-        }
-        return;
+      try {
+        await controlBackendPlayback("skip");
+        toast("Skipping to next cue...", "info");
+      } catch (err) {
+        console.warn("[BACKEND-PLAYBACK] skip failed:", err);
       }
-      skipToNextCue = true;
-      toast("Skipping to next cue...", "info");
     });
   }
 
@@ -3339,7 +2175,6 @@ document.addEventListener("DOMContentLoaded", () => {
         toast("Identification mode ON", "info");
 
         // Stop any playback
-        uiFollowStopFlag = true;
         playbackActive = false;
 
         // Build device list for identify

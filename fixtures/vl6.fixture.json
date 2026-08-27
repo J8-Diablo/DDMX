@@ -6,7 +6,7 @@
     "mode": "Mode 7",
     "author": "Conversion Tool"
   },
-  "footprint": 11,
+  "footprint": 10,
   "primary": {
     "dimmer": "dimmer.main",
     "color": "color.main",

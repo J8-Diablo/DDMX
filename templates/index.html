@@ -205,6 +205,7 @@
       <div class="cue-view-toggle" role="group" aria-label="View mode">
         <button id="cue-view-classic" type="button" class="cue-view-btn" data-view="classic" data-i18n="cues.viewClassic">Cue list</button>
         <button id="cue-view-timeline" type="button" class="cue-view-btn" data-view="timeline" data-i18n="cues.viewTimeline">Timeline</button>
+        <button id="cue-view-rapidfire" type="button" class="cue-view-btn" data-view="rapidfire" data-i18n="cues.viewRapidFire">Rapid Fire</button>
       </div>
     </div>
 
@@ -651,10 +652,6 @@
             <input id="autolight-freeze-toggle" type="checkbox">
             <span>Freeze</span>
           </label>
-          <label class="autolight-toggle" title="Only pre-made effects drive the rig. No background scene, no constant movement, dark between effects.">
-            <input id="autolight-effects-only-toggle" type="checkbox">
-            <span>Effects only</span>
-          </label>
         </div>
       </div>
     </div>
@@ -707,6 +704,21 @@
         <div class="timeline-props-empty muted" data-i18n="timeline.propsEmpty">Select a clip to edit its properties.</div>
       </div>
       <div id="timeline-context-menu" class="timeline-context-menu hidden"></div>
+    </div>
+
+    <!-- Rapid Fire: one launch pad per cue list of the active project. -->
+    <div id="rapidfire-grid" class="rapidfire hidden">
+      <div class="rapidfire-toolbar">
+        <div class="rapidfire-heading" data-i18n="cues.rapidFireTitle">Rapid Fire</div>
+        <div id="rapidfire-status" class="muted rapidfire-status"></div>
+        <label class="rapidfire-loop" title="Fire pads on repeat until stopped">
+          <input id="rapidfire-loop" type="checkbox">
+          <span data-i18n="cues.rapidFireLoopOption">Loop</span>
+        </label>
+        <button id="rapidfire-refresh" type="button" class="secondary" data-i18n="cues.rapidFireRefresh">Refresh</button>
+        <button id="rapidfire-stop-all" type="button" class="rapidfire-stop-all" data-i18n="cues.rapidFireStopAll">Stop playback</button>
+      </div>
+      <div id="rapidfire-pads" class="rapidfire-pads"></div>
     </div>
 
     <div class="cue-props">
@@ -819,6 +831,7 @@
 <script src="{{ url_for('static', filename='project.js') }}"></script>
 <script src="{{ url_for('static', filename='calibration.js') }}"></script>
 <script src="{{ url_for('static', filename='timeline.js') }}"></script>
+<script src="{{ url_for('static', filename='rapidfire.js') }}"></script>
 <script src="{{ url_for('static', filename='layout.js') }}"></script>
 <script src="{{ url_for('static', filename='sync_video.js') }}"></script>
 <script src="{{ url_for('static', filename='whats_new.js') }}"></script>

@@ -202,20 +202,6 @@ class DMXSimpleEngine:
             if changed:
                 self._dirty.add(universe)
 
-    def set_channels_bulk(self, updates: Dict[str, Dict[int, int]]):
-        # Compatibility stub; we don't track devices here.
-        for _dev_id, ch_map in (updates or {}).items():
-            # No universe in this API, so skip (not used by current UI)
-            pass
-
-    def register_device(self, device_id: str, universe: int, channels: Dict[int, int]):
-        # Compatibility stub
-        pass
-
-    def unregister_device(self, device_id: str):
-        # Compatibility stub
-        pass
-
     def go_cue(self, cue_data: Dict[str, Any], device_order: Optional[List[str]] = None):
         # Compatibility stub: apply immediate values if present
         devices = cue_data.get("devices", {}) if isinstance(cue_data, dict) else {}
@@ -274,14 +260,6 @@ class DMXSimpleEngine:
 
     def add_state_callback(self, callback: Callable):
         self._state_callbacks.append(callback)
-
-    def remove_state_callback(self, callback: Callable):
-        if callback in self._state_callbacks:
-            self._state_callbacks.remove(callback)
-
-    def get_current_state(self) -> Dict[str, Any]:
-        with self._lock:
-            return {"universes": {str(u): list(v) for u, v in self._universes.items()}}
 
     def get_packet_stats(self) -> Dict[str, Any]:
         return {

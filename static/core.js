@@ -483,8 +483,6 @@ function listSelectionEffectAttrs() {
 // ========================================
 window.playbackActive = false;
 window.backendPlaybackOwned = false;
-window.uiFollowStopFlag = false;
-window.uiFollowRunId = 0;
 window.effectStartEpoch = performance.now();
 
 // Render mode: "ui" (default) or "backend"
@@ -660,10 +658,6 @@ window.fallbackToUiMode = (reason) => {
 // L'UI est BLOQUÉE
 window.dmxLocked = false;
 
-function canUISendDMX() {
-  return !window.dmxLocked;
-}
-
 ///////////////////////
 // HELPERS DOM / MATH
 ///////////////////////
@@ -728,10 +722,6 @@ function eventToWorld(e) {
   return { px, py, wx: x, wy: y };
 }
 
-function snapToGrid(v) {
-  return Math.round(v / RIG_GRID_SIZE) * RIG_GRID_SIZE;
-}
-
 ///////////////////////
 // LAYOUT : split horizontal Rig/Cues seulement
 ///////////////////////
@@ -767,32 +757,6 @@ function applyLayoutSplit() {
 
 function initSplitLayout() {
   applyLayoutSplit();
-
-  const vSplit = document.getElementById("split-rig-cues");
-  if (vSplit) {
-    vSplit.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      const main = document.querySelector(".main-grid");
-      if (!main) return;
-      const rect = main.getBoundingClientRect();
-
-      function onMove(ev) {
-        const x = ev.clientX - rect.left;
-        let frac = x / rect.width;
-        frac = clamp(frac, 0.2, 0.8); // éviter 0% / 100%
-        rigCuesSplit = frac;
-        applyLayoutSplit();
-      }
-
-      function onUp() {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-      }
-
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
-    });
-  }
 
   window.addEventListener("resize", () => {
     applyLayoutSplit();
@@ -839,6 +803,14 @@ const deviceEditModal = async (dev) => {
     return await window.ui.deviceEditModal(dev);
   }
   toast("Device edit modal indisponible.", "error");
+  return null;
+};
+
+const bulkAddDeviceModal = async (config) => {
+  if (window.ui && typeof window.ui.bulkAddDeviceModal === "function") {
+    return await window.ui.bulkAddDeviceModal(config);
+  }
+  toast("Bulk add modal indisponible.", "error");
   return null;
 };
 

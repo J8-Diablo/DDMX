@@ -1030,14 +1030,6 @@ _EVAL_MAP = {
 }
 
 
-def list_effects() -> List[Dict[str, Any]]:
-    imported, by_id = _load_imported_runtime_effects()
-    merged = {e["id"]: dict(e) for e in EFFECTS}
-    for effect_id, effect_def in by_id.items():
-        merged[effect_id] = dict(effect_def)
-    return sorted(merged.values(), key=lambda item: str(item.get("label") or item.get("id") or ""))
-
-
 def get_effect_def(effect_id: str) -> Optional[Dict[str, Any]]:
     key = str(effect_id or "").strip().lower()
     if not key:

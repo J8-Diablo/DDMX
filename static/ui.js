@@ -772,6 +772,152 @@ window.ui = (() => {
     return null;
   }
 
+  // ---------------------------------------------------------------------------
+  // Bulk add: one modal for "how many devices, patched where, laid out how".
+  // Pure DOM (openGuiModal), so it also works with no CDN reachable.
+  // ---------------------------------------------------------------------------
+
+  function readBulkAddForm(form) {
+    const num = (role, fallback) => {
+      const el = form.querySelector(`[data-role="${role}"]`);
+      const raw = String(el?.value ?? "").trim();
+      if (!raw) return fallback;
+      const parsed = parseInt(raw, 10);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+    const addrEl = form.querySelector('[data-role="address"]');
+    const addrRaw = String(addrEl?.value ?? "").trim();
+    return {
+      count: Math.max(1, Math.min(512, num("count", 1))),
+      prefix: String(form.querySelector('[data-role="prefix"]')?.value ?? "").trim(),
+      universe: Math.max(0, num("universe", 0)),
+      // Empty address = auto (first free block).
+      address: addrRaw === "" ? null : Math.max(0, Math.min(511, parseInt(addrRaw, 10) || 0)),
+      overflow: Boolean(form.querySelector('[data-role="overflow"]')?.checked),
+      columns: Math.max(1, Math.min(64, num("columns", 8))),
+      spacing: Math.max(8, Math.min(400, num("spacing", 40))),
+    };
+  }
+
+  async function bulkAddDeviceModal(config) {
+    const {
+      title = "Add devices",
+      confirmText = "Add",
+      cancelText = "Cancel",
+      headline = "",
+      labels = {},
+      defaults = {},
+      onPreview = null,
+    } = config || {};
+
+    const L = {
+      count: "Number of devices",
+      prefix: "Name prefix",
+      universe: "Universe",
+      address: "Start address (empty = auto)",
+      overflow: "Continue into the next universe when full",
+      columns: "Devices per row",
+      spacing: "Spacing (px)",
+      ...labels,
+    };
+
+    return await openGuiModal({
+      title,
+      confirmText,
+      cancelText,
+      showCancel: true,
+      modalClass: "dmx-modal-bulk-add",
+      initialFocusSelector: '[data-role="count"]',
+      buildBody: (form) => {
+        if (headline) appendGuiModalText(form, headline);
+
+        const count = document.createElement("input");
+        count.type = "number";
+        count.min = "1";
+        count.max = "512";
+        count.value = String(defaults.count ?? 1);
+        count.dataset.role = "count";
+        appendGuiModalField(form, L.count, count);
+
+        const prefix = document.createElement("input");
+        prefix.type = "text";
+        prefix.value = String(defaults.prefix ?? "Device");
+        prefix.dataset.role = "prefix";
+        appendGuiModalField(form, L.prefix, prefix);
+
+        const universe = document.createElement("input");
+        universe.type = "number";
+        universe.min = "0";
+        universe.value = String(defaults.universe ?? 0);
+        universe.dataset.role = "universe";
+        appendGuiModalField(form, L.universe, universe);
+
+        const address = document.createElement("input");
+        address.type = "number";
+        address.min = "0";
+        address.max = "511";
+        address.placeholder = "auto";
+        if (defaults.address != null) address.value = String(defaults.address);
+        address.dataset.role = "address";
+        appendGuiModalField(form, L.address, address);
+
+        const overflowWrap = document.createElement("label");
+        overflowWrap.style.display = "flex";
+        overflowWrap.style.alignItems = "center";
+        overflowWrap.style.gap = "8px";
+        overflowWrap.style.marginBottom = "12px";
+        overflowWrap.style.fontSize = "12px";
+        overflowWrap.style.opacity = "0.85";
+        const overflow = document.createElement("input");
+        overflow.type = "checkbox";
+        overflow.checked = defaults.overflow !== false;
+        overflow.dataset.role = "overflow";
+        overflow.style.width = "auto";
+        overflowWrap.appendChild(overflow);
+        const overflowText = document.createElement("span");
+        overflowText.textContent = L.overflow;
+        overflowWrap.appendChild(overflowText);
+        form.appendChild(overflowWrap);
+
+        const columns = document.createElement("input");
+        columns.type = "number";
+        columns.min = "1";
+        columns.max = "64";
+        columns.value = String(defaults.columns ?? 8);
+        columns.dataset.role = "columns";
+        appendGuiModalField(form, L.columns, columns);
+
+        const spacing = document.createElement("input");
+        spacing.type = "number";
+        spacing.min = "8";
+        spacing.max = "400";
+        spacing.value = String(defaults.spacing ?? 40);
+        spacing.dataset.role = "spacing";
+        appendGuiModalField(form, L.spacing, spacing);
+
+        if (typeof onPreview === "function") {
+          const preview = document.createElement("div");
+          preview.className = "dmx-modal-preview";
+          preview.dataset.role = "preview";
+          const refresh = () => {
+            let text = "";
+            try {
+              text = String(onPreview(readBulkAddForm(form)) ?? "");
+            } catch (err) {
+              text = "";
+            }
+            preview.textContent = text;
+          };
+          form.appendChild(preview);
+          form.addEventListener("input", refresh);
+          form.addEventListener("change", refresh);
+          refresh();
+        }
+      },
+      onSubmit: (form) => readBulkAddForm(form),
+    });
+  }
+
   async function htmlModal({
     title,
     html = "",
@@ -806,6 +952,7 @@ window.ui = (() => {
     alertModal,
     promptModal,
     deviceEditModal,
+    bulkAddDeviceModal,
     fixtureChangeDecisionModal,
     fixtureRemapModal,
     operationStatusModal,

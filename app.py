@@ -13,7 +13,7 @@ from queue import Queue
 
 from flask import Flask, render_template, jsonify, request, send_from_directory, Response
 from autolight import AutoLightService, normalize_autolight_settings
-from fixture_runtime import load_fixture_file, load_fixture_xml
+from fixture_runtime import load_fixture_file
 from runtime_paths import DATA_DIR, RESOURCE_DIR
 from version import APP_LICENSE_CODE, APP_NAME, APP_UPDATE_RELEASES_URL, APP_VERSION
 
@@ -73,6 +73,11 @@ def list_intelligent_effect_files() -> List[str]:
 
 # ---------- SETTINGS ----------
 
+# Cue panel view modes: the classic cue table, the Premiere-style timeline, and
+# Rapid Fire (a grid of one-click launch pads, one per cue list of the project).
+CUE_VIEW_MODES = ("classic", "timeline", "rapidfire")
+
+
 def get_local_ip() -> str:
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -129,6 +134,7 @@ def load_settings() -> Dict[str, Any]:
             "timeline_priority_mode": "top",
             "zoom_x": 120.0,
             "zoom_y": 88.0,
+            "rapidfire_loop": False,
         },
         "autolight": {
             "enabled": False,
@@ -215,7 +221,8 @@ def load_settings() -> Dict[str, Any]:
             if isinstance(cue_editor, dict):
                 view_mode = cue_editor.get("view_mode")
                 if isinstance(view_mode, str) and view_mode.strip():
-                    defaults["cue_editor"]["view_mode"] = "timeline" if view_mode.strip().lower() == "timeline" else "classic"
+                    mode = view_mode.strip().lower()
+                    defaults["cue_editor"]["view_mode"] = mode if mode in CUE_VIEW_MODES else "classic"
                 priority = cue_editor.get("timeline_priority_mode")
                 if isinstance(priority, str) and priority.strip():
                     prio = priority.strip().lower()
@@ -224,6 +231,8 @@ def load_settings() -> Dict[str, Any]:
                     defaults["cue_editor"]["zoom_x"] = _clamp_float(cue_editor.get("zoom_x"), 20.0, 480.0, defaults["cue_editor"]["zoom_x"])
                 if cue_editor.get("zoom_y") is not None:
                     defaults["cue_editor"]["zoom_y"] = _clamp_float(cue_editor.get("zoom_y"), 48.0, 240.0, defaults["cue_editor"]["zoom_y"])
+                if cue_editor.get("rapidfire_loop") is not None:
+                    defaults["cue_editor"]["rapidfire_loop"] = bool(cue_editor.get("rapidfire_loop"))
             autolight = data.get("autolight")
             defaults["autolight"] = normalize_autolight_settings(autolight, defaults["autolight"])
             runtime = data.get("dmx_runtime")
@@ -344,19 +353,25 @@ def _normalize_auto_update_settings(payload: Any, current: Dict[str, Any]) -> Di
 def _normalize_cue_editor_settings(payload: Any, current: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(current or {})
     if not isinstance(payload, dict):
-        out["view_mode"] = "timeline" if str(out.get("view_mode") or "").strip().lower() == "timeline" else "classic"
+        view_mode = str(out.get("view_mode") or "").strip().lower()
+        out["view_mode"] = view_mode if view_mode in CUE_VIEW_MODES else "classic"
         priority = str(out.get("timeline_priority_mode") or "top").strip().lower()
         out["timeline_priority_mode"] = priority if priority in ("top", "bottom", "merge") else "top"
         out["zoom_x"] = _clamp_float(out.get("zoom_x"), 20.0, 480.0, 120.0)
         out["zoom_y"] = _clamp_float(out.get("zoom_y"), 48.0, 240.0, 88.0)
+        out["rapidfire_loop"] = bool(out.get("rapidfire_loop", False))
         return out
 
     view_mode = str(payload.get("view_mode") or out.get("view_mode") or "classic").strip().lower()
-    out["view_mode"] = "timeline" if view_mode == "timeline" else "classic"
+    out["view_mode"] = view_mode if view_mode in CUE_VIEW_MODES else "classic"
     priority = str(payload.get("timeline_priority_mode") or out.get("timeline_priority_mode") or "top").strip().lower()
     out["timeline_priority_mode"] = priority if priority in ("top", "bottom", "merge") else "top"
     out["zoom_x"] = _clamp_float(payload.get("zoom_x"), 20.0, 480.0, out.get("zoom_x", 120.0))
     out["zoom_y"] = _clamp_float(payload.get("zoom_y"), 48.0, 240.0, out.get("zoom_y", 88.0))
+    # Rapid Fire "Loop": pads fire their cue list on repeat until stopped.
+    out["rapidfire_loop"] = bool(
+        payload.get("rapidfire_loop", out.get("rapidfire_loop", False))
+    )
     return out
 
 
@@ -528,10 +543,6 @@ def safe_parse_channels_map(raw: Any) -> Dict[int, int]:
 
 
 # ---------- FIXTURES (XML) ----------
-def parse_fixture_xml(path: str) -> Dict[str, Any]:
-    return load_fixture_xml(path)
-
-
 def load_all_fixtures() -> Dict[str, Any]:
     fixtures: Dict[str, Any] = {}
     for fname in sorted(os.listdir(FIXTURES_DIR)):
@@ -857,6 +868,7 @@ def api_settings_get():
             "timeline_priority_mode": str(cue_editor.get("timeline_priority_mode") or "top"),
             "zoom_x": float(cue_editor.get("zoom_x") or 120.0),
             "zoom_y": float(cue_editor.get("zoom_y") or 88.0),
+            "rapidfire_loop": bool(cue_editor.get("rapidfire_loop", False)),
         },
         "autolight": autolight,
         "autolight_status": AUTOLIGHT.get_status(force_refresh=False),
@@ -955,11 +967,6 @@ def api_settings_post():
 def api_autolight_status():
     force_refresh = str(request.args.get("refresh") or "").strip().lower() in ("1", "true", "yes", "on")
     return jsonify(AUTOLIGHT.get_status(force_refresh=force_refresh))
-
-
-@app.route("/api/autolight/features", methods=["GET"])
-def api_autolight_features():
-    return jsonify(AUTOLIGHT.get_features())
 
 
 @app.route("/api/autolight/audio", methods=["GET"])
@@ -1459,47 +1466,6 @@ def api_live_channels_bulk():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/live/effect/start", methods=["POST"])
-def api_live_effect_start():
-    """Start a live effect on a channel"""
-    if RENDER_ENGINE is None:
-        return jsonify({"error": "engine not running"}), 503
-
-    payload = request.get_json()
-    if not payload:
-        return jsonify({"error": "no json"}), 400
-
-    try:
-        device_id = payload.get("device_id", "live")
-        channel = int(payload.get("channel", 0))
-        effect_type = payload.get("type", "Sinus")
-        amplitude = float(payload.get("amplitude", 100))
-        frequency = float(payload.get("frequency", 1))
-        phase = payload.get("phase", 0)
-        params = {k: v for k, v in payload.items()
-                  if k not in ("device_id", "channel", "type", "amplitude", "frequency", "phase")}
-
-        RENDER_ENGINE.start_live_effect(device_id, channel, effect_type, amplitude, frequency, phase, params)
-        return jsonify({"ok": True})
-    except Exception as e:
-        app.logger.exception("[API] live/effect/start error")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/live/effect/stop", methods=["POST"])
-def api_live_effect_stop():
-    """Stop live effects on a device"""
-    if RENDER_ENGINE is None:
-        return jsonify({"error": "engine not running"}), 503
-
-    payload = request.get_json() or {}
-    device_id = payload.get("device_id", "live")
-    channel = payload.get("channel")  # None = all channels
-
-    RENDER_ENGINE.stop_live_effects(device_id, channel)
-    return jsonify({"ok": True})
-
-
 # ---------- NEW API: EFFECT GROUPS ----------
 
 @app.route("/api/live/effects/groups", methods=["POST"])
@@ -1563,6 +1529,9 @@ def api_playback_run():
         paused = bool(payload.get("paused", False))
         speed = payload.get("speed", 1.0)
         priority_mode = str(payload.get("priority_mode") or "top").strip().lower()
+        # Whole-sequence loop: loop_count 0/absent = forever.
+        loop = bool(payload.get("loop", False))
+        loop_count = _clamp_int(payload.get("loop_count"), 0, 9999, 0) if payload.get("loop_count") is not None else 0
         virtual_groups = payload.get("virtual_groups") or payload.get("virtualGroups") or {}
         if not isinstance(sequence, list):
             return jsonify({"error": "invalid sequence"}), 400
@@ -1583,6 +1552,8 @@ def api_playback_run():
                 priority_mode=priority_mode,
                 start_ms=start_ms,
                 paused=paused,
+                loop=loop,
+                loop_count=loop_count,
             )
         except TypeError:
             if mode == "timeline":
@@ -1597,6 +1568,8 @@ def api_playback_run():
             "paused": paused,
             "speed": speed,
             "priority_mode": priority_mode,
+            "loop": loop,
+            "loop_count": loop_count,
         })
     except Exception as e:
         app.logger.exception("[API] playback/run error")
@@ -1826,29 +1799,6 @@ def broadcast_state(state: Dict[str, Any]):
 
 # ---------- LEGACY API (for backward compatibility) ----------
 
-@app.route("/api/apply_state", methods=["POST"])
-def api_apply_state():
-    """Legacy API - redirect to new live/channels"""
-    if RENDER_ENGINE is None:
-        return jsonify({"error": "engine not running"}), 503
-
-    payload = request.get_json()
-    if not payload:
-        return jsonify({"error": "no json"}), 400
-
-    try:
-        universe = int(payload.get("universe", 0))
-        channels = safe_parse_channels_map(payload.get("channels") or {})
-
-        for ch, val in channels.items():
-            RENDER_ENGINE.set_channel("legacy", universe, ch, val)
-
-        return jsonify({"ok": True})
-    except Exception as e:
-        app.logger.exception("[API] apply_state error")
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/intelligent_effects", methods=["GET"])
 def api_intelligent_effects():
     """List available intelligent effect files."""
@@ -1884,17 +1834,6 @@ def api_intelligent_effects_file(filename: str):
         return jsonify({"error": "invalid filename"}), 400
     mime = "application/json" if name.lower().endswith(".json") else "application/javascript"
     return send_from_directory(INTELLIGENT_EFFECTS_DIR, name, mimetype=mime)
-
-
-@app.route("/api/intelligent_effects/definitions", methods=["GET"])
-def api_intelligent_effects_definitions():
-    if IntelligentFX is None:
-        return jsonify({"effects": []})
-    try:
-        return jsonify({"effects": IntelligentFX.list_effects()})
-    except Exception as e:
-        app.logger.debug(f"[API] intelligent effects list error: {e}")
-        return jsonify({"effects": []})
 
 
 @app.route("/api/effects", methods=["GET"])

@@ -62,6 +62,9 @@
     if (select && select.value !== currentLang) {
       select.value = currentLang;
     }
+    // Views that build their labels in JS (they have no data-i18n nodes to
+    // rewrite) re-render on this event.
+    document.dispatchEvent(new CustomEvent("i18n:applied", { detail: { lang: currentLang } }));
   }
   window.applyI18nTranslations = applyTranslations;
 

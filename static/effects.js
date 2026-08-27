@@ -241,12 +241,6 @@ async function ensureEffectsLoaded(forceReload = false) {
   }
 }
 
-// Force reload effects definitions from server
-async function reloadEffectsDefinitions() {
-  await ensureEffectsLoaded(true);
-  renderEffectsLibrary();
-}
-
 async function ensureIntelligentEffectsLoaded(forceReload = false) {
   if (intelligentEffectsLoaded && !forceReload) return;
   if (intelligentEffectsLoading) return;
@@ -1263,11 +1257,6 @@ function countGroupUsageInCues(groupId) {
   return count;
 }
 
-function isGroupUsedAnywhere(groupId) {
-  if (gatherActiveEffectGroups().some(({ group }) => group.id === groupId)) return true;
-  return countGroupUsageInCues(groupId) > 0;
-}
-
 function glowDevicesInRig(devices, durationMs = 5000) {
   const ids = (devices || []).map(String).filter(id => rigDevices[id]);
   if (!ids.length) {
@@ -1313,63 +1302,6 @@ function disableGroupOnRig(groupId) {
         body: JSON.stringify({ group_ids: [String(groupId)] })
       }).catch(e => console.warn("[FX] purge failed:", e));
     }
-  }
-}
-
-function removeEffectGroupCompletely(groupId) {
-  let removedFromCues = false;
-
-  for (const step of cuesObj.sequence || []) {
-    const dg = step.device_groups || {};
-    for (const [devId, groups] of Object.entries(dg)) {
-      if (!Array.isArray(groups)) continue;
-      const filtered = groups.filter(g => g !== groupId);
-      if (filtered.length !== groups.length) {
-        removedFromCues = true;
-        if (filtered.length) dg[devId] = filtered;
-        else delete dg[devId];
-      }
-    }
-  }
-
-  let removedLive = false;
-  for (const [devId, setOrArr] of Object.entries(deviceCurrentGroups || {})) {
-    if (!setOrArr) continue;
-    if (setOrArr.delete) {
-      removedLive = setOrArr.delete(groupId) || removedLive;
-    } else if (Array.isArray(setOrArr)) {
-      const filtered = setOrArr.filter(g => g !== groupId);
-      if (filtered.length !== setOrArr.length) {
-        deviceCurrentGroups[devId] = new Set(filtered);
-        removedLive = true;
-      }
-    }
-  }
-
-  if (!isGroupUsedAnywhere(groupId)) {
-    delete virtualGroups[groupId];
-    if (cuesObj.virtual_groups) delete cuesObj.virtual_groups[groupId];
-  }
-  cuesObj.virtual_groups = virtualGroups;
-
-  renderEffectsTargets();
-  renderActualEffectsPanel();
-  if (typeof sendToEngineWithEffects === "function") {
-    sendToEngineWithEffects(1.0);
-  }
-  syncBackendLiveGroups();
-  // Purge the group from the engine's cue + live pools immediately so the
-  // effect stops even if a cue using it is currently playing (rémanence fix).
-  if (typeof window.isBackendMode === "function" && window.isBackendMode()) {
-    fetch("/api/live/effects/groups/purge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ group_ids: [String(groupId)] })
-    }).catch(e => console.warn("[FX] purge failed:", e));
-  }
-
-  if (removedFromCues || removedLive) {
-    toast(`Effet ${groupId} supprimé.`, "info");
   }
 }
 
@@ -2245,12 +2177,6 @@ function startEffectRunner() {
   if (effectTickHandle) return;
   window.effectStartEpoch = performance.now();
   effectTickHandle = setInterval(effectTick, 20);
-}
-
-function stopEffectRunner() {
-  if (!effectTickHandle) return;
-  clearInterval(effectTickHandle);
-  effectTickHandle = null;
 }
 
 document.addEventListener("DOMContentLoaded", () => {

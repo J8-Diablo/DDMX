@@ -26,7 +26,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional
 
-from autolight_brain import Directive, SILENCE, CALM, GROOVE, BUILD, DROP, RELEASE
+from autolight_brain import Directive, SILENCE, CALM, BUILD, DROP, RELEASE
 
 ROLE_STROBE = "strobe"
 ROLE_MOVER = "mover"

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 
 import asyncio
-import colorsys
 import logging
-import math
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from audio_analyzer import AudioAnalyzer, DEFAULT_AUDIO_TUNING
 from autolight_director import DirectorOverlay
-from autolight_effects import EffectContext, EffectScheduler, all_mood_tags, list_effects_meta
+from autolight_effects import EffectScheduler, all_mood_tags, list_effects_meta
 from autolight_topology import TopologySnapshot, compute_topology
 from autolight_training import TrainingService
 from music_sources import MusicContext
@@ -21,76 +19,6 @@ from autolight_show import ShowRenderer
 
 
 log = logging.getLogger(__name__)
-
-_GOLDEN_HUE_STEP = 0.381966011  # 1 - 1/phi, golden-ratio conjugate
-_BEAT_PULSE_HALFLIFE_S = 0.18
-_SCENE_DWELL_S = 0.25
-_DEFAULT_PAN_RANGE_DEG = 540.0   # fallback when the mover doesn't expose range
-_STROBE_HZ = 12.0                # square-wave cadence for DROP strobes
-
-# Per-scene policy driving fixture selection and output. ``participation``
-# values are advisory — the active ``pattern`` is what actually decides which
-# fixtures pulse on a given frame.
-_SCENE_POLICY: Dict[str, Dict[str, Any]] = {
-    "SILENT":  {"mv_amp_deg": 0,  "mv_freq_hz": 0.00, "strobe": False, "pattern": "all",               "base_dimmer": 0,   "energy_gain": 0.0, "hue_spread": 0.00, "ceiling": 0},
-    "VERSE":   {"mv_amp_deg": 10, "mv_freq_hz": 0.12, "strobe": False, "pattern": "chaser_by_x",       "base_dimmer": 25,  "energy_gain": 0.6, "hue_spread": 0.15, "ceiling": 150},
-    "CHORUS":  {"mv_amp_deg": 20, "mv_freq_hz": 0.25, "strobe": False, "pattern": "mirror_alternate",  "base_dimmer": 45,  "energy_gain": 0.8, "hue_spread": 0.30, "ceiling": 215},
-    "HIGH":    {"mv_amp_deg": 30, "mv_freq_hz": 0.40, "strobe": False, "pattern": "chaser_by_x",       "base_dimmer": 75,  "energy_gain": 1.0, "hue_spread": 0.45, "ceiling": 245},
-    "DROP":    {"mv_amp_deg": 45, "mv_freq_hz": 0.90, "strobe": True,  "pattern": "antisymmetric",     "base_dimmer": 120, "energy_gain": 1.0, "hue_spread": 0.70, "ceiling": 255},
-}
-
-_LEVEL_TO_SCENE = {0: "SILENT", 1: "VERSE", 2: "CHORUS", 3: "HIGH", 4: "DROP"}
-
-
-def _role_channels(attr_map: Dict[str, int]) -> Dict[str, int]:
-    """Collect dimmer/R/G/B channel indexes from a device attr_map.
-
-    Supports both the legacy flat keys ("dimmer", "r", "g", "b") and the
-    grouped structured keys ("<group>.level", "<group>.red", ...). When
-    multiple groups exist we take the first one sorted by lowest channel.
-    """
-    result: Dict[str, int] = {}
-    grouped: Dict[str, Dict[str, int]] = {}
-    group_min: Dict[str, int] = {}
-
-    for raw_key, raw_channel in (attr_map or {}).items():
-        key = str(raw_key or "").strip().lower()
-        if not key:
-            continue
-        try:
-            channel = int(raw_channel)
-        except Exception:
-            continue
-        if not (0 <= channel < 512):
-            continue
-
-        if "." in key:
-            group_id, role = key.rsplit(".", 1)
-        else:
-            group_id, role = "_flat_", key
-
-        if role in ("level", "dimmer"):
-            canonical = "dimmer"
-        elif role in ("red", "r"):
-            canonical = "red"
-        elif role in ("green", "g"):
-            canonical = "green"
-        elif role in ("blue", "b"):
-            canonical = "blue"
-        else:
-            continue
-
-        bucket = grouped.setdefault(group_id, {})
-        bucket[canonical] = channel
-        prev = group_min.get(group_id)
-        if prev is None or channel < prev:
-            group_min[group_id] = channel
-
-    ordered_groups = sorted(grouped.keys(), key=lambda gid: (group_min.get(gid, 0), gid))
-    for gid in ordered_groups:
-        for canonical, channel in grouped[gid].items():
-            result.setdefault(canonical, channel)
-    return result
 
 
 DEFAULT_AUTOLIGHT_SETTINGS: Dict[str, Any] = {
@@ -107,16 +35,16 @@ DEFAULT_AUTOLIGHT_SETTINGS: Dict[str, Any] = {
     "audio_device_index": None,
     "soundcloud_client_id": "",
     "effect_config": {},
-    "effects_only": False,
     "audio_tuning": dict(DEFAULT_AUDIO_TUNING),
     "mood_filter": [],
     "bpm_confidence_gate": 0.0,
     "genre_preset": "auto",
     "tap_tempo_bpm": 0.0,
     "scene_lock": {"scene": "", "until_ts_ms": 0},
-    # Render pipeline selector. "director" runs the new MusicDirector +
-    # per-fixture FixtureAgent system. "effects" runs the legacy scene engine
-    # + effect scheduler. "off" leaves the rig untouched (channels released).
+    # Render pipeline selector. "director" and "effects" both run the
+    # AutoLight 2.0 pipeline (beat-grid → brain → show); "effects" is kept
+    # only so older settings files keep loading. "off" leaves the rig
+    # untouched (channels released).
     "render_mode": "director",
     # When True, the director persists per-track signatures (peak BPM, intent
     # transitions) to DATA_DIR/autolight_memory.json so it can pre-position
@@ -146,6 +74,8 @@ DEFAULT_AUTOLIGHT_SETTINGS: Dict[str, Any] = {
 
 _ALLOWED_RENDER_MODES = {"director", "effects", "off"}
 _ALLOWED_STRUCTURAL_PRIOR_MODES = {"auto", "off"}
+# 0.4.0: the legacy scene/effect renderer is gone, so is its toggle.
+_REMOVED_SETTINGS = ("effects_only",)
 
 
 # Default tunings per genre. Start from DEFAULT_AUDIO_TUNING and override a
@@ -276,7 +206,12 @@ def normalize_autolight_settings(payload: Any, current: Optional[Dict[str, Any]]
             out["audio_device_index"] = None
     out["soundcloud_client_id"] = str(out.get("soundcloud_client_id") or "").strip()
     out["effect_config"] = _normalize_effect_config(out.get("effect_config"))
-    out["effects_only"] = bool(out.get("effects_only", False))
+
+    # Settings dropped along the way: unknown keys are otherwise carried
+    # forward forever (this dict is merged from the on-disk file), so an old
+    # settings.json would keep re-serialising a knob nothing reads any more.
+    for removed_key in _REMOVED_SETTINGS:
+        out.pop(removed_key, None)
 
     # Audio tuning: merge over defaults, clamp each value to the safe range
     # that AudioAnalyzer enforces.
@@ -540,33 +475,25 @@ class _AutoLightRenderer:
     def __init__(self, audio: AudioAnalyzer, service: "AutoLightService") -> None:
         self._audio = audio
         self._service = service
-        self._global_hue = 0.0
-        self._global_pulse = 0.0
-        self._last_beat_count = 0
-        self._last_call_ts: Optional[float] = None
         self._last_values: Dict[str, Dict[str, Any]] = {}
         self._last_audio: Dict[str, Any] = {}
         self._owned_channels: Dict[int, set] = {}
         self._topology: TopologySnapshot = TopologySnapshot()
+        # Kept for the effect catalogue / mood filter / manual trigger APIs;
+        # the scheduler no longer drives any frame.
         self._effect_scheduler = EffectScheduler()
-        # The director pipeline is an alternative renderer used when
-        # render_mode == "director". Both pipelines share the same audio
-        # analyzer and engine reference; the active one is picked per frame.
+        # Retained for its persistent track memory and rig release; the
+        # director no longer renders frames either.
         self._director_overlay = DirectorOverlay(audio, service)
 
-        # AutoLight 2.0 pipeline: beat-grid → brain → show. This is the active
-        # renderer for render_mode "director" (and now "effects" too); the
-        # legacy scene/effect engine below is retained only as dead fallback
-        # pending removal.
+        # AutoLight 2.0 pipeline: beat-grid → brain → show. The only renderer.
         self._grid = BeatGrid()
         self._brain = MusicBrain()
         self._show = ShowRenderer()
         self._dj_diag: Dict[str, Any] = {}
 
-        # Scene-engine state.
+        # Coarse scene label published to the UI.
         self._committed_scene = "SILENT"
-        self._pending_scene = "SILENT"
-        self._pending_since_ts = 0.0
 
         # Diagnostics published to the UI.
         self._diag_devices_seen = 0
@@ -632,8 +559,6 @@ class _AutoLightRenderer:
         return {
             "audio": dict(self._last_audio),
             "fixtures": [dict(v) for v in self._last_values.values()],
-            "global_hue": self._global_hue,
-            "global_pulse": self._global_pulse,
             "devices_seen": self._diag_devices_seen,
             "devices_controllable": self._diag_devices_controllable,
             "last_frame_wrote": self._diag_last_frame_wrote,
@@ -669,19 +594,15 @@ class _AutoLightRenderer:
         mode = str(settings.get("mode") or "off").lower()
         render_mode = str(settings.get("render_mode") or "director").lower()
 
-        # Decay the beat pulse with real dt so a frozen frame doesn't strand it.
-        dt = 0.025 if self._last_call_ts is None else max(0.0, now - self._last_call_ts)
-        self._last_call_ts = now
-        if self._global_pulse > 0.0:
-            decay = math.exp(-math.log(2.0) * dt / _BEAT_PULSE_HALFLIFE_S)
-            self._global_pulse *= decay
-            if self._global_pulse < 0.01:
-                self._global_pulse = 0.0
-
-        # render_mode=="off" → release the rig and bail out, even if AutoLight
-        # is otherwise enabled. Lets the user keep AutoLight wired up but
-        # silence the overlay temporarily without losing settings.
-        if render_mode == "off":
+        # Release the rig and bail out when there is nothing to render:
+        # render_mode=="off" (AutoLight stays wired up but silent, settings
+        # preserved), AutoLight disabled, mode "off", or no audio available.
+        if (
+            render_mode == "off"
+            or not enabled
+            or mode == "off"
+            or not audio.get("available")
+        ):
             self._release_owned_channels(universes)
             try:
                 self._director_overlay._release(universes)
@@ -689,344 +610,14 @@ class _AutoLightRenderer:
                 pass
             self._last_values = {}
             self._committed_scene = "SILENT"
-            self._pending_scene = "SILENT"
             self._diag_last_frame_wrote = 0
             self._diag_last_frame_mode = mode
             self._diag_last_frame_ts = int(time.time() * 1000)
             return
 
-        # AutoLight 2.0 pipeline (beat-grid → brain → show) is now the active
-        # renderer for both "director" and the formerly-legacy "effects" mode.
-        # The old scene/effect engine below is retained as dead fallback only.
-        if render_mode in ("director", "effects"):
-            if not enabled or mode == "off" or not audio.get("available"):
-                self._release_owned_channels(universes)
-                try:
-                    self._director_overlay._release(universes)
-                except Exception:
-                    pass
-                self._last_values = {}
-                self._committed_scene = "SILENT"
-                self._pending_scene = "SILENT"
-                self._diag_last_frame_wrote = 0
-                self._diag_last_frame_mode = mode
-                self._diag_last_frame_ts = int(time.time() * 1000)
-                return
-            self._render_dj(universes, now, settings, audio, mode)
-            return
-
-        if not enabled or mode == "off" or not audio.get("available"):
-            self._release_owned_channels(universes)
-            self._last_values = {}
-            self._committed_scene = "SILENT"
-            self._pending_scene = "SILENT"
-            return
-
-        beat_count = int(audio.get("beat_count") or 0)
-        new_beat = beat_count != self._last_beat_count
-        self._last_beat_count = beat_count
-        if new_beat and audio.get("active"):
-            intensity = float(audio.get("beat_intensity") or 0.0)
-            self._global_pulse = max(self._global_pulse, 0.6 + 0.4 * min(1.0, intensity))
-            self._global_hue = (self._global_hue + _GOLDEN_HUE_STEP) % 1.0
-
-        # Pick scene from intensity level with 250 ms dwell hysteresis.
-        structure = audio.get("structure") or {}
-        raw_scene = _LEVEL_TO_SCENE.get(int(structure.get("level") or 0), "SILENT")
-        if not audio.get("active"):
-            raw_scene = "SILENT"
-        if raw_scene != self._pending_scene:
-            self._pending_scene = raw_scene
-            self._pending_since_ts = now
-        if self._pending_scene != self._committed_scene and (now - self._pending_since_ts) >= _SCENE_DWELL_S:
-            self._committed_scene = self._pending_scene
-
-        # Manual scene lock overrides the auto-detected scene.
-        lock = settings.get("scene_lock") or {}
-        lock_scene = str(lock.get("scene") or "").strip().upper()
-        lock_until = int(lock.get("until_ts_ms") or 0)
-        if lock_scene and (lock_until <= 0 or lock_until > int(time.time() * 1000)):
-            self._committed_scene = lock_scene
-
-        scene = _SCENE_POLICY.get(self._committed_scene, _SCENE_POLICY["SILENT"])
-
-        engine = getattr(self._service, "_engine", None)
-        devices = list(self._service._engine_devices_snapshot_locked().items())
-        self._diag_devices_seen = len(devices)
-        self._diag_devices_controllable = sum(
-            1 for _, d in devices
-            if (getattr(d, "capabilities", None) or {}).get("has_dimmer")
-            or (getattr(d, "capabilities", None) or {}).get("has_color")
-            or (getattr(d, "capabilities", None) or {}).get("has_movement")
-        )
-
-        effects_only = bool(settings.get("effects_only"))
-        # Always run continuously: the rig should never be visually idle
-        # while audio is playing. ``effects_only`` still controls whether the
-        # scene engine *also* writes a baseline (False = scene + effect
-        # layered, True = effect-only).
-        bpm = float(audio.get("bpm") or 0.0)
-        bar_count = int(audio.get("bar_count") or 0)
-        last_beat_ms = float(audio.get("last_beat_ms") or 0.0)
-        bpm_conf = float(audio.get("bpm_confidence") or 0.0)
-        effect_ctx = self._effect_scheduler.tick(
-            now=now,
-            scene=self._committed_scene,
-            bpm=bpm,
-            bar_count=bar_count,
-            last_beat_ms=last_beat_ms,
-            audio_active=bool(audio.get("active")),
-            continuous=True,
-            bpm_confidence=bpm_conf,
-        )
-
-        # SILENT used to mean "blackout the rig". With AmbientGlow eligible
-        # for SILENT, the scheduler always returns an effect_ctx here, so
-        # this branch is now only a defensive fallback (e.g. user disabled
-        # every ambient effect via effect_config). When that happens we keep
-        # the legacy behaviour and dim out.
-        if self._committed_scene == "SILENT" and effect_ctx is None:
-            self._release_owned_channels_dimmer_only(universes)
-            self._last_values = {}
-            self._diag_last_frame_wrote = 0
-            self._diag_last_frame_mode = mode
-            self._diag_last_frame_ts = int(time.time() * 1000)
-            self._diag_skipped_by_fade = 0
-            return
-        controllable = self._diag_devices_controllable
-        wrote_count = 0
-        skipped_by_fade = 0
-        previously_owned = {uni: set(chs) for uni, chs in self._owned_channels.items()}
-        self._owned_channels = {}
-
-        energy_sens = float(settings.get("energy_sensitivity") or 1.0)
-        move_sens = float(settings.get("movement_sensitivity") or 1.0)
-        bass = float(audio.get("bass") or 0.0)
-        mid = float(audio.get("mid") or 0.0)
-        treble = float(audio.get("treble") or 0.0)
-        bass_norm = min(1.0, (bass * energy_sens) / 0.025)
-        mid_norm = min(1.0, (mid * energy_sens) / 0.020)
-        treble_norm = min(1.0, (treble * energy_sens) / 0.010)
-
-        if effect_ctx is not None:
-            effect_ctx.bass_norm = bass_norm
-            effect_ctx.mid_norm = mid_norm
-            effect_ctx.treble_norm = treble_norm
-            effect_ctx.global_hue = self._global_hue
-            # The renderer's _global_pulse already integrates the live beat
-            # detector with a 180 ms half-life — reuse it as the effects'
-            # kick envelope so all beat-locked transforms agree on phase.
-            effect_ctx.kick_env = max(effect_ctx.kick_env, float(self._global_pulse))
-            effect_ctx.energy = max(bass_norm, mid_norm, treble_norm)
-
-        pattern = scene["pattern"]
-        ceiling = int(scene["ceiling"])
-        base_dim = int(scene["base_dimmer"])
-        energy_gain = float(scene["energy_gain"])
-        hue_spread = float(scene["hue_spread"])
-        mv_amp_deg = float(scene["mv_amp_deg"]) * move_sens
-        mv_freq = float(scene["mv_freq_hz"])
-        do_strobe = bool(scene["strobe"])
-
-        # Chaser head sweeps left-to-right at a scene-scaled rate.
-        chaser_period = 1.8 if pattern != "chaser_by_x" else max(0.6, 2.4 - bass_norm * 1.2)
-        chaser_len = max(1, len(self._topology.order_by_x))
-        chaser_head = (now / chaser_period) % 1.0
-
-        # Mirror-alternate toggle on beat parity.
-        mirror_select_left = (beat_count % 2 == 0)
-
-        # Strobe gate: square wave so the fixture flashes on/off.
-        strobe_on = bool(int(now * _STROBE_HZ * 2) % 2 == 0)
-
-        computed: Dict[str, Dict[str, Any]] = {}
-        for idx, (dev_id, dev) in enumerate(devices):
-            caps = getattr(dev, "capabilities", None) or {}
-            if not (caps.get("has_dimmer") or caps.get("has_color") or caps.get("has_movement")):
-                continue
-
-            # Skip fixtures currently being flashed by identify_device. The
-            # camera-calibration phase needs the fixture to actually emit
-            # its 1.5 s white flash; without this skip our 25 ms render
-            # tick would clobber the 255 we just set.
-            if self._service.is_identifying(dev_id):
-                # Preserve ownership of this device's channels so the
-                # "previously owned but not touched" cleanup at the end
-                # of this frame doesn't zero them out — identify just
-                # wrote them and we want those values to survive.
-                if mode == "live":
-                    uni_num = int(getattr(dev, "universe", 0))
-                    owned = self._owned_channels.setdefault(uni_num, set())
-                    for role in ("dimmer_channel", "red_channel", "green_channel",
-                                 "blue_channel", "pan_channel", "tilt_channel"):
-                        ch = caps.get(role)
-                        if ch is not None:
-                            owned.add(int(ch))
-                continue
-
-            fade_active = False
-            if engine is not None:
-                try:
-                    fade_active = engine.has_active_fade_for(dev_id)
-                except Exception:
-                    fade_active = False
-
-            topo = self._topology.fixtures.get(dev_id)
-            order_index = topo.order_index if topo else idx
-            cluster_x = topo.cluster_x if topo else 1
-            cluster_y = topo.cluster_y if topo else 1
-            mirror_side = topo.mirror_side if topo else None
-
-            has_dimmer = caps.get("has_dimmer")
-            red_ch = caps.get("red_channel")
-            green_ch = caps.get("green_channel")
-            blue_ch = caps.get("blue_channel")
-            dimmer_ch = caps.get("dimmer_channel")
-
-            writes: Dict[int, int] = {}
-            participation = 0.0
-            dimmer_val = 0
-            r_val = g_val = b_val = 0
-            hue = 0.0
-            pan_val: Optional[int] = None
-            tilt_val: Optional[int] = None
-
-            if not effects_only:
-                # --- Participation (dimmer gate) --------------------------
-                participation = 1.0
-                if pattern == "chaser_by_x":
-                    pos = (order_index / chaser_len) if chaser_len else 0.0
-                    d = abs(pos - chaser_head)
-                    d = min(d, 1.0 - d)
-                    width = 0.25
-                    participation = max(0.0, 1.0 - (d / width)) if d < width else 0.0
-                elif pattern == "mirror_alternate":
-                    if mirror_side == "left":
-                        participation = 1.0 if mirror_select_left else 0.25
-                    elif mirror_side == "right":
-                        participation = 0.25 if mirror_select_left else 1.0
-                    else:
-                        participation = 0.5
-                elif pattern == "antisymmetric":
-                    participation = 1.0
-
-                # --- Dimmer ----------------------------------------------
-                energy_drive = int(energy_gain * (60 * bass_norm + 30 * mid_norm + 15 * treble_norm))
-                pulse_add = int(self._global_pulse * 90)
-                dimmer_val = base_dim + int(participation * (energy_drive + pulse_add))
-                dimmer_val = max(0, min(ceiling, dimmer_val))
-                if do_strobe and caps.get("strobe_friendly") and strobe_on:
-                    dimmer_val = 255
-                elif do_strobe and caps.get("strobe_friendly") and not strobe_on:
-                    dimmer_val = 0
-
-                # --- Hue / color -----------------------------------------
-                hue = (self._global_hue + order_index * hue_spread / max(1, chaser_len)) % 1.0
-                if mirror_side == "right":
-                    hue = (hue + 0.5) % 1.0
-                if treble_norm > bass_norm + 0.15:
-                    hue = (hue + 0.08) % 1.0
-                elif bass_norm > treble_norm + 0.15:
-                    hue = (hue - 0.06) % 1.0
-                value_scalar = 0.55 + 0.45 * max(bass_norm, mid_norm, treble_norm)
-                value_scalar = min(1.0, value_scalar + self._global_pulse * 0.35)
-                r_f, g_f, b_f = colorsys.hsv_to_rgb(hue, 1.0, value_scalar)
-                if not has_dimmer and caps.get("has_color"):
-                    factor = dimmer_val / 255.0
-                    r_val = max(0, min(255, int(r_f * 255 * factor)))
-                    g_val = max(0, min(255, int(g_f * 255 * factor)))
-                    b_val = max(0, min(255, int(b_f * 255 * factor)))
-                else:
-                    r_val = max(0, min(255, int(r_f * 255)))
-                    g_val = max(0, min(255, int(g_f * 255)))
-                    b_val = max(0, min(255, int(b_f * 255)))
-
-                # --- Movement --------------------------------------------
-                if caps.get("has_movement") and mv_amp_deg > 0:
-                    phase = cluster_x * (math.pi / 3.0) + order_index * 0.22
-                    if pattern == "antisymmetric" and mirror_side == "right":
-                        phase += math.pi
-                    t = now
-                    deg = mv_amp_deg * math.sin(2.0 * math.pi * mv_freq * t + phase)
-                    pan_offset = int(round(127.0 * deg / _DEFAULT_PAN_RANGE_DEG))
-                    tilt_offset = int(round(127.0 * (mv_amp_deg * 0.5) * math.cos(2.0 * math.pi * mv_freq * 0.7 * t + phase) / _DEFAULT_PAN_RANGE_DEG))
-                    pan_val = max(0, min(255, 128 + pan_offset))
-                    tilt_val = max(0, min(255, 128 + tilt_offset))
-
-                # Populate writes from scene values.
-                if has_dimmer and dimmer_ch is not None:
-                    writes[int(dimmer_ch)] = dimmer_val
-                if red_ch is not None:
-                    writes[int(red_ch)] = r_val
-                if green_ch is not None:
-                    writes[int(green_ch)] = g_val
-                if blue_ch is not None:
-                    writes[int(blue_ch)] = b_val
-                if pan_val is not None and caps.get("pan_channel") is not None:
-                    writes[int(caps["pan_channel"])] = pan_val
-                if tilt_val is not None and caps.get("tilt_channel") is not None:
-                    writes[int(caps["tilt_channel"])] = tilt_val
-
-            # Apply the active pre-made effect (if any) on top of the scene
-            # writes. Effects use channel semantics via caps.
-            topo_fixture = self._topology.fixtures.get(dev_id)
-            if effect_ctx is not None:
-                self._effect_scheduler.apply(dev_id, caps, topo_fixture, writes, effect_ctx)
-
-            computed[dev_id] = {
-                "device_id": dev_id,
-                "universe": getattr(dev, "universe", 0),
-                "scene": self._committed_scene,
-                "participation": participation,
-                "controlled": not fade_active,
-                "mirror_side": mirror_side,
-                "cluster": [cluster_x, cluster_y],
-                "writes": writes,
-                "hue": hue,
-                "dimmer": dimmer_val,
-                "r": r_val,
-                "g": g_val,
-                "b": b_val,
-                "pan": pan_val,
-                "tilt": tilt_val,
-            }
-
-            if fade_active:
-                skipped_by_fade += 1
-                continue
-
-            if mode == "live":
-                uni_num = int(getattr(dev, "universe", 0))
-                uni = universes.get(uni_num)
-                if uni is None:
-                    continue
-                owned = self._owned_channels.setdefault(uni_num, set())
-                for ch, val in writes.items():
-                    if 0 <= ch < len(uni):
-                        uni[ch] = val
-                        owned.add(ch)
-                        wrote_count += 1
-
-        # Zero any channel we owned last frame but didn't touch this one.
-        # In effects_only mode this is what lets the rig go dark between
-        # effects; otherwise the scene engine writes every frame so nothing
-        # ever orphans.
-        if mode == "live" and previously_owned:
-            for uni_num, prev in previously_owned.items():
-                uni = universes.get(uni_num)
-                if uni is None:
-                    continue
-                current = self._owned_channels.get(uni_num, set())
-                for ch in prev - current:
-                    if 0 <= ch < len(uni):
-                        uni[ch] = 0
-
-        self._last_values = computed
-        self._diag_devices_controllable = controllable
-        self._diag_last_frame_wrote = wrote_count
-        self._diag_last_frame_mode = mode
-        self._diag_last_frame_ts = int(time.time() * 1000)
-        self._diag_skipped_by_fade = skipped_by_fade
+        # "director" and "effects" both drive the AutoLight 2.0 pipeline
+        # (beat-grid → brain → show).
+        self._render_dj(universes, now, settings, audio, mode)
 
     def _render_dj(self, universes: Dict[int, List[int]], now: float,
                    settings: Dict[str, Any], audio: Dict[str, Any], mode: str) -> None:
@@ -1143,45 +734,6 @@ class _AutoLightRenderer:
                 if 0 <= ch < len(uni):
                     uni[ch] = 0
         self._owned_channels = {}
-
-    def _release_owned_channels_dimmer_only(self, universes: Dict[int, List[int]]) -> None:
-        """Silence scene: zero only dimmer-like writes, leave pan/tilt frozen.
-
-        We don't reliably know which of our owned channels are dimmer vs
-        pan/tilt, so in practice we zero every owned channel that isn't a
-        pan/tilt channel of a currently-registered mover. Users picked
-        "freeze movers on silence"; this implements that.
-        """
-        if not self._owned_channels:
-            return
-        mover_channels: set = set()
-        try:
-            for dev in self._service._engine_devices_snapshot_locked().values():
-                caps = getattr(dev, "capabilities", None) or {}
-                if not caps.get("has_movement"):
-                    continue
-                uni = int(getattr(dev, "universe", 0))
-                if caps.get("pan_channel") is not None:
-                    mover_channels.add((uni, int(caps["pan_channel"])))
-                if caps.get("tilt_channel") is not None:
-                    mover_channels.add((uni, int(caps["tilt_channel"])))
-        except Exception:
-            pass
-        for uni_num, channels in list(self._owned_channels.items()):
-            uni = universes.get(uni_num)
-            if uni is None:
-                continue
-            keep: set = set()
-            for ch in channels:
-                if (uni_num, ch) in mover_channels:
-                    keep.add(ch)
-                    continue
-                if 0 <= ch < len(uni):
-                    uni[ch] = 0
-            if keep:
-                self._owned_channels[uni_num] = keep
-            else:
-                self._owned_channels.pop(uni_num, None)
 
 
 class AutoLightService:
@@ -1347,30 +899,6 @@ class AutoLightService:
             self._probe.stop()
         except Exception:
             pass
-
-    def _media_probe_best_track(self) -> Optional[Dict[str, Any]]:
-        """Snapshot of the currently-playing track for the director to learn.
-
-        Returns ``None`` when the media probe didn't recognise anything (no
-        title, no media session). The director uses this both for track
-        memory and for structural priors — the structural side specifically
-        needs ``position_ms`` and ``is_playing`` so it can compute song
-        progress and skip the prior on paused playback.
-        """
-        try:
-            snap = self._probe.get_snapshot()
-            best = snap.get("best_track") if isinstance(snap, dict) else None
-            if not best or not best.get("title"):
-                return None
-            return {
-                "title": best.get("title"),
-                "artist": best.get("artist"),
-                "duration_ms": best.get("duration_ms"),
-                "position_ms": best.get("position_ms"),
-                "is_playing": best.get("is_playing", True),
-            }
-        except Exception:
-            return None
 
     def _engine_devices_snapshot_locked(self) -> Dict[str, Any]:
         """Return a shallow copy of the engine's registered devices.
@@ -1598,9 +1126,6 @@ class AutoLightService:
         with self._lock:
             self._status_cache = self._build_status(self._discover_players(), None)
             return dict(self._status_cache)
-
-    def get_features(self) -> Dict[str, Any]:
-        return self.get_status().get("features") or self._empty_features()
 
     def get_audio_snapshot(self) -> Dict[str, Any]:
         """Lightweight snapshot of just the audio analyzer state — used by the

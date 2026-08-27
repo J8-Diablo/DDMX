@@ -82,7 +82,6 @@ class BeatGrid:
         self._period: float = 0.0           # seconds per beat (0 = unknown)
         self._next_beat_t: Optional[float] = None
         self._beat_index: int = -1          # last emitted beat (-1 = none yet)
-        self._last_beat_t: Optional[float] = None
         self._downbeat_offset: int = 0      # which raw beat-pos is "the 1"
         self._pos_strength: List[float] = [0.0] * self.beats_per_bar  # EMA per raw pos
         self._phase_err: Deque[float] = deque(maxlen=16)
@@ -141,7 +140,6 @@ class BeatGrid:
         if self._next_beat_t is None and self._period > 0 and self._recent:
             last_t = self._recent[-1][0]
             self._next_beat_t = last_t + self._period
-            self._last_beat_t = last_t
 
         # Phase-lock against onsets that arrived since last update.
         self._process_phase(now)
@@ -151,7 +149,6 @@ class BeatGrid:
             guard = 0
             while now >= self._next_beat_t and guard < 256:
                 self._emit_beat(self._next_beat_t)
-                self._last_beat_t = self._next_beat_t
                 self._next_beat_t += self._period
                 guard += 1
 

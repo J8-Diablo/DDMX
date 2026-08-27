@@ -58,28 +58,6 @@ class TrackAnalysis:
     fetched_at: float = 0.0
     permalink: str = ""
 
-    def envelope_at(self, position_ms: float) -> Optional[float]:
-        if not self.waveform or self.waveform_ms_per_sample <= 0:
-            return None
-        idx = int(position_ms / self.waveform_ms_per_sample)
-        if 0 <= idx < len(self.waveform):
-            return float(self.waveform[idx])
-        return None
-
-    def lookahead_peak(self, position_ms: float, horizon_ms: float = 4000.0) -> Optional[float]:
-        """Max envelope value in the next ``horizon_ms``. Useful for anticipating drops."""
-        if not self.waveform or self.waveform_ms_per_sample <= 0:
-            return None
-        start = int(position_ms / self.waveform_ms_per_sample)
-        end = int((position_ms + horizon_ms) / self.waveform_ms_per_sample)
-        start = max(0, start)
-        end = max(start + 1, min(len(self.waveform), end + 1))
-        if start >= len(self.waveform):
-            return None
-        window = self.waveform[start:end]
-        return max(window) if window else None
-
-
 def _http_get_json(url: str, timeout: float = 4.0, headers: Optional[Dict[str, str]] = None) -> Optional[Any]:
     req_headers = {"User-Agent": "DDMX-AutoLight/0.3"}
     if headers:

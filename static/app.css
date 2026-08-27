@@ -4151,3 +4151,207 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
 .timeline-playhead {
   will-change: transform;
 }
+
+/* ── Rapid Fire ────────────────────────────────────────────────────────────
+   Third cue-panel view: a grid of launch pads, one per cue list of the active
+   project. Sits in the same flex slot as the cue table and the timeline. */
+.rapidfire {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 10px;
+}
+.cues-panel > #rapidfire-grid:not(.hidden) {
+  order: 3;
+  flex: 1 1 0;
+  min-height: 140px;
+  display: flex;
+}
+/* The classic cue properties block is meaningless here — reclaim the space. */
+body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
+
+.rapidfire-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.rapidfire-heading {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.rapidfire-status { font-size: 12px; margin-right: auto; }
+.rapidfire-stop-all {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  color: #fecaca;
+}
+.rapidfire-stop-all:disabled { opacity: 0.45; }
+
+.rapidfire-pads {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-auto-rows: min-content;
+  gap: 8px;
+  align-content: start;
+}
+.rapidfire-empty {
+  grid-column: 1 / -1;
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.rapidfire-pad {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  border-radius: 10px;
+  background: var(--panel-2);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.rapidfire-pad.is-loaded { border-left-color: var(--accent-strong); }
+.rapidfire-pad.is-playing {
+  border-color: #22c55e;
+  border-left-color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+}
+.rapidfire-pad.is-paused {
+  border-color: #fbbf24;
+  border-left-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+}
+.rapidfire-pad.is-starting { border-color: var(--accent); }
+.rapidfire-pad.is-broken { opacity: 0.55; }
+
+/* The pad body is the primary trigger: one click fires the cue list. */
+.rapidfire-pad-fire {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px;
+  text-align: left;
+  border: none;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--text);
+  cursor: pointer;
+}
+.rapidfire-pad-fire:hover:not(:disabled) { background: var(--accent-soft); }
+.rapidfire-pad-fire:disabled { cursor: not-allowed; }
+.rapidfire-pad-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.rapidfire-pad-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.rapidfire-pad-controls { display: flex; gap: 6px; }
+.rapidfire-pad-btn {
+  flex: 1 1 0;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rapidfire-pad-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.rapidfire-pad-play {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+}
+.rapidfire-pad.is-playing .rapidfire-pad-play {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: #fbbf24;
+  color: #fde68a;
+}
+.rapidfire-pad-stop {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.rapidfire-pad-stop:not(:disabled):hover {
+  border-color: var(--danger);
+  color: #fecaca;
+}
+
+@media (max-width: 1500px) {
+  .rapidfire-pads { grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 6px; }
+  .rapidfire-pad-title { font-size: 13px; }
+  .rapidfire-pad-fire { min-height: 52px; padding: 8px; }
+}
+
+/* The global "Button SIZE compaction" block above forces padding / font-size /
+   min-height on every <button> with !important. Rapid Fire pads are meant to be
+   hit in the dark during a show, so they reclaim a real touch target. */
+.rapidfire-pad-fire { min-height: 64px !important; padding: 10px !important; }
+.rapidfire-pad-btn { min-height: 26px !important; padding: 5px 8px !important; font-size: 12px !important; font-weight: 600 !important; }
+.rapidfire-stop-all { padding: 4px 10px !important; font-size: 12px !important; }
+@media (max-width: 1500px) {
+  .rapidfire-pad-fire { min-height: 52px !important; padding: 8px !important; }
+}
+
+/* ── Rig: bulk add / copy-paste ────────────────────────────────────────────
+   Right-click menu items now carry a keyboard hint, and the bulk-add modal
+   shows a live DMX patch preview. */
+.rig-menu-item { display: flex; align-items: center; gap: 14px; justify-content: space-between; }
+.rig-menu-shortcut {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #9ca3af);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.rig-menu-item:disabled .rig-menu-shortcut { opacity: 0.5; }
+
+.dmx-modal-bulk-add .dmx-modal-body { max-height: min(62vh, 560px); overflow-y: auto; }
+.dmx-modal-preview {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border, rgba(148,163,184,0.35));
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted, #9ca3af);
+  white-space: pre-wrap;
+}
+
+/* Rapid Fire: the panel-level Loop option sits next to the Stop button. */
+.rapidfire-loop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted, #9ca3af);
+  cursor: pointer;
+  user-select: none;
+}
+.rapidfire-loop input { width: auto; margin: 0; cursor: pointer; }
+.rapidfire-loop:has(input:checked) { color: var(--text); font-weight: 600; }
+/* Fallback for engines without :has() — the checkbox itself still shows state. */
+.rapidfire-loop input:checked { accent-color: var(--accent, #3b82f6); }

@@ -249,11 +249,12 @@ def test_effects_js_playback_guard_removed():
 
 
 def test_effects_js_calls_purge_endpoint():
-    """removeEffectGroupCompletely and disableGroupOnRig must hit /purge in backend mode."""
+    """disableGroupOnRig must hit /purge in backend mode (rémanence fix)."""
     src = _read("static/effects.js")
     assert "/api/live/effects/groups/purge" in src
-    # At least two call sites (delete + disable)
-    assert src.count("/api/live/effects/groups/purge") >= 2
+    func_start = src.index("function disableGroupOnRig")
+    func_end = src.index("\n}", func_start)
+    assert "/api/live/effects/groups/purge" in src[func_start:func_end]
 
 
 def test_app_py_has_purge_endpoint():
@@ -313,3 +314,52 @@ def test_engine_remove_effect_group_handles_empty():
             engine.stop()
         except Exception:
             pass
+
+
+# -----------------------------------------------------------------------------
+# Dead-code cleanup guards
+# -----------------------------------------------------------------------------
+
+def test_effect_chaser_type_evaluates():
+    """`chaser` used to call a `_chaser` that did not exist (NameError inside
+    the render loop). It must evaluate and actually vary across the cycle."""
+    import Effect
+
+    spec = {"type": "chaser", "amplitude": 100, "frequency": 1.0, "width": 0.25}
+    seen = set()
+    for count in (1, 4, 8):
+        for idx in range(count):
+            for t_s in (0.0, 0.2, 0.4, 0.6, 0.8):
+                value = Effect.eval_effects(spec, t_s, idx=idx, count=count)
+                assert -1.0 <= value <= 1.0
+                seen.add(round(value, 3))
+    assert len(seen) > 1, "chaser output never changes"
+
+
+def test_no_shadowed_toplevel_js_functions():
+    """Two top-level `function foo()` in one file silently shadow each other —
+    that is how cues.js grew a second, divergent playback engine."""
+    import collections
+    import glob
+    import re
+
+    decl = re.compile(r"^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")
+    offenders = []
+    for path in sorted(glob.glob(os.path.join(_REPO_ROOT, "static", "*.js"))):
+        names = collections.Counter()
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                match = decl.match(line)
+                if match:
+                    names[match.group(1)] += 1
+        for name, hits in names.items():
+            if hits > 1:
+                offenders.append("%s: %s x%d" % (os.path.basename(path), name, hits))
+    assert not offenders, "shadowed top-level functions: " + ", ".join(offenders)
+
+
+def test_ui_follow_playback_engine_is_gone():
+    """Playback is backend-driven; the browser-side sequencer was dead code."""
+    src = _read("static/cues.js")
+    for gone in ("uiFollowSequence", "uiFollowStep", "computeFadePattern", "uiFollowStopFlag"):
+        assert gone not in src, "%s came back in cues.js" % gone

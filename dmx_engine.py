@@ -274,7 +274,6 @@ class DMXRenderEngine:
         self._dummy_enabled = os.environ.get("DMX_DUMMY", "1").strip().lower() in ("1", "true", "yes", "on")
 
         # Live effects (from controller, not cues)
-        self._live_effects: Dict[str, Dict[int, List[LiveEffect]]] = {}  # {device_id: {channel: [effects]}}
 
         # Live effect groups (legacy/intelligent)
         self._live_effect_groups: Dict[str, Dict[str, Any]] = {}
@@ -304,6 +303,11 @@ class DMXRenderEngine:
         self._playback_clock_mode = os.environ.get("DMX_PLAYBACK_CLOCK_MODE", "timeline").strip().lower()
         self._playback_speed = 1.0
         self._playback_run_speed = 1.0
+        # Whole-sequence looping (distinct from per-step loop groups):
+        # loop_count None/0 = forever, otherwise that many passes.
+        self._playback_loop = False
+        self._playback_loop_count: Optional[int] = None
+        self._playback_loop_pass = 0
         self._log_playback_timing = os.environ.get("DMX_LOG_PLAYBACK_TIMING", "0").strip().lower() in ("1", "true", "yes", "on")
         self._playback_state: Dict[str, Any] = {
             "active": False,
@@ -431,6 +435,9 @@ class DMXRenderEngine:
         state["wait_adjust_ms"] = int(self._playback_wait_adjust_ms)
         state["clock_mode"] = str(self._playback_clock_mode or "timeline")
         state["speed"] = float(self._playback_run_speed if self._playback_state.get("active") else self._playback_speed)
+        state["loop"] = bool(self._playback_loop)
+        state["loop_count"] = int(self._playback_loop_count) if self._playback_loop_count else 0
+        state["loop_pass"] = int(self._playback_loop_pass)
         if self._timeline_runtime is not None:
             state["timeline_elapsed_ms"] = int(self._timeline_elapsed_ms_locked())
             state["timeline_total_length_ms"] = int(self._timeline_runtime.get("total_length_ms", 0) or 0)
@@ -544,14 +551,12 @@ class DMXRenderEngine:
                 "direct_channels": deepcopy(self._direct_channels),
                 "smooth_targets": deepcopy(self._smooth_targets),
                 "smooth_last_targets": deepcopy(self._smooth_last_targets),
-                "live_effects": deepcopy(self._live_effects),
                 "live_effect_groups": deepcopy(self._live_effect_groups),
                 "live_groups_by_device": deepcopy(self._live_groups_by_device),
             }
         self._direct_channels.clear()
         self._smooth_targets.clear()
         self._smooth_last_targets.clear()
-        self._live_effects.clear()
         self._live_effect_groups.clear()
         self._live_groups_by_device.clear()
         self._playback_force_backend_render = True
@@ -563,7 +568,6 @@ class DMXRenderEngine:
             self._direct_channels = backup.get("direct_channels", {})
             self._smooth_targets = backup.get("smooth_targets", {})
             self._smooth_last_targets = backup.get("smooth_last_targets", {})
-            self._live_effects = backup.get("live_effects", {})
             self._live_effect_groups = backup.get("live_effect_groups", {})
             self._live_groups_by_device = backup.get("live_groups_by_device", {})
         self._playback_live_state_backup = None
@@ -890,28 +894,6 @@ class DMXRenderEngine:
         return mapping
 
     @staticmethod
-    def _device_group_index(group: Dict[str, Any], device_id: str) -> Tuple[int, int]:
-        effect_members = group.get("effect_member_ids") or group.get("effectMemberIds") or []
-        if isinstance(effect_members, list) and effect_members:
-            order = [str(x) for x in effect_members]
-            dev_key = str(device_id)
-            idx = order.index(dev_key) if dev_key in order else 0
-            return idx, len(order) if order else 1
-
-        order = [str(x) for x in (group.get("deviceIds") or [])]
-        sel = group.get("selection_groups")
-        dev_key = str(device_id)
-        if isinstance(sel, list) and sel:
-            for gi, grp in enumerate(sel):
-                if isinstance(grp, list) and dev_key in [str(x) for x in grp]:
-                    return gi, len(sel)
-            idx = order.index(dev_key) if dev_key in order else 0
-            return idx, max(len(sel), 1)
-        idx = order.index(dev_key) if dev_key in order else 0
-        total = len(order) if order else 1
-        return idx, total
-
-    @staticmethod
     def _group_selection_scope(group: Dict[str, Any]) -> str:
         return "fixture_elements" if str(group.get("selectionScope") or "").strip().lower() == "fixture_elements" else "devices"
 
@@ -1101,7 +1083,6 @@ class DMXRenderEngine:
                 self._fade = None
                 self._cue_effects.clear()
                 self._fade_effect_groups = None
-                self._live_effects.clear()
             else:
                 # Switching back to UI: stop backend fades/cues
                 self._fade = None
@@ -1122,13 +1103,6 @@ class DMXRenderEngine:
             return 1.0
         closest = min(allowed, key=lambda val: abs(val - raw))
         return float(closest)
-
-    def set_playback_speed(self, speed: Any):
-        with self._lock:
-            self._playback_speed = self._normalize_playback_speed(speed)
-            if not self._playback_state.get("active"):
-                self._playback_run_speed = self._playback_speed
-                self._update_playback_state_locked(speed=self._playback_speed)
 
     def set_playback_ui_fps(self, fps: Any):
         with self._lock:
@@ -1463,7 +1437,7 @@ class DMXRenderEngine:
                     uni[ch] = int(val)
 
         # Apply effect groups and legacy per-channel effects
-        if self._live_effect_groups or self._cue_effect_groups or self._live_effects or self._cue_effects:
+        if self._live_effect_groups or self._cue_effect_groups or self._cue_effects:
             speed = self._playback_run_speed if self._playback_state.get("active") else 1.0
             t_ms = (now - self._effect_epoch) * 1000.0 * max(0.01, float(speed or 1.0))
             device_ids = list(self._devices.keys())
@@ -1721,12 +1695,6 @@ class DMXRenderEngine:
                     offset = self._eval_effect(eff, now, dev_idx, dev_count)
                     if 0 <= ch < 512:
                         uni[ch] = max(0, min(255, int(uni[ch] + offset * 255)))
-        if dev_id in self._live_effects:
-            for ch, eff_list in self._live_effects[dev_id].items():
-                for eff in eff_list:
-                    offset = self._eval_effect(eff, now, dev_idx, dev_count)
-                    if 0 <= ch < 512:
-                        uni[ch] = max(0, min(255, int(uni[ch] + offset * 255)))
 
     def _apply_timeline_prep_block(self, dev_id: str, block: TimelineBlock) -> None:
         devices = block.cue_payload.get("devices") or {}
@@ -1878,41 +1846,6 @@ class DMXRenderEngine:
             self._apply_timeline_block_effect_groups(block, dev_state, dev_key, elapsed_ms, now, fade_mix)
             self._apply_timeline_block_channel_effects(block, dev_state, dev_key, dev_spec, elapsed_ms, now, fade_mix)
 
-    def _render_device(self, dev: DeviceState, dev_id: str, now: float):
-        """Render a single device's channels"""
-        self._ensure_universe(dev.universe)
-        uni = self._universes[dev.universe]
-
-        # Get device index for phase spread
-        device_ids = list(self._devices.keys())
-        dev_idx = device_ids.index(dev_id) if dev_id in device_ids else 0
-        dev_count = len(device_ids)
-
-        for ch, base_value in dev.channels.items():
-            if not (0 <= ch < 512):
-                continue
-
-            value = base_value
-
-            # Apply fade if active
-            if self._fade:
-                value = self._apply_fade(dev.universe, ch, base_value, now, dev_id)
-
-            # Apply cue effects
-            if dev_id in self._cue_effects and ch in self._cue_effects[dev_id]:
-                for eff in self._cue_effects[dev_id][ch]:
-                    offset = self._eval_effect(eff, now, dev_idx, dev_count)
-                    value = int(value + offset * 255)
-
-            # Apply live effects
-            if dev_id in self._live_effects and ch in self._live_effects[dev_id]:
-                for eff in self._live_effects[dev_id][ch]:
-                    offset = self._eval_effect(eff, now, dev_idx, dev_count)
-                    value = int(value + offset * 255)
-
-            # Clamp and store
-            uni[ch] = max(0, min(255, value))
-
     def _apply_fade(self, universe: int, channel: int, base: int, now: float, dev_id: str) -> int:
         """Apply fade interpolation"""
         fade = self._fade
@@ -1998,21 +1931,6 @@ class DMXRenderEngine:
     # PUBLIC API: DEVICE MANAGEMENT
     # -------------------------------------------------------------------------
 
-    def register_device(self, device_id: str, universe: int, channels: Dict[int, int]):
-        """Register or update a device"""
-        with self._lock:
-            if device_id in self._devices:
-                dev = self._devices[device_id]
-                dev.universe = universe
-                dev.channels = dict(channels)
-            else:
-                self._devices[device_id] = DeviceState(
-                    device_id=device_id,
-                    universe=universe,
-                    channels=dict(channels)
-                )
-            self._ensure_universe(universe)
-
     def _calib_value(self, raw: Any) -> Optional[int]:
         """Coerce a calibration DMX value to an int in [0, 255] or None."""
         if raw is None or raw == "":
@@ -2059,7 +1977,6 @@ class DMXRenderEngine:
         """
         with self._lock:
             self._devices.clear()
-            self._live_effects.clear()
             self._cue_effects.clear()
             self._live_effect_groups.clear()
             self._live_groups_by_device.clear()
@@ -2101,7 +2018,6 @@ class DMXRenderEngine:
                 for stale_id in [d for d in self._devices if d not in incoming_ids]:
                     self._purge_device_output(self._devices[stale_id])
                     self._devices.pop(stale_id, None)
-                    self._live_effects.pop(stale_id, None)
                     self._cue_effects.pop(stale_id, None)
                     self._live_groups_by_device.pop(stale_id, None)
                     self._cue_groups_by_device.pop(stale_id, None)
@@ -2190,13 +2106,6 @@ class DMXRenderEngine:
             except Exception as exc:
                 log.debug("autolight overlay on_rig_changed failed: %s", exc)
 
-    def unregister_device(self, device_id: str):
-        """Remove a device"""
-        with self._lock:
-            self._devices.pop(device_id, None)
-            self._live_effects.pop(device_id, None)
-            self._cue_effects.pop(device_id, None)
-
     def set_autolight_overlay(self, overlay: Optional[Any]) -> None:
         """Install (or clear) a callable invoked each render tick.
 
@@ -2283,14 +2192,6 @@ class DMXRenderEngine:
                         self._smooth_targets.get(universe, {}).pop(ch_int, None)
                     self._direct_channels[universe][ch_int] = v
 
-    def set_channels_bulk(self, updates: Dict[str, Dict[int, int]]):
-        """Bulk update: {device_id: {channel: value}}"""
-        with self._lock:
-            for dev_id, channels in updates.items():
-                if dev_id in self._devices:
-                    for ch, val in channels.items():
-                        self._devices[dev_id].channels[ch] = max(0, min(255, val))
-
     def set_channels_multi(self, device_id: str, updates: Dict[int, Dict[int, int]]):
         """Atomic write of channels across multiple universes (single lock acquisition).
 
@@ -2340,40 +2241,6 @@ class DMXRenderEngine:
     # -------------------------------------------------------------------------
     # PUBLIC API: LIVE EFFECTS
     # -------------------------------------------------------------------------
-
-    def start_live_effect(self, device_id: str, channel: int, effect_type: str,
-                          amplitude: float = 100, frequency: float = 1.0,
-                          phase: Any = 0, **params):
-        """Start a live effect on a device channel"""
-        with self._lock:
-            if device_id not in self._live_effects:
-                self._live_effects[device_id] = {}
-            if channel not in self._live_effects[device_id]:
-                self._live_effects[device_id][channel] = []
-
-            eff = LiveEffect(
-                effect_type=effect_type,
-                amplitude=amplitude,
-                frequency=frequency,
-                phase=phase,
-                params=params,
-                start_time=time.perf_counter()
-            )
-            self._live_effects[device_id][channel].append(eff)
-
-    def stop_live_effects(self, device_id: str, channel: Optional[int] = None):
-        """Stop live effects on a device (optionally specific channel)"""
-        with self._lock:
-            if device_id in self._live_effects:
-                if channel is not None:
-                    self._live_effects[device_id].pop(channel, None)
-                else:
-                    del self._live_effects[device_id]
-
-    def clear_all_live_effects(self):
-        """Clear all live effects"""
-        with self._lock:
-            self._live_effects.clear()
 
     def set_live_effect_groups(self, groups: Any, action: str = "set", group_ids: Any = None):
         """Set/add/remove live effect groups (legacy or intelligent)."""
@@ -2616,6 +2483,9 @@ class DMXRenderEngine:
             self._playback_stop_event.set()
             self._playback_skip_requested = False
             self._playback_wait_adjust_ms = 0
+            self._playback_loop = False
+            self._playback_loop_count = None
+            self._playback_loop_pass = 0
             self._timeline_runtime = None
             self._fade = None
             self._cue_effects.clear()
@@ -2730,6 +2600,8 @@ class DMXRenderEngine:
         priority_mode: str = "top",
         start_ms: int = 0,
         paused: bool = False,
+        loop: bool = False,
+        loop_count: Any = None,
     ):
         mode_key = str(mode or "classic").strip().lower()
         if mode_key == "timeline":
@@ -2769,6 +2641,13 @@ class DMXRenderEngine:
             self._playback_stop_event = threading.Event()
             self._playback_skip_requested = False
             self._playback_wait_adjust_ms = 0
+            self._playback_loop = bool(loop)
+            try:
+                normalized_loop_count = int(loop_count) if loop_count is not None else 0
+            except (TypeError, ValueError):
+                normalized_loop_count = 0
+            self._playback_loop_count = normalized_loop_count if normalized_loop_count > 0 else None
+            self._playback_loop_pass = 1 if run_plan else 0
             self._update_playback_state_locked(
                 active=bool(run_plan),
                 paused=False,
@@ -2782,8 +2661,10 @@ class DMXRenderEngine:
             )
             if run_plan:
                 self._playback_thread = threading.Thread(
-                    target=self._play_sequence,
-                    args=(run_plan, len(full_plan)),
+                    target=self._play_sequence_looped,
+                    # Looping replays the whole list from the top, even when the
+                    # first pass started mid-sequence ("play from cue 5").
+                    args=(run_plan, len(full_plan), full_plan),
                     daemon=True,
                     name="DMXPlaybackScheduler",
                 )
@@ -2986,7 +2867,41 @@ class DMXRenderEngine:
                     self._playback_thread = None
                 self._notify_state_change()
 
-    def _play_sequence(self, sequence: List[PlaybackPlanEntry], sequence_length: int):
+    def _play_sequence_looped(
+        self,
+        run_plan: List[PlaybackPlanEntry],
+        sequence_length: int,
+        loop_plan: Optional[List[PlaybackPlanEntry]] = None,
+    ):
+        """Play the plan once, then again for as long as looping is enabled.
+
+        Each pass runs through ``_play_sequence``, whose timing anchors are
+        locals — so a new pass re-anchors itself and absolute-clock playback
+        stays correct. Only the last pass restores the live rig state.
+        """
+        stop_event = self._playback_stop_event
+        plan = run_plan
+        while True:
+            with self._lock:
+                loop_enabled = bool(self._playback_loop)
+                loop_target = self._playback_loop_count
+                current_pass = max(1, int(self._playback_loop_pass))
+            last_pass = (not loop_enabled) or (loop_target is not None and current_pass >= loop_target)
+
+            self._play_sequence(plan, sequence_length, finalize=last_pass)
+
+            if last_pass or stop_event.is_set():
+                return
+            plan = loop_plan or run_plan
+            with self._lock:
+                self._playback_loop_pass = current_pass + 1
+
+    def _play_sequence(
+        self,
+        sequence: List[PlaybackPlanEntry],
+        sequence_length: int,
+        finalize: bool = True,
+    ):
         stop_event = self._playback_stop_event
         cue_token = 0
         run_origin = time.perf_counter()
@@ -3210,9 +3125,16 @@ class DMXRenderEngine:
                     with self._lock:
                         self._update_playback_state_locked(phase_remaining_ms=0)
 
+            # A looping run keeps the rig and the playback state as they are and
+            # comes straight back for the next pass.
+            if not finalize:
+                return
             with self._lock:
                 self._restore_playback_render_locked()
                 self._playback_run_speed = self._playback_speed
+                self._playback_loop = False
+                self._playback_loop_count = None
+                self._playback_loop_pass = 0
                 self._update_playback_state_locked(
                     active=False,
                     paused=False,
@@ -3369,20 +3291,6 @@ class DMXRenderEngine:
 
         return schedule
 
-    def _outside_in(self, items: List[str]) -> List[str]:
-        """Reorder: first, last, second, second-to-last, ..."""
-        result = []
-        left, right = 0, len(items) - 1
-        while left <= right:
-            if left == right:
-                result.append(items[left])
-            else:
-                result.append(items[left])
-                result.append(items[right])
-            left += 1
-            right -= 1
-        return result
-
     # -------------------------------------------------------------------------
     # STATE BROADCASTING (for SSE)
     # -------------------------------------------------------------------------
@@ -3390,11 +3298,6 @@ class DMXRenderEngine:
     def add_state_callback(self, callback: Callable):
         """Add callback for state updates"""
         self._state_callbacks.append(callback)
-
-    def remove_state_callback(self, callback: Callable):
-        """Remove state callback"""
-        if callback in self._state_callbacks:
-            self._state_callbacks.remove(callback)
 
     def _broadcast_state(self, include_universes: bool = True):
         """Send current state to all callbacks"""
@@ -3501,18 +3404,6 @@ class DMXRenderEngine:
     def _should_bypass_smoothing(cur: int, target: int) -> bool:
         return (cur == 0 and target == 255) or (cur == 255 and target == 0)
 
-
-    def get_current_state(self) -> Dict[str, Any]:
-        """Get current state snapshot"""
-        with self._lock:
-            return {
-                "universes": {str(u): list(v) for u, v in self._universes.items()},
-                "devices": {d: {"universe": dev.universe, "channels": dict(dev.channels)}
-                           for d, dev in self._devices.items()},
-                "identify_active": bool(self._identify_devices),
-                "fade_active": self._fade is not None,
-                "playback": self._playback_state_snapshot_locked()
-            }
 
     def get_packet_stats(self) -> Dict[str, Any]:
         return {

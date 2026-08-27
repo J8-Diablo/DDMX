@@ -319,6 +319,103 @@ function findNextFreeAddressExcludingDevice(universe, addrCount, excludedDeviceI
   return null;
 }
 
+/* ------------------------------------------------------------------
+   Batch DMX patching (bulk add / paste).
+
+   findNextFreeAddress() only knows about devices that already exist, so it
+   cannot patch several new devices in one go — they would all land on the same
+   free block. planDeviceAddresses() builds the occupancy map once, then walks
+   it while reserving each slot, and rolls over to the next universe when the
+   current one is full. Nothing is created until the whole batch fits.
+   ------------------------------------------------------------------ */
+
+const MAX_PLAN_UNIVERSE = 63;
+
+function buildUniverseOccupancy() {
+  const occupancy = new Map(); // universe -> [[start, end], ...]
+  for (const d of Object.values(rigDevices || {})) {
+    if (!d) continue;
+    const universe = parseInt(d.universe, 10) || 0;
+    const footprint = getFixtureFootprint(fixtures[d.fixture] || {});
+    const start = parseInt(d.address, 10) || 0;
+    if (!occupancy.has(universe)) occupancy.set(universe, []);
+    occupancy.get(universe).push([start, start + footprint - 1]);
+  }
+  for (const ranges of occupancy.values()) ranges.sort((a, b) => a[0] - b[0]);
+  return occupancy;
+}
+
+function firstFreeSlotIn(occupancy, universe, footprint, fromAddress = 0) {
+  const ranges = occupancy.get(universe) || [];
+  for (let start = Math.max(0, fromAddress); start <= 512 - footprint; start++) {
+    let ok = true;
+    for (const [r0, r1] of ranges) {
+      if (!(start + footprint - 1 < r0 || start > r1)) {
+        ok = false;
+        start = r1; // skip past the blocking device
+        break;
+      }
+    }
+    if (ok) return start;
+  }
+  return null;
+}
+
+function reserveSlot(occupancy, universe, address, footprint) {
+  if (!occupancy.has(universe)) occupancy.set(universe, []);
+  const ranges = occupancy.get(universe);
+  ranges.push([address, address + footprint - 1]);
+  ranges.sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * Patch a batch of devices.
+ * @param {number[]} footprints one entry per device to patch
+ * @param {{universe?:number, address?:number|null, overflow?:boolean}} opts
+ * @returns {{slots:{universe:number,address:number}[]}|{error:string}}
+ */
+function planDeviceAddresses(footprints, opts = {}) {
+  const list = (Array.isArray(footprints) ? footprints : []).map((f) => Math.max(1, parseInt(f, 10) || 1));
+  if (!list.length) return { slots: [] };
+
+  const overflow = opts.overflow !== false;
+  const occupancy = buildUniverseOccupancy();
+  let universe = Math.max(0, parseInt(opts.universe, 10) || 0);
+  let cursor = (opts.address == null) ? 0 : Math.max(0, parseInt(opts.address, 10) || 0);
+  const slots = [];
+
+  for (const footprint of list) {
+    if (footprint > 512) return { error: `A fixture needs ${footprint} channels, more than a universe holds.` };
+    let address = firstFreeSlotIn(occupancy, universe, footprint, cursor);
+    while (address == null) {
+      if (!overflow) {
+        return { error: `Universe ${universe} has no room left for ${list.length} device(s).` };
+      }
+      universe += 1;
+      if (universe > MAX_PLAN_UNIVERSE) {
+        return { error: `No free DMX address left (checked up to universe ${MAX_PLAN_UNIVERSE}).` };
+      }
+      cursor = 0;
+      address = firstFreeSlotIn(occupancy, universe, footprint, cursor);
+    }
+    reserveSlot(occupancy, universe, address, footprint);
+    slots.push({ universe, address });
+    cursor = address + footprint;
+  }
+  return { slots };
+}
+
+function formatPlanRange(slots, footprints) {
+  if (!slots.length) return "";
+  const first = slots[0];
+  const lastIdx = slots.length - 1;
+  const last = slots[lastIdx];
+  const lastEnd = last.address + Math.max(1, footprints[lastIdx] || 1) - 1;
+  const universes = new Set(slots.map((s) => s.universe));
+  const head = `U${first.universe}.${first.address} → U${last.universe}.${lastEnd}`;
+  return universes.size > 1 ? `${head} (${universes.size} universes)` : head;
+}
+
 function findAutoRemapSlot(fixtureName, preferredUniverse, excludedDeviceId = null) {
   const fi = fixtures?.[fixtureName] || {};
   const footprint = getFixtureFootprint(fi);
@@ -935,37 +1032,6 @@ function findRigAddressOverlaps({ deviceId = null, fixtureName, universe, addres
   };
 }
 
-function buildRigOverlapKey(overlap) {
-  return [
-    String(overlap?.deviceId || ""),
-    parseInt(overlap?.overlapStart, 10) || 0,
-    parseInt(overlap?.overlapEnd, 10) || 0
-  ].join(":");
-}
-
-function buildRigOverlapWarningText(report, overlaps) {
-  const targetLabel = getFixtureDisplayName(report?.fixtureName);
-  const range = report?.targetRange || { start: 0, end: 0, footprint: 1 };
-  const countLabel = range.footprint === 1 ? "1 DMX address" : `${range.footprint} DMX addresses`;
-  const lines = [
-    `The selected fixture "${targetLabel}" uses ${countLabel}.`,
-    `Universe ${report?.universe ?? 0}, range ${range.start}-${range.end}.`,
-    "",
-    "This creates overlaps with:",
-  ];
-
-  overlaps.forEach((overlap) => {
-    const fixtureLabel = getFixtureDisplayName(overlap.fixtureName);
-    lines.push(
-      `- Device ${overlap.deviceId} (${overlap.cname}) - ${fixtureLabel}, range ${overlap.start}-${overlap.end}, overlap ${overlap.overlapStart}-${overlap.overlapEnd}`
-    );
-  });
-
-  lines.push("");
-  lines.push("The change will still be applied.");
-  return lines.join("\n");
-}
-
 ///////////////////////
 // DEVICE CRUD
 ///////////////////////
@@ -1390,6 +1456,10 @@ function renderRigTypeButtons() {
 
 function prettifyFixtureName(name) {
   return String(name || "")
+    // Fixture files are named "mini_bar.fixture.json" / "mc03.xml": the
+    // extension is noise in a menu label.
+    .replace(/\.fixture\.json$/i, "")
+    .replace(/\.(json|xml)$/i, "")
     .replace(/[_\-]+/g, " ")
     .replace(/\b\w/g, c => c.toUpperCase());
 }
@@ -3043,31 +3113,239 @@ if (typeof window.addRenderModeListener === "function") {
    ============================================================ */
 function _rmT(key, fb) { return (typeof window.t === "function") ? window.t(key, fb) : fb; }
 
-function addDeviceAuto(fixtureName, wx, wy) {
-  if (!fixtureName || !fixtures[fixtureName]) { toast("Unknown fixture.", "error"); return; }
-  const fi = fixtures[fixtureName] || {};
-  const addrCount = getFixtureFootprint(fi);
-  // Auto universe + address: first universe with a free block.
-  let universe = 0, address = null;
-  for (let u = 0; u < 64; u++) {
-    const free = findNextFreeAddress(u, addrCount);
-    if (free != null) { universe = u; address = free; break; }
-  }
-  if (address == null) { toast("No free DMX address.", "error"); return; }
+/* ------------------------------------------------------------------
+   Device creation used by bulk add and by paste.
+   ------------------------------------------------------------------ */
+
+function createDeviceFromSpec(spec) {
+  const fixtureName = String(spec?.fixture || "");
+  if (!fixtures[fixtureName]) return null;
   const id = String(nextDeviceId++);
+  // `cnamePrefix` numbers the device with its own id (unique, and consistent
+  // with the historic "Device 12" naming); `cname` copies a name verbatim.
+  const prefix = String(spec.cnamePrefix || "").trim();
   rigDevices[id] = {
-    id, fixture: fixtureName, cname: `Device ${id}`, universe, address,
-    x: Number.isFinite(wx) ? Math.round(wx) : 100,
-    y: Number.isFinite(wy) ? Math.round(wy) : 100,
+    id,
+    fixture: fixtureName,
+    cname: prefix ? `${prefix} ${id}` : (String(spec.cname || "").trim() || `Device ${id}`),
+    universe: Math.max(0, parseInt(spec.universe, 10) || 0),
+    address: Math.max(0, parseInt(spec.address, 10) || 0),
+    x: Number.isFinite(spec.x) ? Math.round(spec.x) : 100,
+    y: Number.isFinite(spec.y) ? Math.round(spec.y) : 100,
   };
   deviceLocalValues[id] = {};
   deviceCurrentGroups[id] = new Set();
-  initDeviceDefaults(id, fixtureName);
-  scheduleMovementSync(); scheduleDummySync(); scheduleRigSync();
-  selectedDeviceOrder = [id]; selectedDeviceSet = new Set(selectedDeviceOrder);
-  refreshControllerFromSelection(); drawRig();
+  if (spec.localValues && typeof spec.localValues === "object") {
+    // Clone keeps the source device's look (paste).
+    for (const [offset, value] of Object.entries(spec.localValues)) {
+      const idx = parseInt(offset, 10);
+      if (Number.isFinite(idx) && idx >= 0) {
+        deviceLocalValues[id][idx] = clamp(parseInt(value, 10) || 0, 0, 255);
+      }
+    }
+  } else {
+    initDeviceDefaults(id, fixtureName);
+  }
+  return id;
+}
+
+function finalizeRigMutation(newIds, message) {
+  scheduleMovementSync();
+  scheduleDummySync();
+  scheduleRigSync();
+  if (newIds.length) {
+    selectedDeviceOrder = newIds.slice();
+    selectedDeviceSet = new Set(selectedDeviceOrder);
+  }
+  refreshControllerFromSelection();
+  drawRig();
   if (typeof renderRigTypeButtons === "function") renderRigTypeButtons();
-  toast(`Device ${id} added (U${universe}.${address})`, "success");
+  if (typeof updateRigSortButtonsState === "function") updateRigSortButtonsState();
+  if (typeof window.refreshCalibrationPanel === "function") window.refreshCalibrationPanel();
+  if (message) toast(message, "success");
+}
+
+// Grid layout for a batch: `columns` per row, `spacing` apart, snapped like a
+// dragged device so a bulk add lines up with the rest of the rig.
+function layoutBatchPositions(count, wx, wy, columns, spacing) {
+  const baseX = Number.isFinite(wx) ? wx : 100;
+  const baseY = Number.isFinite(wy) ? wy : 100;
+  const cols = Math.max(1, columns || 1);
+  const step = Math.max(8, spacing || RIG_GRID_SIZE);
+  const positions = [];
+  for (let i = 0; i < count; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    positions.push({
+      x: snapToGridCenter(baseX + col * step),
+      y: snapToGridCenter(baseY + row * step),
+    });
+  }
+  return positions;
+}
+
+async function addDevicesWithModal(fixtureName, wx, wy) {
+  if (!fixtureName || !fixtures[fixtureName]) { toast("Unknown fixture.", "error"); return; }
+  const footprint = getFixtureFootprint(fixtures[fixtureName] || {});
+  const label = (typeof prettifyFixtureName === "function") ? prettifyFixtureName(fixtureName) : fixtureName;
+
+  // Default universe = the first one with room, so the modal opens on a slot
+  // that actually works.
+  let suggestedUniverse = 0;
+  for (let u = 0; u <= MAX_PLAN_UNIVERSE; u++) {
+    if (firstFreeSlotIn(buildUniverseOccupancy(), u, footprint, 0) != null) { suggestedUniverse = u; break; }
+  }
+
+  const preview = (values) => {
+    const footprints = new Array(values.count).fill(footprint);
+    const plan = planDeviceAddresses(footprints, values);
+    if (plan.error) return `⚠ ${plan.error}`;
+    return `${values.count} × ${label} — ${formatPlanRange(plan.slots, footprints)}`;
+  };
+
+  const values = await bulkAddDeviceModal({
+    title: _rmT("rigmenu.bulkTitle", "Add devices") + ` — ${label}`,
+    confirmText: _rmT("rigmenu.bulkConfirm", "Add"),
+    cancelText: _rmT("common.cancel", "Cancel"),
+    headline: `${label} — ${footprint} ${_rmT("rigmenu.bulkChannels", "DMX channels per device")}`,
+    labels: {
+      count: _rmT("rigmenu.bulkCount", "Number of devices"),
+      prefix: _rmT("rigmenu.bulkPrefix", "Name prefix"),
+      universe: _rmT("rig.universe", "Universe"),
+      address: _rmT("rigmenu.bulkAddress", "Start address (empty = auto)"),
+      overflow: _rmT("rigmenu.bulkOverflow", "Continue into the next universe when full"),
+      columns: _rmT("rigmenu.bulkColumns", "Devices per row"),
+      spacing: _rmT("rigmenu.bulkSpacing", "Spacing (px)"),
+    },
+    defaults: {
+      count: 1,
+      prefix: "Device",
+      universe: suggestedUniverse,
+      address: null,
+      overflow: true,
+      columns: 8,
+      spacing: RIG_GRID_SIZE,
+    },
+    onPreview: preview,
+  });
+  if (!values) return;
+
+  const footprints = new Array(values.count).fill(footprint);
+  const plan = planDeviceAddresses(footprints, values);
+  if (plan.error) { toast(plan.error, "error"); return; }
+
+  const positions = layoutBatchPositions(values.count, wx, wy, values.columns, values.spacing);
+  const created = [];
+  for (let i = 0; i < values.count; i++) {
+    const slot = plan.slots[i];
+    const id = createDeviceFromSpec({
+      fixture: fixtureName,
+      cnamePrefix: values.prefix,
+      universe: slot.universe,
+      address: slot.address,
+      x: positions[i].x,
+      y: positions[i].y,
+    });
+    if (id) created.push(id);
+  }
+  if (!created.length) { toast("No device created.", "error"); return; }
+
+  finalizeRigMutation(
+    created,
+    created.length === 1
+      ? `Device ${created[0]} added (U${plan.slots[0].universe}.${plan.slots[0].address})`
+      : `${created.length} devices added — ${formatPlanRange(plan.slots, footprints)}`
+  );
+}
+
+/* ------------------------------------------------------------------
+   Copy / paste of the selection. Clones keep the fixture, the name, the
+   relative layout and the current channel values; they always get fresh
+   device ids and freshly patched DMX slots. Live effect-group membership is
+   deliberately NOT copied (the groups own their member lists).
+   ------------------------------------------------------------------ */
+
+let rigClipboard = [];
+let rigPasteRound = 0;
+
+function copySelectedDevices() {
+  const ids = (selectedDeviceOrder || []).filter((id) => rigDevices[id]);
+  if (!ids.length) { toast(_rmT("rigmenu.copyNothing", "Nothing selected to copy."), "warning"); return; }
+
+  const devs = ids.map((id) => rigDevices[id]);
+  const minX = Math.min(...devs.map((d) => Number(d.x) || 0));
+  const minY = Math.min(...devs.map((d) => Number(d.y) || 0));
+
+  rigClipboard = devs.map((d) => ({
+    fixture: String(d.fixture || ""),
+    cname: String(d.cname || ""),
+    universe: Math.max(0, parseInt(d.universe, 10) || 0),
+    // Layout is kept relative to the top-left of the copied block, plus the
+    // block's own origin so a keyboard paste lands next to the source.
+    dx: (Number(d.x) || 0) - minX,
+    dy: (Number(d.y) || 0) - minY,
+    originX: minX,
+    originY: minY,
+    localValues: { ...(deviceLocalValues[d.id] || {}) },
+  })).filter((entry) => entry.fixture && fixtures[entry.fixture]);
+
+  rigPasteRound = 0;
+  if (!rigClipboard.length) { toast("Nothing to copy (unknown fixtures).", "warning"); return; }
+  toast(`${rigClipboard.length} device(s) copied`, "info");
+  if (_rigMenuEl) _rmRoot(_rigMenuEl);
+}
+
+function pasteClipboardDevices(atWx = null, atWy = null) {
+  if (!rigClipboard.length) { toast(_rmT("rigmenu.pasteEmpty", "Clipboard is empty."), "warning"); return; }
+
+  const footprints = rigClipboard.map((entry) => getFixtureFootprint(fixtures[entry.fixture] || {}));
+  // Patch from the first source universe, rolling over when it is full.
+  const plan = planDeviceAddresses(footprints, {
+    universe: rigClipboard[0].universe,
+    address: null,
+    overflow: true,
+  });
+  if (plan.error) { toast(plan.error, "error"); return; }
+
+  // Pasted under the pointer when it comes from the context menu; from the
+  // keyboard, next to the source, shifted one more grid step on each paste.
+  const atPointer = Number.isFinite(atWx) && Number.isFinite(atWy);
+  let baseX;
+  let baseY;
+  if (atPointer) {
+    baseX = atWx;
+    baseY = atWy;
+  } else {
+    rigPasteRound += 1;
+    baseX = (rigClipboard[0].originX || 0) + RIG_GRID_SIZE * rigPasteRound;
+    baseY = (rigClipboard[0].originY || 0) + RIG_GRID_SIZE * rigPasteRound;
+  }
+
+  const created = [];
+  rigClipboard.forEach((entry, i) => {
+    const slot = plan.slots[i];
+    const id = createDeviceFromSpec({
+      fixture: entry.fixture,
+      // Same "(copy)" convention as duplicating a cue.
+      cname: entry.cname
+        ? ((typeof window.tfmt === "function")
+            ? window.tfmt("cues.copyName", "{name} (copy)", { name: entry.cname })
+            : `${entry.cname} (copy)`)
+        : "",
+      universe: slot.universe,
+      address: slot.address,
+      x: snapToGridCenter(baseX + entry.dx),
+      y: snapToGridCenter(baseY + entry.dy),
+      localValues: entry.localValues,
+    });
+    if (id) created.push(id);
+  });
+  if (!created.length) { toast("Paste failed.", "error"); return; }
+
+  finalizeRigMutation(
+    created,
+    `${created.length} device(s) pasted — ${formatPlanRange(plan.slots, footprints)}`
+  );
 }
 
 function selectDevicesByType(fixtureName) {
@@ -3101,6 +3379,12 @@ function _rmItem(label, onClick, opts) {
   b.type = "button";
   b.className = "rig-menu-item" + (opts.back ? " rig-menu-back" : "");
   b.textContent = label + (opts.arrow ? "   ▸" : "");
+  if (opts.shortcut) {
+    const hint = document.createElement("span");
+    hint.className = "rig-menu-shortcut";
+    hint.textContent = opts.shortcut;
+    b.appendChild(hint);
+  }
   if (opts.disabled) b.disabled = true;
   else b.addEventListener("click", (ev) => { ev.stopPropagation(); onClick(); });
   return b;
@@ -3112,11 +3396,27 @@ function _rmRoot(menu) {
   menu.innerHTML = "";
   const nSel = (selectedDeviceOrder || []).length;
   const hasDevices = Object.keys(rigDevices || {}).length > 0;
+  const nClip = (rigClipboard || []).length;
   menu.appendChild(_rmItem(_rmT("rigmenu.add", "Add device"), () => _rmFixtures(menu), { arrow: true }));
   menu.appendChild(_rmItem(_rmT("rigmenu.selectType", "Select by type"), () => _rmTypes(menu), { arrow: true, disabled: !hasDevices }));
   menu.appendChild(_rmItem(_rmT("rigmenu.order", "Order selection"), () => _rmOrder(menu), { arrow: true, disabled: nSel < 2 }));
   menu.appendChild(_rmSep());
-  menu.appendChild(_rmItem(_rmT("rigmenu.delete", "Delete selected"), () => { closeRigMenu(); deleteSelectedDevices(); }, { disabled: nSel === 0 }));
+  menu.appendChild(_rmItem(
+    nSel > 0 ? `${_rmT("rigmenu.copy", "Copy selected")} (${nSel})` : _rmT("rigmenu.copy", "Copy selected"),
+    () => { closeRigMenu(); copySelectedDevices(); },
+    { disabled: nSel === 0, shortcut: "Ctrl+C" }
+  ));
+  menu.appendChild(_rmItem(
+    nClip > 0 ? `${_rmT("rigmenu.pasteHere", "Paste here")} (${nClip})` : _rmT("rigmenu.pasteHere", "Paste here"),
+    () => { closeRigMenu(); pasteClipboardDevices(wx, wy); },
+    { disabled: nClip === 0, shortcut: "Ctrl+V" }
+  ));
+  menu.appendChild(_rmSep());
+  menu.appendChild(_rmItem(
+    nSel > 0 ? `${_rmT("rigmenu.delete", "Delete selected")} (${nSel})` : _rmT("rigmenu.delete", "Delete selected"),
+    () => { closeRigMenu(); deleteSelectedDevices(); },
+    { disabled: nSel === 0, shortcut: "Del" }
+  ));
   menu.appendChild(_rmItem(_rmT("calib.title", "Position calibration"), () => { closeRigMenu(); openRigCalibration(); }));
 }
 function _rmFixtures(menu) {
@@ -3127,7 +3427,7 @@ function _rmFixtures(menu) {
   if (!names.length) { menu.appendChild(_rmItem(_rmT("rigmenu.noFixtures", "No fixtures loaded"), () => {}, { disabled: true })); return; }
   for (const n of names) {
     const label = (typeof prettifyFixtureName === "function") ? prettifyFixtureName(n) : n;
-    menu.appendChild(_rmItem(label, () => { closeRigMenu(); addDeviceAuto(n, wx, wy); }));
+    menu.appendChild(_rmItem(label, () => { closeRigMenu(); addDevicesWithModal(n, wx, wy); }));
   }
 }
 function _rmTypes(menu) {
@@ -3179,10 +3479,68 @@ function openRigContextMenu(e) {
   }, 0);
 }
 
+/* ------------------------------------------------------------------
+   Keyboard shortcuts for the rig (Del / Ctrl+C / Ctrl+V).
+
+   They only fire when the rig is the area the operator last interacted with:
+   Delete is destructive, and the cue table on the other side of the window
+   has its own idea of what "delete" means. Editable fields and open modals
+   always keep the keys.
+   ------------------------------------------------------------------ */
+
+let _rigAreaActive = false;
+
+function _rigMarkArea(target) {
+  if (!(target instanceof Element)) return;
+  if (target.closest(".rig-panel, .rig-context-menu")) _rigAreaActive = true;
+  else if (target.closest(".cues-panel, .controller-panel, .top-bar")) _rigAreaActive = false;
+}
+
+function _rigShortcutsBlocked(ev) {
+  if (!_rigAreaActive) return true;
+  const target = ev.target;
+  if (target instanceof Element) {
+    if (target.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']")) return true;
+  }
+  // Any modal / dialog owns the keyboard while it is open.
+  if (document.querySelector(".dmx-modal-overlay, .swal2-container")) return true;
+  return false;
+}
+
+function bindRigKeyboardShortcuts() {
+  document.addEventListener("mousedown", (ev) => _rigMarkArea(ev.target), true);
+  document.addEventListener("contextmenu", (ev) => _rigMarkArea(ev.target), true);
+
+  document.addEventListener("keydown", (ev) => {
+    if (_rigShortcutsBlocked(ev)) return;
+    const ctrl = ev.ctrlKey || ev.metaKey;
+    const key = String(ev.key || "");
+
+    if (!ctrl && (key === "Delete" || key === "Backspace")) {
+      if (!(selectedDeviceOrder || []).length) return;
+      ev.preventDefault();
+      deleteSelectedDevices();
+      return;
+    }
+    if (ctrl && (key === "c" || key === "C")) {
+      if (!(selectedDeviceOrder || []).length) return;
+      ev.preventDefault();
+      copySelectedDevices();
+      return;
+    }
+    if (ctrl && (key === "v" || key === "V")) {
+      if (!(rigClipboard || []).length) return;
+      ev.preventDefault();
+      pasteClipboardDevices();
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const cv = document.getElementById("rig-canvas");
   if (cv) cv.addEventListener("contextmenu", openRigContextMenu);
   // Collapsing the floating calibration panel removes its overlay state.
   const calib = document.getElementById("calib-panel");
   if (calib) calib.addEventListener("toggle", () => { if (!calib.open) calib.classList.remove("calib-floating-open"); });
+  bindRigKeyboardShortcuts();
 });
