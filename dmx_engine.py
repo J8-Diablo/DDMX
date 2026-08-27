@@ -584,6 +584,35 @@ class DMXRenderEngine:
         self._live_effect_groups.clear()
         self._live_groups_by_device.clear()
 
+    def _sync_live_backup_locked(self, *, replace_with=None, add=None, drop=None) -> None:
+        """Apply a live-layer change to the pending playback snapshot too.
+
+        A playback empties the live layer and puts the snapshot back when it
+        ends, so the cue owns the rig meanwhile. Anything the operator changes
+        during the cue -- Stop FX, deleting an effect, purging a group -- must
+        reach that snapshot as well, otherwise the restore resurrects effects
+        the UI has already forgotten and they keep being emitted with nothing on
+        screen to explain them.
+
+        The change is mirrored in kind, not by copying the live pool: while a
+        cue plays that pool holds only what has been pushed since the cue
+        started, so a wholesale copy would drop groups a targeted remove never
+        asked to touch.
+        """
+        backup = self._playback_live_state_backup
+        if backup is None:
+            return
+        if replace_with is not None:
+            groups = deepcopy(replace_with)
+        else:
+            groups = backup.get("live_effect_groups") or {}
+            if add:
+                groups.update(deepcopy(add))
+            for gid in (drop or ()):
+                groups.pop(gid, None)
+        backup["live_effect_groups"] = groups
+        backup["live_groups_by_device"] = self._build_group_device_map(groups)
+
     def _restore_playback_render_locked(self):
         backup = self._playback_live_state_backup
         if backup is not None:
@@ -2401,12 +2430,16 @@ class DMXRenderEngine:
                             ids.add(str(g.get("id")))
                 for gid in ids:
                     self._live_effect_groups.pop(gid, None)
+                self._sync_live_backup_locked(drop=ids)
             else:
                 normalized = self._normalize_groups(groups)
                 if action_key == "add":
                     self._live_effect_groups.update(normalized)
+                    self._sync_live_backup_locked(add=normalized)
                 else:
+                    # "set" carries the UI's whole truth, so it replaces both.
                     self._live_effect_groups = normalized
+                    self._sync_live_backup_locked(replace_with=normalized)
 
             self._live_groups_by_device = self._build_group_device_map(self._live_effect_groups)
 
@@ -2446,6 +2479,7 @@ class DMXRenderEngine:
                                 dev_set.discard(gid)
             self._live_groups_by_device = self._build_group_device_map(self._live_effect_groups)
             self._cue_groups_by_device = self._build_group_device_map(self._cue_effect_groups)
+            self._sync_live_backup_locked(drop=ids)
         return removed
 
     # -------------------------------------------------------------------------
@@ -2556,10 +2590,6 @@ class DMXRenderEngine:
                             ))
 
         new_groups = self._normalize_groups(effect_groups_raw)
-        group_pool = dict(prev_group_pool)
-        group_pool.update(new_groups)
-        self._cue_effect_groups = group_pool
-
         groups_by_device_payload = self._build_group_device_map(new_groups)
         devices_in_cue = set(str(x) for x in devices.keys())
         devices_in_cue.update(groups_by_device_payload.keys())
@@ -2582,6 +2612,16 @@ class DMXRenderEngine:
         total_ms = max((end for _, end in schedule.values()), default=0)
 
         self._cue_effects = new_cue_effects
+
+        # The pool used to be purely additive: a group that entered it once kept
+        # animating for the rest of the session. Keep only what some device still
+        # belongs to -- plus, while crossfading, the groups being faded out.
+        referenced = {gid for gids in next_groups_by_device.values() for gid in gids}
+        if total_ms > 0:
+            referenced |= {gid for gids in prev_groups_by_device.values() for gid in gids}
+        group_pool = {gid: g for gid, g in prev_group_pool.items() if gid in referenced}
+        group_pool.update(new_groups)
+        self._cue_effect_groups = group_pool
 
         if total_ms > 0:
             self._fade = FadeState(
@@ -2634,6 +2674,10 @@ class DMXRenderEngine:
             self._timeline_runtime = None
             self._fade = None
             self._cue_effects.clear()
+            # A stopped playback owns no effect any more; leaving the cue pool
+            # behind kept groups rendering after their cue was gone.
+            self._cue_effect_groups = {}
+            self._cue_groups_by_device = {}
             self._fade_effect_groups = None
             self._restore_playback_render_locked()
             self._playback_run_speed = self._playback_speed
