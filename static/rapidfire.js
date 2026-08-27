@@ -89,15 +89,13 @@
   }
 
   async function listProjectCueFiles() {
-    // Same scoping rule as the cue dropdown: only the active project's cue
-    // lists, intersected with what actually exists on disk.
-    const scoped = Array.isArray(window.projectCueFiles) ? window.projectCueFiles : [];
-    if (!scoped.length) return [];
+    // Exactly the same scoping rule as the cue dropdown, resolver included, so
+    // the grid can never show a different set than the list.
     try {
-      const res = await fetch("/api/cue_files", { cache: "no-store" });
-      const data = await res.json();
-      const onDisk = new Set(Array.isArray(data?.files) ? data.files : []);
-      return scoped.filter((f) => onDisk.has(f));
+      if (typeof window.resolveProjectCueFiles === "function") {
+        return await window.resolveProjectCueFiles();
+      }
+      return [];
     } catch (err) {
       console.warn("[RAPIDFIRE] cue file list failed:", err);
       return [];

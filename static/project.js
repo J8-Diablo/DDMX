@@ -131,8 +131,8 @@ async function applyProjectData(data, file) {
   if (typeof refreshCueFileList === "function") await refreshCueFileList();
   const active = (data && data.active_cue_list) || null;
   if (active && typeof loadCueFile === "function") {
-    const sel = $proj("cue-file-select");
-    if (sel) sel.value = active;
+    // loadCueFile selects the dropdown entry itself, using the name the file
+    // really carries on disk (a project may have recorded another case).
     await loadCueFile(active);
   }
   if (typeof window.refreshCalibrationPanel === "function") window.refreshCalibrationPanel();

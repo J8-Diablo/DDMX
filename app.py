@@ -570,18 +570,44 @@ def list_cue_files() -> List[str]:
     )
 
 
+def resolve_cue_filename(filename: str) -> str:
+    """Return the name a cue file actually carries on disk.
+
+    Windows matches filenames case-insensitively: saving "Calm.json" over an
+    existing "calm.json" rewrites that file while it keeps its own spelling. A
+    project storing "Calm.json" would then reference a name the listing never
+    returns, and the cue list would disappear from the dropdown and from Rapid
+    Fire. Canonicalizing here keeps both sides on the disk's spelling.
+    """
+    base = os.path.basename(str(filename or "")).strip()
+    if not base:
+        raise ValueError("empty cue filename")
+    if not base.lower().endswith(".json"):
+        base += ".json"
+    try:
+        for existing in os.listdir(CUE_DIR):
+            if existing.lower() == base.lower():
+                return existing
+    except OSError:
+        pass
+    return base
+
+
 def load_cue_file(filename: str) -> Dict[str, Any]:
-    path = os.path.join(CUE_DIR, filename)
+    path = os.path.join(CUE_DIR, resolve_cue_filename(filename))
     if not os.path.exists(path):
         raise FileNotFoundError(filename)
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-def save_cue_file(filename: str, data: Dict[str, Any]) -> None:
-    path = os.path.join(CUE_DIR, filename)
+def save_cue_file(filename: str, data: Dict[str, Any]) -> str:
+    """Write the cue file and return the name it was stored under."""
+    name = resolve_cue_filename(filename)
+    path = os.path.join(CUE_DIR, name)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    return name
 
 
 # ---------- PROJECTS ----------
@@ -771,16 +797,22 @@ def api_cues_file(filename: str):
             return jsonify({"error": "not found"}), 404
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-        return jsonify(data)
+        res = jsonify(data)
+        # The file may be spelled differently (case) from the name asked for;
+        # the caller needs the real one to match its own lists and dropdown.
+        res.headers["X-Cue-Filename"] = resolve_cue_filename(filename)
+        return res
 
     payload = request.get_json()
     if not isinstance(payload, dict):
         return jsonify({"error": "bad payload"}), 400
     try:
-        save_cue_file(filename, payload)
+        saved_as = save_cue_file(filename, payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    return jsonify({"ok": True})
+    # The caller registers this name in the project, so hand back the spelling
+    # the file really has on disk.
+    return jsonify({"ok": True, "filename": saved_as})
 
 
 # ---------- PROJECTS API ----------

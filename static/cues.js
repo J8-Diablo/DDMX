@@ -314,20 +314,47 @@ async function runSyncVideoCue(step) {
 // FICHIERS DE CUE
 ///////////////////////
 
+// The cue dropdown and the Rapid Fire grid are both scoped to the ACTIVE
+// PROJECT's cue lists, not the raw cue/ directory. With no project (or a blank
+// one) the list is empty, and we never auto-load a cue: loose cue files only
+// appear once part of a project.
+//
+// The match is case-INSENSITIVE. Windows rewrites "Calm.json" into an existing
+// "calm.json" without renaming it, so a project can legitimately hold a
+// spelling the listing never returns; matching exactly made the cue list
+// disappear from both views. Names are canonicalized to the disk's spelling so
+// the next project save records something findable.
+async function resolveProjectCueFiles() {
+  const scoped = Array.isArray(window.projectCueFiles) ? window.projectCueFiles : [];
+  if (!scoped.length) return [];
+
+  const r = await fetch("/api/cue_files", { cache: "no-store" });
+  const data = await r.json();
+  const byLower = new Map();
+  for (const f of (Array.isArray(data?.files) ? data.files : [])) {
+    byLower.set(String(f).toLowerCase(), String(f));
+  }
+
+  // Keep every name the project claims (a missing file may come back), but
+  // spell each one the way the disk does.
+  window.projectCueFiles = scoped.map((n) => byLower.get(String(n).toLowerCase()) || String(n));
+  return window.projectCueFiles.filter((n) => byLower.has(n.toLowerCase()));
+}
+window.resolveProjectCueFiles = resolveProjectCueFiles;
+
 async function refreshCueFileList() {
   const sel = $id("cue-file-select");
   if (!sel) return;
   sel.innerHTML = "";
 
-  // The cue dropdown is scoped to the ACTIVE PROJECT's cue lists, not the raw
-  // cue/ directory. With no project (or a blank one) the list is empty, and we
-  // never auto-load a cue. Loose cue files only appear once part of a project.
-  const scoped = Array.isArray(window.projectCueFiles) ? window.projectCueFiles : [];
   try {
-    const r = await fetch("/api/cue_files");
-    const data = await r.json();
-    const onDisk = new Set(data.files || []);
-    const files = scoped.filter((f) => onDisk.has(f));
+    const files = await resolveProjectCueFiles();
+
+    // The name we hold may differ in case from the one on disk.
+    if (currentCueFilename) {
+      const canon = files.find((f) => f.toLowerCase() === currentCueFilename.toLowerCase());
+      if (canon) currentCueFilename = canon;
+    }
 
     for (const f of files) {
       const opt = document.createElement("option");
@@ -359,23 +386,34 @@ function normalizeCueFilename(name) {
   return name;
 }
 
-function makeUniqueCueName(baseName = "New.json") {
+// Never overwrite an existing cue file. The candidate is checked against every
+// file in cue/ (case-insensitively), not just the project's own lists: a name
+// that clashes with a loose file used to be accepted and silently rewrote it.
+async function makeUniqueCueName(baseName = "New.json") {
   baseName = normalizeCueFilename(baseName) || "New.json";
-  const sel = $id("cue-file-select");
+
   const existing = new Set();
-  
-  if (sel) {
-    for (const opt of sel.options) existing.add(opt.value);
+  try {
+    const r = await fetch("/api/cue_files", { cache: "no-store" });
+    const data = await r.json();
+    for (const f of (Array.isArray(data?.files) ? data.files : [])) {
+      existing.add(String(f).toLowerCase());
+    }
+  } catch (e) {
+    // Offline: fall back to what the dropdown knows rather than assuming free.
+    console.warn("[CUES] cue file list unavailable, using the dropdown:", e);
+    const sel = $id("cue-file-select");
+    if (sel) for (const opt of sel.options) existing.add(String(opt.value).toLowerCase());
   }
-  
-  if (!existing.has(baseName)) return baseName;
-  
+
+  if (!existing.has(baseName.toLowerCase())) return baseName;
+
   const m = baseName.match(/^(.*?)(\.json)$/i);
   const stem = m ? m[1] : baseName;
   const ext = m ? m[2] : ".json";
-  
+
   let i = 2;
-  while (existing.has(`${stem}-${i}${ext}`)) i++;
+  while (existing.has(`${stem}-${i}${ext}`.toLowerCase())) i++;
   return `${stem}-${i}${ext}`;
 }
 
@@ -383,8 +421,13 @@ async function loadCueFile(filename) {
   if (!filename) return;
   
   try {
-    const r = await fetch(`/api/cues/${filename}`);
+    const r = await fetch(`/api/cues/${encodeURIComponent(filename)}`);
     const data = await r.json();
+    // The disk decides the spelling: a project may ask for "Calm.json" while
+    // the file is "calm.json", and every list we compare against uses the
+    // latter.
+    const canonical = r.headers.get("X-Cue-Filename");
+    if (canonical) filename = canonical;
     cuesObj = data || { 
       loop: false, 
       loop_count: null, 
@@ -395,6 +438,9 @@ async function loadCueFile(filename) {
     currentCueFilename = filename;
     selectedCueIndex = null;
     selectedCueIndices.clear();
+
+    const sel = $id("cue-file-select");
+    if (sel && [...sel.options].some((o) => o.value === filename)) sel.value = filename;
 
     rebuildVirtualGroupsFromCues();
     // When a project is active the rig is owned by the project, so switching
@@ -419,11 +465,13 @@ async function saveCurrentCueFile() {
   cuesObj.virtual_groups = virtualGroups;
   
   try {
-    await fetch(`/api/cues/${currentCueFilename}`, {
+    const res = await fetch(`/api/cues/${encodeURIComponent(currentCueFilename)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
     });
+    const saved = await res.json().catch(() => null);
+    if (saved && saved.filename) currentCueFilename = saved.filename;
     if (typeof window.invalidateRapidFireCache === "function") {
       window.invalidateRapidFireCache(currentCueFilename);
     }
@@ -438,16 +486,18 @@ async function saveCueFileAs() {
   let name = await promptModal("New cue filename", "New.json", "ex: myshow.json");
   if (!name) return;
   
-  name = makeUniqueCueName(name);
+  name = await makeUniqueCueName(name);
   cuesObj.devices_def = buildDevicesDefFromRig();
   cuesObj.virtual_groups = virtualGroups;
   
   try {
-    await fetch(`/api/cues/${name}`, {
+    const res = await fetch(`/api/cues/${encodeURIComponent(name)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
     });
+    const saved = await res.json().catch(() => null);
+    if (saved && saved.filename) name = saved.filename;
     currentCueFilename = name;
     // Register the new cue list into the active project's scope.
     if (!Array.isArray(window.projectCueFiles)) window.projectCueFiles = [];
