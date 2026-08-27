@@ -243,3 +243,94 @@ def test_the_loader_adopts_that_header():
     body = src[start:src.index("async function saveCurrentCueFile(")]
     assert 'r.headers.get("X-Cue-Filename")' in body
     assert "sel.value = filename" in body, "the dropdown must follow the loaded file"
+
+
+# -----------------------------------------------------------------------------
+# Saving a cue list must survive loading the project again
+# -----------------------------------------------------------------------------
+
+def _project_sync_source() -> str:
+    src = _read("static/project.js")
+    start = src.index("async function projectSyncCueList(")
+    return src[start:src.index("async function projectLoadByName(")]
+
+
+@requires_node
+def test_saving_a_cue_list_reaches_the_project_copy():
+    """A project embeds a copy of each list and writes it back when loaded.
+
+    Without this, every edit was undone the next time the project was opened:
+    the file on disk had the new version, the project's copy the old one, and
+    the load overwrote the file.
+    """
+    harness = """
+var currentProjectFile = "MyShow.ddmxproj";
+const PROJECT = {
+  name: "MyShow",
+  cue_lists: { "A.json": { sequence: [{ name: "old" }] }, "B.json": { sequence: [] } },
+  active_cue_list: "B.json",
+};
+const calls = [];
+global.fetch = async function (url, opts) {
+  calls.push({ url: String(url), method: (opts && opts.method) || "GET", body: opts && opts.body });
+  if (!opts || opts.method !== "POST") {
+    return { ok: true, json: async () => JSON.parse(JSON.stringify(PROJECT)) };
+  }
+  return { ok: true, status: 200, json: async () => ({ ok: true }) };
+};
+%(source)s
+
+const out = [];
+function check(name, cond, detail) {
+  out.push({ name, ok: !!cond, detail: detail === undefined ? null : detail });
+}
+
+(async () => {
+  const ok = await projectSyncCueList("A.json", { sequence: [{ name: "new" }] });
+  check("it reports success", ok === true);
+  const post = calls.find((c) => c.method === "POST");
+  check("the project is written", Boolean(post) && post.url.includes("MyShow.ddmxproj"),
+        JSON.stringify(calls.map((c) => c.method + " " + c.url)));
+  const written = post ? JSON.parse(post.body) : {};
+  check("the list is replaced", written.cue_lists["A.json"].sequence[0].name === "new",
+        JSON.stringify(written.cue_lists));
+  check("the other lists survive", "B.json" in written.cue_lists, JSON.stringify(Object.keys(written.cue_lists)));
+  check("the active list is untouched", written.active_cue_list === "B.json", String(written.active_cue_list));
+
+  // No project open: nothing to sync, and no request either.
+  currentProjectFile = null;
+  calls.length = 0;
+  const none = await projectSyncCueList("A.json", { sequence: [] });
+  check("no project, no write", none === false && calls.length === 0, JSON.stringify(calls));
+
+  console.log(JSON.stringify(out));
+})();
+""" % {"source": _project_sync_source()}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "check.js")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(harness)
+        proc = subprocess.run([_NODE, path], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    results = json.loads(proc.stdout.strip().splitlines()[-1])
+    failed = [r for r in results if not r["ok"]]
+    assert not failed, "\n".join(f"{r['name']}: {r['detail']}" for r in failed)
+
+
+def test_both_save_paths_go_through_the_project():
+    src = _read("static/cues.js")
+    for fn in ("async function saveCurrentCueFile", "async function saveCueFileAs"):
+        start = src.index(fn)
+        body = src[start:start + 1800]
+        assert "window.projectSyncCueList" in body, f"{fn} does not update the project"
+        assert "if (!res.ok) throw" in body, f"{fn} reports success even on a refused save"
+
+
+def test_the_properties_panel_never_zeroes_a_missing_field():
+    """A stale template must not be able to wipe a cue's timing."""
+    src = _read("static/cues.js")
+    start = src.index("function applyCueProps()")
+    body = src[start:start + 900]
+    assert 'if (fadeEl) step.fade' in body
+    assert 'if (durationEl) step.duration' in body

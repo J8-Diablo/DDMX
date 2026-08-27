@@ -759,12 +759,18 @@ async function saveCurrentCueFile() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
     });
+    if (!res.ok) throw new Error(`save refused (${res.status})`);
     const saved = await res.json().catch(() => null);
     if (saved && saved.filename) currentCueFilename = saved.filename;
     if (typeof window.invalidateRapidFireCache === "function") {
       window.invalidateRapidFireCache(currentCueFilename);
     }
-    toast("Saved", "success");
+    // The project keeps its own copy and writes it back when it is loaded, so
+    // the save has to reach it as well.
+    const inProject = (typeof window.projectSyncCueList === "function")
+      ? await window.projectSyncCueList(currentCueFilename, cuesObj)
+      : false;
+    toast(inProject ? t("cues.savedWithProject", "Saved (cue list + project)") : "Saved", "success");
   } catch (e) {
     console.error(e);
     toast("Save failed", "error");
@@ -785,6 +791,7 @@ async function saveCueFileAs() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuesObj),
     });
+    if (!res.ok) throw new Error(`save refused (${res.status})`);
     const saved = await res.json().catch(() => null);
     if (saved && saved.filename) name = saved.filename;
     currentCueFilename = name;
@@ -795,7 +802,11 @@ async function saveCueFileAs() {
 
     const sel = $id("cue-file-select");
     if (sel) sel.value = name;
-    toast("Saved as " + name, "success");
+    // A new list joins the active project, so the project file must learn it.
+    const inProject = (typeof window.projectSyncCueList === "function")
+      ? await window.projectSyncCueList(name, cuesObj)
+      : false;
+    toast((inProject ? t("cues.savedWithProject", "Saved (cue list + project)") : "Saved as") + " " + name, "success");
   } catch (e) {
     console.error(e);
     toast("Save as failed", "error");
@@ -1047,8 +1058,13 @@ function applyCueProps() {
   
   const step = cuesObj.sequence[selectedCueIndex];
   step.name = $id("cue-prop-name")?.value || "";
-  step.fade = $id("cue-prop-fade")?.value || "0";
-  step.duration = Math.max(0, parseInt($id("cue-prop-duration")?.value, 10) || 0);
+  // Only write what the panel actually shows: a field that is not on the page
+  // (an old template still cached, a trimmed layout) must not silently reset a
+  // cue's timing to zero.
+  const fadeEl = $id("cue-prop-fade");
+  if (fadeEl) step.fade = fadeEl.value || "0";
+  const durationEl = $id("cue-prop-duration");
+  if (durationEl) step.duration = Math.max(0, parseInt(durationEl.value, 10) || 0);
 
   if (typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode() && step.timeline) {
     const text = String(step.duration || "0").trim();

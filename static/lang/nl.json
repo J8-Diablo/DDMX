@@ -91,6 +91,7 @@
   "cues.removeLoop": "Loop verwijderen",
   "cues.save": "Opslaan",
   "cues.saveAs": "Opslaan als",
+  "cues.savedWithProject": "Opgeslagen (cuelijst + project)",
   "cues.selectionCount": "({count} geselecteerd)",
   "cues.table.devices": "Apparaten",
   "cues.table.duration": "Duur",

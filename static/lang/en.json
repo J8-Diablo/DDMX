@@ -91,6 +91,7 @@
   "cues.removeLoop": "Remove Loop",
   "cues.save": "Save",
   "cues.saveAs": "Save as",
+  "cues.savedWithProject": "Saved (cue list + project)",
   "cues.selectionCount": "({count} selected)",
   "cues.table.devices": "Devices",
   "cues.table.duration": "Duration",

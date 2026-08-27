@@ -201,6 +201,42 @@ async function projectSave(asNew) {
   }
 }
 
+// ---- Keeping the project's own copy of a cue list up to date ---------------
+//
+// A project embeds a copy of every cue list it owns, and loading it writes
+// those copies over the files in cue/. So saving a cue list on its own was
+// undone the next time the project was opened -- the edit reached the disk and
+// then the project's stale copy overwrote it. Saving a list now updates the
+// project too, which is what "the list belongs to the project" has to mean.
+async function projectSyncCueList(filename, data) {
+  if (!currentProjectFile || !filename || !data) return false;
+  try {
+    const read = await fetch(`/api/projects/${encodeURIComponent(currentProjectFile)}`);
+    if (!read.ok) return false;
+    const project = await read.json();
+    if (!project || typeof project !== "object") return false;
+
+    project.cue_lists = (project.cue_lists && typeof project.cue_lists === "object") ? project.cue_lists : {};
+    project.cue_lists[filename] = data;
+    // Which list the project opens with is the project's own business: saving a
+    // side list must not change what comes up next time it is loaded.
+
+    const write = await fetch(`/api/projects/${encodeURIComponent(currentProjectFile)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(project),
+    });
+    if (!write.ok) {
+      console.warn("[project] cue list not written into the project:", write.status);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn("[project] cue list not written into the project:", e);
+    return false;
+  }
+}
+
 async function projectLoadByName(file) {
   try {
     const r = await fetch(`/api/projects/${encodeURIComponent(file)}`);
@@ -363,5 +399,6 @@ document.addEventListener("DOMContentLoaded", () => {
 // Expose for other modules / debugging.
 window.projectNewBlank = projectNewBlank;
 window.projectSave = projectSave;
+window.projectSyncCueList = projectSyncCueList;
 window.projectExport = projectExport;
 window.applyProjectData = applyProjectData;

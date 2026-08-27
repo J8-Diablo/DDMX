@@ -91,6 +91,7 @@
   "cues.removeLoop": "Loop entfernen",
   "cues.save": "Speichern",
   "cues.saveAs": "Speichern unter",
+  "cues.savedWithProject": "Gespeichert (Cue-Liste + Projekt)",
   "cues.selectionCount": "({count} ausgewaehlt)",
   "cues.table.devices": "Geraete",
   "cues.table.duration": "Dauer",
