@@ -291,9 +291,8 @@ function startEffectRenderLoop() {
       syncRgbWidgetFromFirstDevice();
       syncPosWidgetFromFirstDevice();
     } else if (playbackActive && !window.dmxLocked) {
-      if (!window.backendPlaybackOwned && (typeof window.isBackendMode !== "function" || !window.isBackendMode())) {
-        await sendToEngineWithEffects(1.0);
-      }
+      // Values come from the engine over SSE; this only keeps the widgets in
+      // step with the canvas while a cue runs.
       drawRig();
       syncRgbWidgetFromFirstDevice();
       syncPosWidgetFromFirstDevice();
@@ -1269,86 +1268,6 @@ async function controlBackendPlayback(action, deltaMs = 0, extraPayload = null) 
 // FONCTION CENTRALE (seule autorisée pendant verrou)
 // ============================================================================
 
-async function sendToEngineWithEffects(effectScale, groupMix) {
-  // Sécurité : effetScale dans [0,1]
-  const scale = clamp(effectScale ?? 1, 0, 1);
-
-  const tMs = performance.now() - window.effectStartEpoch;
-  const perUniverseMap = {};
-
-  devicePreviewRGB = {};
-  devicePreviewDimmer = {};
-
-  for (const dev of Object.values(rigDevices)) {
-    const fi = fixtures[dev.fixture] || {};
-    const absMap = getDeviceAttrAbsChannels(dev);
-    const previewChannels = getDevicePrimaryPreviewChannels(dev);
-    const lv = deviceLocalValues[dev.id] || {};
-    const devGroups = Array.from(deviceCurrentGroups[dev.id] || []);
-
-    const u = dev.universe || 0;
-    perUniverseMap[u] ||= {};
-
-    // Base brute (valeurs locales du device, telles que stockées)
-    const addrCount = fi.addr_count || 1;
-    for (let li = 0; li < addrCount; li++) {
-      const absCh = dev.address + li;
-      perUniverseMap[u][absCh] = lv[li] ?? 0;
-    }
-
-    const gmForDev = groupMix?.[dev.id] || null;
-
-    // Effets : on scale amplitude = amplitude * scale * groupMix[gId] (si présent)
-    for (const gId of devGroups) {
-      const group = virtualGroups[gId];
-      if (!group) continue;
-
-      if (group.mode === "intelligent") {
-        const def = window.getIntelligentEffectDefinition
-          ? window.getIntelligentEffectDefinition(group.type)
-          : null;
-        if (def && typeof applyIntelligentGroupToDevice === "function") {
-          applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap, {
-            scale,
-            groupMix: gmForDev
-          });
-        }
-        continue;
-      }
-      if (typeof applyLegacyGroupToDevice === "function") {
-        applyLegacyGroupToDevice(group, dev, tMs, perUniverseMap, {
-          scale,
-          groupMix: gmForDev
-        });
-      }
-    }
-
-    // Previews
-    if (previewChannels.r != null && previewChannels.g != null && previewChannels.b != null) {
-      const rAbs = previewChannels.r, gAbs = previewChannels.g, bAbs = previewChannels.b;
-      devicePreviewRGB[dev.id] = {
-        r: rAbs != null ? (perUniverseMap[u][rAbs] ?? 0) : 0,
-        g: gAbs != null ? (perUniverseMap[u][gAbs] ?? 0) : 0,
-        b: bAbs != null ? (perUniverseMap[u][bAbs] ?? 0) : 0,
-      };
-    }
-
-    if (previewChannels.dimmer != null) {
-      const dAbs = previewChannels.dimmer;
-      devicePreviewDimmer[dev.id] = dAbs != null ? (perUniverseMap[u][dAbs] ?? 0) : 0;
-    }
-  }
-  // NOTE: Identify mode is now handled by Python engine (see /api/identify/*)
-  // Pendant un playback de cues, l'UI est la source unique de DMX
-  // On utilise bypassLock=true car cette fonction EST la source autorisée pendant lock
-  if (!isBackendRenderMode()) {
-    for (const [uStr, chMap] of Object.entries(perUniverseMap)) {
-      const u = parseInt(uStr, 10) || 0;
-      await applyUniverseState(u, chMap, true, "ui_cue"); // bypassLock=true
-    }
-  }
-}
-
 function swapCues(i, j) {
   const seq = cuesObj.sequence || [];
   if (i < 0 || j < 0 || i >= seq.length || j >= seq.length) return;
@@ -1843,11 +1762,7 @@ async function loadCueIntoUIAndRun(idx) {
   refreshControllerFromSelection();
 
   try {
-    if (typeof window.isBackendMode === "function" && window.isBackendMode()) {
-      await sendCueToBackend(step);
-    } else {
-      await sendToEngineWithEffects(1.0);
-    }
+    await sendCueToBackend(step);
     toast(`Played ${step.name || "cue"}`, "info");
   } catch (err) {
     console.error("[CUE-PREVIEW]", err);
@@ -2143,8 +2058,6 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       try {
         if (
-          typeof window.isBackendMode === "function" &&
-          window.isBackendMode() &&
           typeof buildBackendCuePayloadFromCurrentState === "function" &&
           typeof sendBackendCuePayload === "function"
         ) {
@@ -2152,8 +2065,6 @@ document.addEventListener("DOMContentLoaded", () => {
           if (typeof syncBackendLiveGroups === "function") {
             await syncBackendLiveGroups();
           }
-        } else if (typeof sendToEngineWithEffects === "function") {
-          await sendToEngineWithEffects(1.0);
         }
       } catch (err) {
         console.warn("[FX] stop effects failed:", err);

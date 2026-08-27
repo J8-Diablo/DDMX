@@ -6,7 +6,7 @@
 // (persisted into the project by buildDevicesDefFromRig and pushed to the
 // engine by buildRigRegisterPayload). Uses shared globals from core.js/rig.js:
 //   rigDevices, selectedDeviceOrder, getDeviceAttrAbsChannels(),
-//   applyUniverseState(), scheduleRigSync(), invalidateDeviceAttrCache(),
+//   queueDeviceAttrs(), scheduleRigSync(), invalidateDeviceAttrCache(),
 //   lastDmxFrames, t().
 
 (function () {
@@ -41,15 +41,37 @@
   }
 
   // Push a fixture's home pan/tilt live so the user sees it aim while editing.
+  // Attribute intents: the engine owns the channels.
   function liveAim(dev, ch) {
     if (!$c("calib-live-aim") || !$c("calib-live-aim").checked) return;
-    if (typeof applyUniverseState !== "function") return;
-    const channels = {};
-    if (ch.pan !== null && dev.home_pan != null) channels[ch.pan] = _clamp255(dev.home_pan);
-    if (ch.tilt !== null && dev.home_tilt != null) channels[ch.tilt] = _clamp255(dev.home_tilt);
-    if (Object.keys(channels).length) {
-      try { applyUniverseState(parseInt(dev.universe, 10) || 0, channels, true, String(dev.id)); } catch (e) {}
+    if (typeof window.queueDeviceAttrs !== "function") return;
+    const attrs = _positionAttrKeys(dev);
+    const updates = [];
+    if (attrs.pan && dev.home_pan != null) {
+      updates.push({ device_id: String(dev.id), attr: attrs.pan, value: _clamp255(dev.home_pan) });
     }
+    if (attrs.tilt && dev.home_tilt != null) {
+      updates.push({ device_id: String(dev.id), attr: attrs.tilt, value: _clamp255(dev.home_tilt) });
+    }
+    if (updates.length) {
+      try { window.queueDeviceAttrs(updates); } catch (e) {}
+    }
+  }
+
+  // Finds the pan / tilt attribute keys of a fixture (group key first, then the
+  // historic flat alias).
+  function _positionAttrKeys(dev) {
+    const out = { pan: null, tilt: null };
+    const fi = (typeof fixtures === "object" && fixtures) ? (fixtures[dev.fixture] || {}) : {};
+    const defs = (typeof getFixtureAttrDefinitions === "function")
+      ? getFixtureAttrDefinitions(fi, { includeLegacy: true })
+      : {};
+    for (const def of Object.values(defs)) {
+      const role = String(def?.role || def?.key || "").toLowerCase();
+      if (!out.pan && role.endsWith("pan")) out.pan = def.key;
+      if (!out.tilt && role.endsWith("tilt")) out.tilt = def.key;
+    }
+    return out;
   }
 
   function persist() {

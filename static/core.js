@@ -485,47 +485,12 @@ window.playbackActive = false;
 window.backendPlaybackOwned = false;
 window.effectStartEpoch = performance.now();
 
-// Render mode: "ui" (default) or "backend"
-window.renderMode = "ui";
-window._renderModeListeners = [];
-window.addRenderModeListener = (fn) => {
-  if (typeof fn === "function") window._renderModeListeners.push(fn);
-};
-window.setRenderMode = (mode) => {
-  const next = String(mode || "ui").toLowerCase() === "backend" ? "backend" : "ui";
-  const prev = window.renderMode;
-  window.renderMode = next;
-  // At a mode switch, drop any cached preview state to avoid the virtual rig
-  // showing stale frames from the previous owner (UI math vs Python state).
-  if (prev && prev !== next) {
-    for (const k of Object.keys(lastDmxFrames)) delete lastDmxFrames[k];
-    devicePreviewRGB = {};
-    devicePreviewDimmer = {};
-    if (typeof scheduleEnginePreviewRefresh === "function") {
-      scheduleEnginePreviewRefresh(true);
-    } else if (typeof drawRig === "function") {
-      drawRig();
-    }
-  }
-  if (typeof window.onRenderModeChanged === "function") {
-    window.onRenderModeChanged(next);
-  }
-  if (Array.isArray(window._renderModeListeners)) {
-    window._renderModeListeners.forEach((fn) => {
-      try {
-        fn(next);
-      } catch (err) {
-        console.warn("[RenderMode] listener error:", err);
-      }
-    });
-  }
-};
-
-window.DMX_PLAYBACK_UI_FPS = Number(window.DMX_PLAYBACK_UI_FPS || 30);
-window.setPlaybackUiFps = (fps) => {
-  const raw = Number.parseFloat(String(fps ?? "30"));
+// Redraw cap for the on-screen rig. The engine decides how often it *sends*
+// values (dmx_runtime.preview_hz); this only bounds how often we repaint.
+window.setPreviewHz = (hz) => {
+  const raw = Number.parseFloat(String(hz ?? "30"));
   if (!Number.isFinite(raw)) return;
-  window.DMX_PLAYBACK_UI_FPS = Math.max(1, Math.min(60, raw));
+  window.DMX_PREVIEW_HZ = Math.max(1, Math.min(120, raw));
 };
 
 let enginePreviewFrameScheduled = false;
@@ -535,7 +500,9 @@ function refreshEnginePreviewFrame() {
   enginePreviewFrameScheduled = false;
   enginePreviewLastDrawTs = performance.now();
 
-  if (window.backendPlaybackOwned) {
+  // The rig widgets are receivers: their colours come from the DMX the engine
+  // actually emitted, whatever produced it (manual, cue, effect, AutoLight).
+  {
     devicePreviewRGB = {};
     devicePreviewDimmer = {};
 
@@ -573,7 +540,7 @@ function refreshEnginePreviewFrame() {
 
 function scheduleEnginePreviewRefresh(force = false) {
   if (enginePreviewFrameScheduled) return;
-  const fps = Math.max(1, Number(window.DMX_PLAYBACK_UI_FPS || 30));
+  const fps = Math.max(1, Number(window.DMX_PREVIEW_HZ || 30));
   const minIntervalMs = 1000 / fps;
   const now = performance.now();
   const delay = force ? 0 : Math.max(0, minIntervalMs - (now - enginePreviewLastDrawTs));
@@ -586,18 +553,14 @@ function scheduleEnginePreviewRefresh(force = false) {
     }, delay);
   }
 }
-window.isBackendMode = () => window.renderMode === "backend";
+// Kept as a constant so the remaining call sites read naturally: the engine is
+// the only renderer now.
+window.isBackendMode = () => true;
 
+// There is no UI render mode to fall back to any more: the engine renders,
+// full stop. Kept as a no-op so an older call site cannot throw.
 window.fallbackToUiMode = (reason) => {
-  if (window.renderMode !== "ui") {
-    window.renderMode = "ui";
-    if (typeof window.onRenderModeChanged === "function") {
-      window.onRenderModeChanged("ui");
-    }
-    if (reason && typeof window.toast === "function") {
-      window.toast(reason, "warning");
-    }
-  }
+  if (reason && typeof window.toast === "function") window.toast(reason, "warning");
 };
 
 // Global JS error reporting (helps diagnose silent crashes)
@@ -908,138 +871,153 @@ function invalidateDeviceAttrCache(deviceId) {
 window.invalidateDeviceAttrCache = invalidateDeviceAttrCache;
 
 ///////////////////////
-// API DMX (buffer + pump réseau)
+// API ATTRIBUTS (le seul chemin d'écriture du front)
 ///////////////////////
+//
+// Le navigateur n'écrit plus de canaux DMX : il déclare une intention par
+// attribut de fixture ({device, attr, value}) et l'engine résout le canal via
+// l'attr_map du device. Tout ce qui varie dans le temps — fondus, effets, cues,
+// timeline, AutoLight — est calculé et émis par Python.
+//
+// lastDmxFrames est alimenté par la SSE : c'est ce que l'engine envoie
+// réellement aux nœuds, et la seule source de l'aperçu du rig.
 
-// Cache des derniers frames reçus de l'engine (visualisation UNIQUEMENT)
-const lastDmxFrames = {}; // { [universe]: [512 values] }
+// Dernières valeurs reçues de l'engine (aperçu UNIQUEMENT, jamais une source)
+const lastDmxFrames = {}; // { [universe]: [512 valeurs] }
 
-// État "shadow" local pour filtrer les envois répétés
-const dmxShadowState = {}; // { [key]: Uint8Array(512) }
+// offset local -> clé d'attribut, par fixture (les défs ne changent pas)
+const _fixtureOffsetAttrCache = new Map();
 
-function getShadowState(key) {
-  if (!dmxShadowState[key]) dmxShadowState[key] = new Uint8Array(512);
-  return dmxShadowState[key];
+function getFixtureOffsetToAttr(fixtureName) {
+  const key = String(fixtureName || "");
+  const cached = _fixtureOffsetAttrCache.get(key);
+  if (cached) return cached;
+
+  const fi = fixtures[key] || {};
+  const defs = getFixtureAttrDefinitions(fi, { includeLegacy: true });
+  const map = {};
+  for (const def of Object.values(defs)) {
+    const offset = parseInt(def?.offset ?? -1, 10);
+    if (!Number.isFinite(offset) || offset < 0) continue;
+    // Les clés de groupe ("main.dimmer") gagnent sur les alias historiques
+    // ("dimmer") : même canal, mais la clé de groupe est celle qui décrit la
+    // fixture multi-éléments sans ambiguïté.
+    if (map[offset] && def.legacy) continue;
+    map[offset] = def.key;
+  }
+  _fixtureOffsetAttrCache.set(key, map);
+  return map;
 }
 
-// Buffer côté front : 1 pipeline par (device_id + universe)
-const dmxUniverseBuffers = {}; 
-// structure : {
-//   [key]: {
-//     universe: number,
-//     deviceId: string,
-//     pending: { ch: val, ... },   // dernières valeurs à envoyer
-//     inFlight: false              // requête HTTP en cours
-//   }
-// };
+function invalidateFixtureAttrKeyCache() {
+  _fixtureOffsetAttrCache.clear();
+}
+window.invalidateFixtureAttrKeyCache = invalidateFixtureAttrKeyCache;
 
-// ========================================
-// NEW ARCHITECTURE: Python handles all DMX
-// JS only sends high-level commands
-// ========================================
-
-// Send channel values to Python engine (for live controller edits)
-async function applyUniverseState(universe, channels, bypassLock = false, deviceId = "ui_live") {
-  // UI lock check (for visual feedback only now)
-  if (window.dmxLocked && !bypassLock) return;
-  if (window.backendPlaybackOwned) return;
-  if (window.renderMode === "backend" && (deviceId === "ui_effect" || deviceId === "ui_cue")) return;
-
-  if (!channels || typeof channels !== "object") return;
-  const keys = Object.keys(channels);
-  if (!keys.length) return;
-
-  const u = Number.isFinite(universe) ? universe : 0;
-  const devId = deviceId || "ui_live";
-  const bufKey = `${devId}:${u}`;
-
-  // Buffer locally for UI preview
-  let state = dmxUniverseBuffers[bufKey];
-  if (!state) {
-    state = { universe: u, deviceId: devId, pending: {}, inFlight: false };
-    dmxUniverseBuffers[bufKey] = state;
+// Construit les mises à jour d'attributs d'un device depuis ses valeurs locales.
+function buildDeviceAttrUpdates(deviceId, localValues = null) {
+  const dev = rigDevices[deviceId];
+  if (!dev) return [];
+  const offsetToAttr = getFixtureOffsetToAttr(dev.fixture);
+  const locals = localValues || deviceLocalValues[deviceId] || {};
+  const updates = [];
+  for (const [offStr, raw] of Object.entries(locals)) {
+    const attr = offsetToAttr[parseInt(offStr, 10)];
+    if (!attr) continue;
+    const value = Math.max(0, Math.min(255, parseInt(raw, 10) || 0));
+    updates.push({ device_id: String(deviceId), attr, value });
   }
-
-  const forceFull = window.DMX_FORCE_FULL_SEND === true;
-  const shadow = getShadowState(bufKey);
-  let changedCount = 0;
-
-  for (const [k, v] of Object.entries(channels)) {
-    const ch = parseInt(k, 10);
-    if (!Number.isFinite(ch) || ch < 0 || ch >= 512) continue;
-    const val = Math.max(0, Math.min(255, v | 0));
-    if (!forceFull) {
-      if (shadow[ch] === val) continue;
-    }
-    shadow[ch] = val;
-    state.pending[ch] = val;
-    changedCount++;
-  }
-
-  if (!changedCount) return;
+  return updates;
 }
 
-// Send buffered values to Python engine.
-// All pending buffers across (deviceId, universe) tuples are coalesced into
-// one HTTP POST per pump cycle, grouped by deviceId. The /api/live/channels/bulk
-// endpoint commits every universe's channels under a single engine lock so the
-// next render frame sees a consistent multi-universe snapshot — no inter-universe
-// drift on simultaneous edits.
-let _dmxPumpInFlight = false;
-async function dmxNetworkPump() {
-  if (_dmxPumpInFlight) return;
+// ---- Tuyau d'attributs -----------------------------------------------------
+// Coalesce les gestes (drag de fader, roue de couleur) : au plus un POST par
+// cycle, la dernière valeur gagne. C'est un coalesceur d'ENTRÉES, pas un
+// renderer : rien n'est envoyé quand l'opérateur ne touche à rien.
+const ATTR_PUMP_MS = 25;
+const _attrPending = new Map();   // "device|attr" -> {device_id, attr, value}
+const _attrRelease = new Set();   // device_ids à relâcher
+let _attrPumpInFlight = false;
+let _attrPumpTimer = null;
 
-  // Group pending channels by deviceId, then by universe.
-  const byDevice = {}; // {devId: {uni: {ch: val}}}
-  const drained = []; // [[state, snapshot], ...] for rollback on failure
-  for (const [_key, state] of Object.entries(dmxUniverseBuffers)) {
-    const pendingKeys = Object.keys(state.pending);
-    if (!pendingKeys.length) continue;
-    const u = Number.isFinite(state.universe) ? state.universe : 0;
-    const devId = state.deviceId || "ui_live";
-
-    const frame = {};
-    for (const k of pendingKeys) frame[k] = state.pending[k];
-
-    let devBucket = byDevice[devId];
-    if (!devBucket) {
-      devBucket = {};
-      byDevice[devId] = devBucket;
-    }
-    // If two buffers somehow map to the same (devId, universe) (shouldn't),
-    // last one wins after merge.
-    devBucket[u] = Object.assign(devBucket[u] || {}, frame);
-
-    drained.push([state, frame]);
-    state.pending = {};
+function queueDeviceAttrs(updates) {
+  if (!Array.isArray(updates) || !updates.length) return;
+  for (const u of updates) {
+    if (!u || !u.device_id || !u.attr) continue;
+    _attrPending.set(`${u.device_id}|${u.attr}`, {
+      device_id: String(u.device_id),
+      attr: String(u.attr),
+      value: u.value === null ? null : Math.max(0, Math.min(255, parseInt(u.value, 10) || 0)),
+    });
   }
+  scheduleAttrPump();
+}
 
-  if (!drained.length) return;
+function releaseDeviceAttrs(deviceIds) {
+  const ids = Array.isArray(deviceIds) ? deviceIds : [deviceIds];
+  for (const id of ids) {
+    if (id == null) continue;
+    _attrRelease.add(String(id));
+    // Une mise à jour en attente sur ce device n'a plus de sens.
+    for (const key of [..._attrPending.keys()]) {
+      if (key.startsWith(`${id}|`)) _attrPending.delete(key);
+    }
+  }
+  scheduleAttrPump();
+}
 
-  _dmxPumpInFlight = true;
+function scheduleAttrPump() {
+  if (_attrPumpTimer != null) return;
+  _attrPumpTimer = window.setTimeout(() => {
+    _attrPumpTimer = null;
+    attrNetworkPump();
+  }, ATTR_PUMP_MS);
+}
+
+async function attrNetworkPump() {
+  if (_attrPumpInFlight) {
+    scheduleAttrPump();
+    return;
+  }
+  if (!_attrPending.size && !_attrRelease.size) return;
+
+  const updates = [..._attrPending.values()];
+  const release = [..._attrRelease];
+  _attrPending.clear();
+  _attrRelease.clear();
+
+  _attrPumpInFlight = true;
   try {
-    // One bulk request per device_id (almost always just "ui_live").
-    await Promise.all(Object.entries(byDevice).map(([devId, universes]) =>
-      fetch("/api/live/channels/bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device_id: devId, universes }),
-      })
-    ));
+    const body = {};
+    if (updates.length) body.updates = updates;
+    if (release.length) body.release = release;
+    const res = await fetch("/api/live/attrs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) console.warn("[ATTRS] refusé par l'engine:", res.status);
   } catch (err) {
-    console.warn("[DMX] bulk pump send failed", err);
-    // Re-queue (preserve newer pending writes that may have arrived since drain)
-    for (const [state, frame] of drained) {
-      state.pending = Object.assign({}, frame, state.pending);
-    }
+    console.warn("[ATTRS] envoi échoué:", err);
   } finally {
-    _dmxPumpInFlight = false;
+    _attrPumpInFlight = false;
+    if (_attrPending.size || _attrRelease.size) scheduleAttrPump();
   }
 }
 
-// DMX pump interval (20 ms ≈ 50 Hz, comfortably faster than the 120 Hz
-// engine tick can consume but still throttled by the engine's global send gate).
-setInterval(dmxNetworkPump, 20);
+// Applique la sélection (ou une liste de devices) côté engine.
+async function applyDevicesToEngine(deviceIds) {
+  const ids = (Array.isArray(deviceIds) ? deviceIds : [deviceIds]).map(String).filter((id) => rigDevices[id]);
+  if (!ids.length) return;
+  const updates = [];
+  for (const id of ids) updates.push(...buildDeviceAttrUpdates(id));
+  queueDeviceAttrs(updates);
+}
+
+window.queueDeviceAttrs = queueDeviceAttrs;
+window.releaseDeviceAttrs = releaseDeviceAttrs;
+window.applyDevicesToEngine = applyDevicesToEngine;
+window.buildDeviceAttrUpdates = buildDeviceAttrUpdates;
 
 // ========================================
 // UI: Packet meter (ArtNet packets/sec)
@@ -1130,13 +1108,13 @@ function handleEngineState(state) {
 
   // Update local state from engine for visualization ONLY
   // DO NOT update dmxLocked - that's controlled by JS fade logic
+  // Keyframe: the engine sends whole universes (on connect, on a rig change,
+  // and every couple of seconds as a resync).
   if (state.universes) {
     let universesChanged = false;
     for (const [uStr, values] of Object.entries(state.universes)) {
       const u = parseInt(uStr, 10);
       const newFrame = Array.isArray(values) ? values.slice(0, 512) : [];
-      // Compare against previous frame to avoid redundant preview redraws when
-      // the engine broadcasts state but nothing actually moved (idle backend).
       if (!universesChanged) {
         const old = lastDmxFrames[u];
         if (!old || old.length !== newFrame.length) {
@@ -1149,12 +1127,23 @@ function handleEngineState(state) {
       }
       lastDmxFrames[u] = newFrame;
     }
-    if (universesChanged) {
-      needsPreviewRefresh = Boolean(
-        window.backendPlaybackOwned ||
-        window.identMode ||
-        (typeof window.isBackendMode === "function" && window.isBackendMode())
-      );
+    if (universesChanged) needsPreviewRefresh = true;
+  }
+
+  // Between keyframes only the channels that moved are sent.
+  if (state.universes_diff) {
+    for (const [uStr, changes] of Object.entries(state.universes_diff)) {
+      const u = parseInt(uStr, 10);
+      let frame = lastDmxFrames[u];
+      if (!Array.isArray(frame)) {
+        frame = new Array(512).fill(0);
+        lastDmxFrames[u] = frame;
+      }
+      for (const [chStr, value] of Object.entries(changes)) {
+        const ch = parseInt(chStr, 10);
+        if (ch >= 0 && ch < 512) frame[ch] = value;
+      }
+      needsPreviewRefresh = true;
     }
   }
 
@@ -1331,5 +1320,4 @@ window.addEventListener("load", () => {
     });
   }
 
-  startEffectRunner();
 });

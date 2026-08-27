@@ -250,15 +250,18 @@ class DMXRenderEngine:
         self._devices: Dict[str, DeviceState] = {}
         self._universes: Dict[int, List[int]] = {}  # {universe: [512 values]}
 
-        # Direct channel values (from live UI edits, stored per universe)
+        # Direct channel values (raw low-level API, kept for integrations)
         self._direct_channels: Dict[int, Dict[int, int]] = {}  # {universe: {channel: value}}
+
+        # Manual attribute layer — what the operator is holding on the console.
+        # The UI never sends DMX channels: it sends {device, attr, value} and the
+        # engine resolves the channel through that device's attr_map, so a
+        # re-address or a fixture swap cannot leave a stale write behind.
+        self._manual_attrs: Dict[str, Dict[str, int]] = {}  # {device_id: {attr_key: value}}
 
         # Optional AutoLight render-pipeline overlay. Callable invoked after the
         # base render pass with (universes, now_ts); may mutate values in place.
         self._autolight_overlay: Optional[Any] = None
-
-        # Render mode (ui | backend)
-        self._render_mode = os.environ.get("DMX_RENDER_MODE", "ui").strip().lower()
 
         # Movement smoothing (pan/tilt) - channels provided by UI
         self._smooth_channels: Dict[int, set] = {}  # {universe: {channel}}
@@ -297,7 +300,6 @@ class DMXRenderEngine:
         self._playback_stop_event = threading.Event()
         self._playback_skip_requested = False
         self._playback_wait_adjust_ms = 0
-        self._playback_force_backend_render = False
         self._playback_live_state_backup: Optional[Dict[str, Any]] = None
         self._timeline_runtime: Optional[Dict[str, Any]] = None
         self._playback_clock_mode = os.environ.get("DMX_PLAYBACK_CLOCK_MODE", "timeline").strip().lower()
@@ -365,6 +367,27 @@ class DMXRenderEngine:
         self._log_dmx = os.environ.get("DMX_LOG_DMX", "0").strip().lower() in ("1", "true", "yes", "on")
         self._log_dmx_full = os.environ.get("DMX_LOG_DMX_FULL", "0").strip().lower() in ("1", "true", "yes", "on")
 
+        # ------------------------------------------------------------------
+        # Output stage. The engine behaves like a real DMX interface: a
+        # dedicated thread re-emits every known universe at a fixed rate,
+        # changed or not. The compute loop never sends — it publishes an
+        # immutable snapshot per universe that the emitter picks up, so a slow
+        # frame degrades how often the *values* refresh, never the stream.
+        # ------------------------------------------------------------------
+        self._emit_hz = max(1.0, min(1000.0, self._read_env_float("DMX_EMIT_HZ", 500.0)))
+        self._emit_frames: Dict[int, bytes] = {}
+        self._emit_thread: Optional[threading.Thread] = None
+        self._emit_stats: Dict[str, float] = {"sweeps": 0.0, "packets": 0.0, "late": 0.0, "max_late_ms": 0.0}
+        # Universe values pushed to the browser preview (diff + periodic keyframe).
+        self._preview_hz = max(1.0, min(120.0, self._read_env_float("DMX_PREVIEW_HZ", 30.0)))
+        self._preview_last: Dict[int, bytes] = {}
+        self._preview_last_full: float = 0.0
+        # Bumped whenever the effect-group pool or the device set changes, so the
+        # per-group member resolution can be cached across frames.
+        self._effect_generation = 0
+        self._effect_runtime_cache: Dict[str, Dict[str, Any]] = {}
+        self._effect_runtime_generation = -1
+
         # Send throttling + stats (to reduce unnecessary network spam)
         self._last_sent_universes: Dict[int, List[int]] = {}
         self._last_sent_time: Dict[int, float] = {}
@@ -393,6 +416,7 @@ class DMXRenderEngine:
             "frames_sent": 0,
             "universes_sent": 0,
             "frames_skipped": 0,
+            "frames_published": 0,
             "bytes_sent": 0,
         }
 
@@ -467,12 +491,10 @@ class DMXRenderEngine:
         if self._playback_state.get("active"):
             fps = max(1.0, float(self._playback_ui_fps or 1.0))
             return max(1.0 / fps, 1.0 / 60.0)
-        # Idle (no cue playback): broadcast at 20Hz so the virtual rig follows
-        # live edits (slider drags, live effect parameter changes) with <50ms
-        # latency. Previously 4Hz (0.25s), which felt laggy in backend mode.
-        # The JS side already skips redraws when universe values are unchanged,
-        # so this costs nothing on a truly idle engine.
-        return 0.05
+        # Idle: the browser preview rate is a setting (dmx_runtime.preview_hz,
+        # 30 Hz by default). The engine emits to the nodes at emit_hz (500 Hz)
+        # regardless — this only governs how often the *preview* is refreshed.
+        return 1.0 / max(1.0, float(self._preview_hz or 30.0))
 
     def _effective_tick_hz_locked(self) -> float:
         if self._playback_state.get("active"):
@@ -549,23 +571,24 @@ class DMXRenderEngine:
         if self._playback_live_state_backup is None:
             self._playback_live_state_backup = {
                 "direct_channels": deepcopy(self._direct_channels),
+                "manual_attrs": deepcopy(self._manual_attrs),
                 "smooth_targets": deepcopy(self._smooth_targets),
                 "smooth_last_targets": deepcopy(self._smooth_last_targets),
                 "live_effect_groups": deepcopy(self._live_effect_groups),
                 "live_groups_by_device": deepcopy(self._live_groups_by_device),
             }
         self._direct_channels.clear()
+        self._manual_attrs.clear()
         self._smooth_targets.clear()
         self._smooth_last_targets.clear()
         self._live_effect_groups.clear()
         self._live_groups_by_device.clear()
-        self._playback_force_backend_render = True
 
     def _restore_playback_render_locked(self):
         backup = self._playback_live_state_backup
-        self._playback_force_backend_render = False
         if backup is not None:
             self._direct_channels = backup.get("direct_channels", {})
+            self._manual_attrs = backup.get("manual_attrs", {})
             self._smooth_targets = backup.get("smooth_targets", {})
             self._smooth_last_targets = backup.get("smooth_last_targets", {})
             self._live_effect_groups = backup.get("live_effect_groups", {})
@@ -958,6 +981,23 @@ class DMXRenderEngine:
 
         return [element for element in elements if isinstance(element.get("targets"), dict) and element["targets"]]
 
+    def _effect_runtime_for_group(self, group: Dict[str, Any]) -> Dict[str, Any]:
+        """Memoised member resolution, one entry per group per computed frame.
+
+        _resolve_effect_members() walks the group's whole member list, and it
+        used to be called once per *device* — quadratic, and it dominated the
+        frame: 41 ms for a single group covering 311 devices. Devices and groups
+        cannot change during a frame (the lock is held), so resolving once per
+        frame is equivalent and ~300x cheaper on a big rig.
+        """
+        key = id(group)
+        cached = self._effect_runtime_cache.get(key)
+        if cached is not None:
+            return cached
+        runtime = self._resolve_effect_members(group)
+        self._effect_runtime_cache[key] = runtime
+        return runtime
+
     def _resolve_effect_members(self, group: Dict[str, Any]) -> Dict[str, Any]:
         scope = self._group_selection_scope(group)
         device_ids = [str(x) for x in (group.get("deviceIds") or [])]
@@ -1032,13 +1072,18 @@ class DMXRenderEngine:
         self._running = True
         self._thread = threading.Thread(target=self._render_loop, daemon=True)
         self._thread.start()
-        log.info("Render thread started")
+        self._emit_thread = threading.Thread(target=self._emit_loop, daemon=True, name="DMXEmitter")
+        self._emit_thread.start()
+        log.info("Render thread started (compute best-effort, emitter at %.0f Hz)", self._emit_hz)
 
     def stop(self):
-        """Stop the render thread"""
+        """Stop the render + emitter threads"""
         self._running = False
         if self._thread:
             self._thread.join(timeout=1.0)
+        if self._emit_thread:
+            self._emit_thread.join(timeout=1.0)
+            self._emit_thread = None
         if getattr(self, "_win_timer_period_active", False):
             try:
                 import ctypes
@@ -1061,33 +1106,31 @@ class DMXRenderEngine:
             log.error("Failed to update ArtNet target: %s", e)
             return False
 
-    def _ensure_universe(self, universe: int):
-        if universe not in self._universes:
-            self._universes[universe] = [0] * 512
+    MAX_UNIVERSE = 32767  # Art-Net encodes the universe on 15 bits
 
-    def set_render_mode(self, mode: str):
-        """Set render mode (ui | backend)."""
-        with self._lock:
-            key = str(mode or "").strip().lower()
-            next_mode = "backend" if key == "backend" else "ui"
-            if next_mode == self._render_mode:
-                return
-            self._render_mode = next_mode
+    @classmethod
+    def valid_universe(cls, raw: Any) -> Optional[int]:
+        """Universe number an ArtDMX packet can actually carry, else None."""
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if 0 <= value <= cls.MAX_UNIVERSE else None
 
-            # Reset state on mode switch to avoid stale DMX values
-            if self._render_mode == "backend":
-                # Clear UI-driven direct channels/effects so backend starts clean
-                self._direct_channels.clear()
-                self._smooth_targets.clear()
-                self._smooth_last_targets.clear()
-                self._fade = None
-                self._cue_effects.clear()
-                self._fade_effect_groups = None
-            else:
-                # Switching back to UI: stop backend fades/cues
-                self._fade = None
-                self._cue_effects.clear()
-                self._fade_effect_groups = None
+    def _ensure_universe(self, universe: Any) -> bool:
+        """Allocate the 512-slot buffer for a universe. False = out of range.
+
+        Out-of-range numbers are refused *here* rather than at send time: one
+        bogus value used to raise OverflowError inside the emit loop on every
+        tick, taking the rest of the rig's output down with it.
+        """
+        uni = self.valid_universe(universe)
+        if uni is None:
+            log.warning("ignoring out-of-range universe %r (0-%d)", universe, self.MAX_UNIVERSE)
+            return False
+        if uni not in self._universes:
+            self._universes[uni] = [0] * 512
+        return True
 
     def set_playback_clock_mode(self, mode: str):
         with self._lock:
@@ -1165,21 +1208,19 @@ class DMXRenderEngine:
                 time.sleep(sleep_time)
 
     def _render_frame(self):
-        """Render one frame: calculate all values and send to ArtNet"""
+        """Compute one frame and publish it. Never sends — see _emit_loop()."""
         now = time.perf_counter()
-        wall_now = time.time()
         frame_start = now
 
         with self._lock:
             self._cleanup_finished_fade_locked(now)
+            # The effect-group member resolution is memoised for this frame only.
+            self._effect_runtime_cache.clear()
 
-            # Render mode dispatch
-            if self._playback_force_backend_render or self._render_mode == "backend":
-                backend_start = time.perf_counter()
-                self._render_backend_frame(now)
-                self._record_perf("backend", (time.perf_counter() - backend_start) * 1000.0)
-            else:
-                self._render_ui_frame()
+            # There is exactly one renderer: this one.
+            backend_start = time.perf_counter()
+            self._render_backend_frame(now)
+            self._record_perf("backend", (time.perf_counter() - backend_start) * 1000.0)
 
             # Apply smoothing for movement channels (pan/tilt)
             if self._smooth_targets:
@@ -1197,80 +1238,94 @@ class DMXRenderEngine:
             if self._identify_devices or self._identify_data:
                 self._render_identify(now)
 
-            # Send to ArtNet — two-pass with global throttle gate so all
-            # changed universes go out in the same tight burst (sync across
-            # multi-universe rigs on live edits).
-            if self.artnet:
-                changed_batch = []   # [(uni_num, values, heartbeat_due)]
-                heartbeat_only = []  # [(uni_num, values)]
-                for uni_num, values in self._universes.items():
-                    last_values = self._last_sent_universes.get(uni_num)
-                    changed = (last_values != values)
-                    last_time = self._last_sent_time.get(uni_num, 0.0)
-                    heartbeat_due = (
-                        self._heartbeat_sec > 0
-                        and (now - last_time) >= self._heartbeat_sec
-                    )
-                    if not changed and not heartbeat_due:
-                        self._stats["frames_skipped"] += 1
-                        continue
-                    if changed:
-                        changed_batch.append((uni_num, values, heartbeat_due))
-                    else:
-                        heartbeat_only.append((uni_num, values))
-
-                # Global gate for the changed batch: send all-or-none to keep
-                # multi-universe edits visually simultaneous.
-                min_send_interval = self._effective_min_send_interval_locked()
-                global_gate_ok = (
-                    min_send_interval <= 0
-                    or (now - self._last_global_send_time) >= min_send_interval
-                )
-
-                if changed_batch and not global_gate_ok:
-                    # Throttled — defer the whole batch to the next tick.
-                    self._stats["frames_skipped"] += len(changed_batch)
-                    changed_batch = []
-
-                send_queue = changed_batch + [(u, v, False) for (u, v) in heartbeat_only]
-                if send_queue:
-                    burst_start = time.perf_counter()
-                    for uni_num, raw_values, heartbeat_due in send_queue:
-                        # Apply dummy overlay only when we're committed to send
-                        # (it has the side effect of toggling dummy state).
-                        values_to_send = self._apply_dummy_overlay(uni_num, raw_values)
-                        if self._log_dmx:
-                            if self._log_dmx_full:
-                                log.debug("[DMX] universe=%s values=%s", uni_num, values_to_send)
-                            else:
-                                nonzero = [(i, v) for i, v in enumerate(values_to_send) if v]
-                                sample = nonzero[:8]
-                                log.debug(
-                                    "[DMX] universe=%s nonzero=%s sample=%s",
-                                    uni_num, len(nonzero), sample
-                                )
-                        if self._artnet_diff:
-                            sent = self._send_artnet_diff(
-                                uni_num, values_to_send, heartbeat_due=heartbeat_due
-                            )
-                        else:
-                            self.artnet.send_universe(uni_num, values_to_send)
-                            sent = True
-                        if sent:
-                            self._packet_count += 1
-                            self._last_send_ts = wall_now
-                        self._record_send_stats(uni_num, values_to_send, now)
-                    self._record_perf(
-                        "send",
-                        (time.perf_counter() - burst_start) * 1000.0,
-                        count=float(len(send_queue)),
-                    )
-                    if changed_batch:
-                        self._last_global_send_time = now
+            # Publish an immutable snapshot per universe. The emitter thread
+            # streams these at a fixed rate; the compute loop never touches the
+            # socket, so a heavy frame can never stall the DMX output.
+            published = 0
+            for uni_num, values in self._universes.items():
+                frame = bytes(values)
+                if self._emit_frames.get(uni_num) != frame:
+                    self._emit_frames[uni_num] = frame
+                    published += 1
+            self._stats["frames_published"] += published
 
         self._maybe_log_stats(now)
         self._record_perf("render", (time.perf_counter() - frame_start) * 1000.0)
         self._maybe_log_perf(now)
+
+    def _emit_loop(self):
+        """Stream every known universe at a fixed rate, like a DMX interface.
+
+        Reads the snapshots published by the compute loop — no engine lock, so
+        API writes and heavy frames can never delay the output. Pacing uses an
+        absolute deadline so it does not drift; if a sweep runs long the missed
+        slots are dropped rather than bursted.
+        """
+        next_send = time.perf_counter()
+        while self._running:
+            period = 1.0 / max(1.0, float(self._emit_hz or 1.0))
+            frames = self._emit_frames  # atomic read of the current mapping
+            if frames and self.artnet:
+                sweep_start = time.perf_counter()
+                packets = 0
+                for uni_num, payload in list(frames.items()):
+                    try:
+                        # The dummy keepalive toggles per send, so it lives here.
+                        if self._dummy_enabled and self._dummy_channels.get(uni_num):
+                            payload = bytes(self._apply_dummy_overlay(uni_num, list(payload)))
+                        self.artnet.send_universe(uni_num, payload)
+                        packets += 1
+                    except Exception as exc:
+                        # A bad universe number must never kill the stream: drop
+                        # it and keep every other universe alive.
+                        log.warning("emit failed for universe %s (dropped): %s", uni_num, exc)
+                        self._emit_frames.pop(uni_num, None)
+                self._packet_count += packets
+                self._last_send_ts = time.time()
+                self._emit_stats["sweeps"] += 1.0
+                self._emit_stats["packets"] += packets
+                self._record_perf(
+                    "send", (time.perf_counter() - sweep_start) * 1000.0, count=float(packets or 1)
+                )
+
+            next_send += period
+            now = time.perf_counter()
+            delay = next_send - now
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                # Behind schedule: resync instead of accumulating a backlog.
+                late_ms = -delay * 1000.0
+                self._emit_stats["late"] += 1.0
+                if late_ms > self._emit_stats["max_late_ms"]:
+                    self._emit_stats["max_late_ms"] = late_ms
+                next_send = now
+
+    def set_emit_hz(self, hz: Any):
+        """Output refresh rate in Hz — what the nodes actually see."""
+        try:
+            value = float(hz)
+        except (TypeError, ValueError):
+            return
+        self._emit_hz = max(1.0, min(1000.0, value))
+
+    def set_preview_hz(self, hz: Any):
+        """Rate at which universe values are pushed to the browser preview."""
+        try:
+            value = float(hz)
+        except (TypeError, ValueError):
+            return
+        self._preview_hz = max(1.0, min(120.0, value))
+
+    def get_emit_stats(self) -> Dict[str, Any]:
+        return {
+            "emit_hz": float(self._emit_hz),
+            "universes": len(self._emit_frames),
+            "sweeps": int(self._emit_stats["sweeps"]),
+            "packets": int(self._emit_stats["packets"]),
+            "late_sweeps": int(self._emit_stats["late"]),
+            "max_late_ms": round(float(self._emit_stats["max_late_ms"]), 2),
+        }
 
     def _record_send_stats(self, universe: int, values: List[int], now: float):
         self._last_sent_universes[universe] = values[:]
@@ -1305,6 +1360,7 @@ class DMXRenderEngine:
                 "frames_sent": 0,
                 "universes_sent": 0,
                 "frames_skipped": 0,
+                "frames_published": 0,
                 "bytes_sent": 0,
             }
             return
@@ -1397,7 +1453,7 @@ class DMXRenderEngine:
                     val = self._apply_fade(u, ch, base_val, now, dev_id)
                 out[u][ch] = int(val)
 
-        # Direct channels (live overrides)
+        # Direct channels (raw low-level overrides)
         for u, ch_map in self._direct_channels.items():
             if u not in out:
                 out[u] = {}
@@ -1405,16 +1461,23 @@ class DMXRenderEngine:
                 if 0 <= ch < 512:
                     out[u][ch] = int(val)
 
-        return out
+        # Manual attribute layer: the operator's console position wins over the
+        # cue base, exactly like a fader held on a real desk.
+        for dev_id, attrs in self._manual_attrs.items():
+            dev = self._devices.get(dev_id)
+            if not dev or not attrs:
+                continue
+            u = int(dev.universe or 0)
+            if u not in out:
+                out[u] = {}
+            attr_map = dev.attr_map or {}
+            for attr_key, val in attrs.items():
+                ch = attr_map.get(attr_key)
+                if ch is None or not (0 <= int(ch) < 512):
+                    continue
+                out[u][int(ch)] = max(0, min(255, int(val)))
 
-    def _render_ui_frame(self):
-        """UI-render mode: apply direct channel values."""
-        for uni_num, ch_map in self._direct_channels.items():
-            self._ensure_universe(uni_num)
-            uni = self._universes[uni_num]
-            for ch, val in ch_map.items():
-                if 0 <= ch < 512:
-                    uni[ch] = val
+        return out
 
     def _render_backend_frame(self, now: float):
         """Backend-render mode: compute base + effects per device."""
@@ -1427,11 +1490,14 @@ class DMXRenderEngine:
         # Reuse universe buffers instead of reallocating a new map every tick.
         target_universes = set(self._universes.keys()) | set(base_map.keys())
         for uni_num in target_universes:
-            self._ensure_universe(uni_num)
+            if not self._ensure_universe(uni_num):
+                continue
             self._universes[uni_num][:] = self._zero_universe
 
         for uni_num, ch_map in base_map.items():
-            uni = self._universes[uni_num]
+            uni = self._universes.get(uni_num)
+            if uni is None:
+                continue
             for ch, val in ch_map.items():
                 if 0 <= ch < 512:
                     uni[ch] = int(val)
@@ -1494,7 +1560,8 @@ class DMXRenderEngine:
                             continue
 
         for uni_num in target_universes:
-            self._ensure_universe(uni_num)
+            if not self._ensure_universe(uni_num):
+                continue
             self._universes[uni_num][:] = self._zero_universe
 
         for dev_id, block in prep_blocks.items():
@@ -1591,7 +1658,7 @@ class DMXRenderEngine:
         if not group:
             return
 
-        runtime = self._resolve_effect_members(group)
+        runtime = self._effect_runtime_for_group(group)
         members = runtime.get("by_device", {}).get(dev_id) or []
         if not members:
             return
@@ -1707,7 +1774,8 @@ class DMXRenderEngine:
             universe = int(channels.get("Universe", 0) or 0)
         except Exception:
             universe = 0
-        self._ensure_universe(universe)
+        if not self._ensure_universe(universe):
+            return
         uni = self._universes[universe]
         dev_state = self._devices.get(str(dev_id))
 
@@ -1817,7 +1885,8 @@ class DMXRenderEngine:
                 universe = int(channels.get("Universe", 0) or 0)
             except Exception:
                 universe = 0
-            self._ensure_universe(universe)
+            if not self._ensure_universe(universe):
+                continue
             uni = self._universes[universe]
 
             dev_key = str(dev_id)
@@ -1905,7 +1974,8 @@ class DMXRenderEngine:
                     universe = dev_info.get("universe", 0)
                     dimmer_ch = dev_info.get("dimmer_channel")
 
-                    self._ensure_universe(universe)
+                    if not self._ensure_universe(universe):
+                        continue
                     uni = self._universes[universe]
 
                     if dimmer_ch is not None and 0 <= dimmer_ch < 512:
@@ -1917,7 +1987,8 @@ class DMXRenderEngine:
                 if dev_id not in self._devices:
                     continue
                 dev = self._devices[dev_id]
-                self._ensure_universe(dev.universe)
+                if not self._ensure_universe(dev.universe):
+                    continue
                 uni = self._universes[dev.universe]
 
                 # Try dimmer first, then RGB
@@ -1985,6 +2056,7 @@ class DMXRenderEngine:
             self._fade = None
             self._fade_effect_groups = None
             self._direct_channels.clear()
+            self._manual_attrs.clear()
             self._smooth_targets.clear()
             self._smooth_last_targets.clear()
             for uni in self._universes.values():
@@ -2139,6 +2211,9 @@ class DMXRenderEngine:
 
     def set_channel(self, device_id: str, universe: int, channel: int, value: int):
         """Set a single channel value (from controller) - uses direct channel storage"""
+        if self.valid_universe(universe) is None:
+            log.warning("set_channel: out-of-range universe %r ignored", universe)
+            return
         with self._lock:
             # Use direct channel storage (simpler, no device overhead)
             if universe not in self._direct_channels:
@@ -2151,7 +2226,8 @@ class DMXRenderEngine:
                 if self._smooth_predict:
                     v = self._predict_target(universe, channel, raw_target)
                 self._smooth_last_targets.setdefault(universe, {})[channel] = raw_target
-                self._ensure_universe(universe)
+                if not self._ensure_universe(universe):
+                    return
                 cur = self._universes[universe][channel]
                 if self._should_bypass_smoothing(cur, v):
                     self._direct_channels[universe][channel] = v
@@ -2164,8 +2240,72 @@ class DMXRenderEngine:
                     self._smooth_targets.get(universe, {}).pop(channel, None)
                 self._direct_channels[universe][channel] = v
 
+    # -------------------------------------------------------------------------
+    # PUBLIC API: MANUAL ATTRIBUTE LAYER (what the UI actually drives)
+    # -------------------------------------------------------------------------
+
+    def set_manual_attrs(self, updates: Any) -> int:
+        """Hold attributes on devices: [{device_id, attr, value}, ...].
+
+        `attr` is a fixture attribute key as registered in the device's attr_map
+        ("main.dimmer", "pos.pan", "red"...) - never a DMX channel. A null value
+        releases that attribute. Returns how many updates were applied.
+        """
+        if not isinstance(updates, list):
+            return 0
+        applied = 0
+        with self._lock:
+            for entry in updates:
+                if not isinstance(entry, dict):
+                    continue
+                dev_id = str(entry.get("device_id") or entry.get("id") or "").strip()
+                attr = str(entry.get("attr") or entry.get("attribute") or "").strip().lower()
+                if not dev_id or not attr:
+                    continue
+                dev = self._devices.get(dev_id)
+                if not dev or attr not in (dev.attr_map or {}):
+                    continue
+                raw = entry.get("value")
+                if raw is None:
+                    bucket = self._manual_attrs.get(dev_id)
+                    if bucket:
+                        bucket.pop(attr, None)
+                        if not bucket:
+                            self._manual_attrs.pop(dev_id, None)
+                    applied += 1
+                    continue
+                try:
+                    value = max(0, min(255, int(raw)))
+                except (TypeError, ValueError):
+                    continue
+                self._manual_attrs.setdefault(dev_id, {})[attr] = value
+                applied += 1
+        return applied
+
+    def release_manual_attrs(self, device_ids: Any = None) -> int:
+        """Drop the manual hold - for the given devices, or for all of them."""
+        with self._lock:
+            if device_ids is None:
+                count = len(self._manual_attrs)
+                self._manual_attrs.clear()
+                return count
+            if not isinstance(device_ids, list):
+                return 0
+            count = 0
+            for dev_id in device_ids:
+                if self._manual_attrs.pop(str(dev_id), None) is not None:
+                    count += 1
+            return count
+
+    def get_manual_attrs(self) -> Dict[str, Dict[str, int]]:
+        with self._lock:
+            return {dev: dict(attrs) for dev, attrs in self._manual_attrs.items()}
+
     def set_channels(self, device_id: str, universe: int, channels: Dict[int, int]):
         """Set multiple channel values - uses direct channel storage"""
+        if self.valid_universe(universe) is None:
+            log.warning("set_channels: out-of-range universe %r ignored", universe)
+            return
         with self._lock:
             if universe not in self._direct_channels:
                 self._direct_channels[universe] = {}
@@ -2179,7 +2319,8 @@ class DMXRenderEngine:
                     if self._smooth_predict:
                         v = self._predict_target(universe, ch_int, raw_target)
                     self._smooth_last_targets.setdefault(universe, {})[ch_int] = raw_target
-                    self._ensure_universe(universe)
+                    if not self._ensure_universe(universe):
+                        continue
                     cur = self._universes[universe][ch_int]
                     if self._should_bypass_smoothing(cur, v):
                         self._direct_channels[universe][ch_int] = v
@@ -2205,6 +2346,9 @@ class DMXRenderEngine:
             for uni, channels in updates.items():
                 if not channels:
                     continue
+                if self.valid_universe(uni) is None:
+                    log.warning("set_channels_multi: out-of-range universe %r ignored", uni)
+                    continue
                 try:
                     universe = int(uni)
                 except (TypeError, ValueError):
@@ -2225,7 +2369,8 @@ class DMXRenderEngine:
                         if self._smooth_predict:
                             v = self._predict_target(universe, ch_int, raw_target)
                         self._smooth_last_targets.setdefault(universe, {})[ch_int] = raw_target
-                        self._ensure_universe(universe)
+                        if not self._ensure_universe(universe):
+                            continue
                         cur = self._universes[universe][ch_int]
                         if self._should_bypass_smoothing(cur, v):
                             direct[ch_int] = v
@@ -3313,7 +3458,38 @@ class DMXRenderEngine:
                 "timestamp": time.time()
             }
             if include_universes:
-                state["universes"] = {str(u): list(v) for u, v in self._universes.items()}
+                # The preview gets changed channels only, plus a full keyframe
+                # every 2 s (and on the first push after a connect / rig change).
+                # Reuses the snapshots the compute loop already built for the
+                # emitter, so this costs one bytes-compare per universe.
+                now_ts = time.perf_counter()
+                frames = {u: self._emit_frames.get(u) or bytes(v) for u, v in self._universes.items()}
+                keyframe = (
+                    not self._preview_last
+                    or set(frames) != set(self._preview_last)
+                    or (now_ts - self._preview_last_full) >= 2.0
+                )
+                if keyframe:
+                    self._preview_last_full = now_ts
+                    state["preview_full"] = True
+                    state["universes"] = {str(u): list(frame) for u, frame in frames.items()}
+                else:
+                    diff: Dict[str, Dict[str, int]] = {}
+                    for u, frame in frames.items():
+                        prev = self._preview_last.get(u)
+                        if prev == frame:
+                            continue
+                        changed = {
+                            str(i): frame[i]
+                            for i in range(min(len(frame), len(prev or b"")))
+                            if prev[i] != frame[i]
+                        }
+                        if changed:
+                            diff[str(u)] = changed
+                    state["preview_full"] = False
+                    if diff:
+                        state["universes_diff"] = diff
+                self._preview_last = frames
 
         for cb in self._state_callbacks:
             try:
@@ -3362,7 +3538,8 @@ class DMXRenderEngine:
         for uni, targets in list(self._smooth_targets.items()):
             if not targets:
                 continue
-            self._ensure_universe(uni)
+            if not self._ensure_universe(uni):
+                continue
             uni_buf = self._universes[uni]
             to_remove = []
             for ch, target in targets.items():

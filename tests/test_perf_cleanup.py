@@ -35,19 +35,21 @@ def test_engine_module_imports():
     import dmx_engine  # noqa: F401
 
 
-def test_engine_idle_broadcast_is_20hz():
-    """Phase 6.1: idle (no playback) broadcast must be 50ms = 20Hz, not 250ms."""
+def test_engine_idle_broadcast_follows_preview_hz():
+    """The idle preview cadence is a setting now (dmx_runtime.preview_hz)."""
     from dmx_engine import DMXRenderEngine
 
     engine = DMXRenderEngine()
     try:
-        # No playback active by default
         with engine._lock:
             engine._playback_state = {"active": False}
+            engine._preview_hz = 30.0
             interval = engine._effective_state_broadcast_sec_locked()
-        assert interval == pytest.approx(0.05, abs=1e-6), (
-            f"Idle broadcast interval should be 50ms, got {interval * 1000:.1f}ms"
-        )
+        assert interval == pytest.approx(1 / 30.0, abs=1e-6)
+        engine.set_preview_hz(10)
+        with engine._lock:
+            interval = engine._effective_state_broadcast_sec_locked()
+        assert interval == pytest.approx(0.1, abs=1e-6)
     finally:
         # Best effort cleanup
         try:
@@ -197,17 +199,19 @@ def test_core_js_universe_change_detection():
     assert "universesChanged" in src
 
 
-def test_core_js_render_mode_clears_state():
-    """Phase 3.2: setRenderMode clears preview caches on mode switch."""
+def test_core_js_preview_always_mirrors_the_engine():
+    """No render mode any more: the rig preview always reads the emitted frames."""
     src = _read("static/core.js")
-    # The clear happens via Object.keys delete loop for lastDmxFrames
-    assert "for (const k of Object.keys(lastDmxFrames))" in src
+    body = src[src.index("function refreshEnginePreviewFrame"):src.index("function scheduleEnginePreviewRefresh")]
+    assert "lastDmxFrames[universe]" in body
+    assert "backendPlaybackOwned" not in body, "the preview must not be gated on playback ownership"
 
 
-def test_core_js_fps_cap_60():
-    """Earlier fix: DMX_PLAYBACK_UI_FPS capped at 60."""
+def test_core_js_preview_rate_is_clamped():
+    """The preview redraw cap is bounded (1-120 Hz)."""
     src = _read("static/core.js")
-    assert "Math.min(60, raw)" in src
+    assert "window.setPreviewHz" in src
+    assert "Math.min(120, raw)" in src
 
 
 def test_cues_js_playback_ui_caching():

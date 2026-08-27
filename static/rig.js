@@ -2544,7 +2544,7 @@ async function applySelectionToEngine(silent = false) {
   // PROTECTION : Verrou DMX
   // ========================================
   // A *paused* backend playback still owns the rig (backendPlaybackOwned) and
-  // applyUniverseState() would silently drop this write — the rig looks frozen
+  // the write would be dropped — the rig looks frozen
   // and manual edits do nothing ("rien ne joue mais je ne peux rien changer").
   // The user grabbing a control means "hand me manual control now": stop the
   // frozen playback so the edit actually lands. An actively-running playback is
@@ -2570,23 +2570,11 @@ async function applySelectionToEngine(silent = false) {
     await syncMovementChannelsToEngine();
   }
 
-  const { devices } = buildDevicesBlockFromSelection();
-  if (!devices) return;
-
-  const perU = {};
-  for (const d of Object.values(devices)) {
-    const ch = d.channels || {};
-    const u = parseInt(ch.Universe, 10) || 0;
-    perU[u] ||= {};
-    for (const [k, v] of Object.entries(ch)) {
-      if (k === "Universe") continue;
-      perU[u][k] = v;
-    }
-  }
-
-  for (const [uStr, flat] of Object.entries(perU)) {
-    const u = parseInt(uStr, 10) || 0;
-    await applyUniverseState(u, flat, false, "ui_live");
+  // Manual control is an ATTRIBUTE intent: "hold main.dimmer at 200 on these
+  // devices". The engine resolves the channel and renders — the browser never
+  // computes a DMX frame.
+  if (typeof applyDevicesToEngine === "function") {
+    await applyDevicesToEngine(selectedDeviceOrder);
   }
 
   if (!silent) toast("Applied", "info");
@@ -3098,14 +3086,6 @@ function bindRigCanvasEvents() {
   };
 }
 
-// Hook render mode changes
-if (typeof window.addRenderModeListener === "function") {
-  window.addRenderModeListener((mode) => {
-    if (mode === "backend") {
-      scheduleRigSync();
-    }
-  });
-}
 
 /* ============================================================
    RIG canvas right-click menu (replaces the top toolbar).

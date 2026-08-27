@@ -8,7 +8,6 @@
 let availableEffects = [];
 let activeEffectAttr = "dimmer";
 // NOTE: effectStartEpoch est défini dans core.js sur window.effectStartEpoch
-let effectTickHandle = null;
 let intelligentEffects = [];
 let intelligentEffectsById = {};
 let intelligentEffectsLoaded = false;
@@ -1289,9 +1288,6 @@ function disableGroupOnRig(groupId) {
   if (changed) {
     renderEffectsTargets();
     renderActualEffectsPanel();
-    if (typeof sendToEngineWithEffects === "function" && (window.playbackActive || window.dmxLocked)) {
-      sendToEngineWithEffects(1.0);
-    }
     syncBackendLiveGroups();
     // Also purge from engine's cue pool so disable takes effect immediately
     // even if a running cue had this group active.
@@ -2082,113 +2078,9 @@ function evalIntelligentPreviewValue(def, tMs, deviceIndex, deviceCount, target)
 // RUNNER (AVEC DOUBLE PROTECTION)
 ///////////////////////
 
-async function effectTick() {
-  // ========================================
-  // PROTECTION 1 : Pendant playback
-  // ========================================
-  if (playbackActive) {
-    return;
-  }
-  
-  // ========================================
-  // PROTECTION 2 : Pendant transition (verrou DMX)
-  // ========================================
-  if (window.dmxLocked) {
-    console.log('[FX] Blocked by DMX lock');
-    return;
-  }
-  
-  // ========================================
-  // PROTECTION 3 : Pas de devices configurés
-  // ========================================
-  if (Object.keys(rigDevices).length === 0) {
-    return;
-  }
-  
-  const tMs = performance.now() - window.effectStartEpoch;
-  const perUniverseMap = {};
-  
-  devicePreviewRGB = {};
-  devicePreviewDimmer = {};
-  
-  ensureVirtualGroupsRoot();
-  
-  for (const dev of Object.values(rigDevices)) {
-    const fi = fixtures[dev.fixture] || {};
-    const previewChannels = getDevicePrimaryPreviewChannels(dev);
-    const lv = deviceLocalValues[dev.id] || {};
-    const devGroups = Array.from(deviceCurrentGroups[dev.id] || []);
-    
-    const u = dev.universe || 0;
-    perUniverseMap[u] ||= {};
-    
-    // Base
-    const addrCount = getFixtureFootprint(fi);
-    for (let li = 0; li < addrCount; li++) {
-      const absCh = dev.address + li;
-      perUniverseMap[u][absCh] = lv[li] ?? 0;
-    }
-    
-    // Effets
-    for (const gId of devGroups) {
-      const group = virtualGroups[gId];
-      if (!group) continue;
-
-      if (group.mode === "intelligent") {
-        const def = getIntelligentEffectDefinition(group.type);
-        if (!def) continue;
-        applyIntelligentGroupToDevice(group, def, dev, tMs, perUniverseMap);
-        continue;
-      }
-      applyLegacyGroupToDevice(group, dev, tMs, perUniverseMap);
-    }
-    
-    // Previews
-    if (previewChannels.r != null && previewChannels.g != null && previewChannels.b != null) {
-      const rAbs = previewChannels.r, gAbs = previewChannels.g, bAbs = previewChannels.b;
-      devicePreviewRGB[dev.id] = {
-        r: rAbs != null ? (perUniverseMap[u][rAbs] ?? 0) : 0,
-        g: gAbs != null ? (perUniverseMap[u][gAbs] ?? 0) : 0,
-        b: bAbs != null ? (perUniverseMap[u][bAbs] ?? 0) : 0,
-      };
-    }
-    
-    if (previewChannels.dimmer != null) {
-      const dAbs = previewChannels.dimmer;
-      devicePreviewDimmer[dev.id] = dAbs != null ? (perUniverseMap[u][dAbs] ?? 0) : 0;
-    }
-  }
-  
-  // Envoyer (seulement si des données)
-  if (typeof window.isBackendMode !== "function" || !window.isBackendMode()) {
-    for (const [uStr, chMap] of Object.entries(perUniverseMap)) {
-      if (Object.keys(chMap).length === 0) continue;
-      const u = parseInt(uStr, 10) || 0;
-      await applyUniverseState(u, chMap, false, "ui_effect");
-    }
-  }
-  
-  drawRig();
-  syncRgbWidgetFromFirstDevice();
-  syncPosWidgetFromFirstDevice();
-}
-
-function startEffectRunner() {
-  if (effectTickHandle) return;
-  window.effectStartEpoch = performance.now();
-  effectTickHandle = setInterval(effectTick, 20);
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   bindEffectsLibraryTabs();
   updateEffectsPanelLabels();
   ensureIntelligentEffectsLoaded();
 });
 
-if (typeof window.addRenderModeListener === "function") {
-  window.addRenderModeListener((mode) => {
-    if (mode === "backend") {
-      syncBackendLiveGroups();
-    }
-  });
-}

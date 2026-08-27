@@ -149,7 +149,10 @@ def load_settings() -> Dict[str, Any]:
             "freeze_global": False,
         },
         "dmx_runtime": {
-            "render_mode": "ui",
+            # Output refresh: the engine re-emits every universe at this rate,
+            # like a DMX interface. preview_hz is what the browser preview gets.
+            "emit_hz": _env_float("DMX_EMIT_HZ", 500),
+            "preview_hz": _env_float("DMX_PREVIEW_HZ", 30),
             "playback_clock_mode": os.environ.get("DMX_PLAYBACK_CLOCK_MODE", "timeline").strip().lower(),
             "playback_engine_hz": _env_float("DMX_PLAYBACK_ENGINE_HZ", 120),
             "idle_engine_hz": _env_float("DMX_IDLE_ENGINE_HZ", 120),
@@ -270,8 +273,10 @@ def _normalize_runtime_settings(payload: Any, current: Dict[str, Any]) -> Dict[s
 
     out = dict(current or {})
 
-    mode_raw = str(payload.get("render_mode") or out.get("render_mode") or "ui").strip().lower()
-    out["render_mode"] = "backend" if mode_raw == "backend" else "ui"
+    # Output refresh rate (what the nodes actually see) + browser preview rate.
+    out["emit_hz"] = _clamp_float(payload.get("emit_hz"), 1.0, 1000.0, out.get("emit_hz", 500.0))
+    out["preview_hz"] = _clamp_float(payload.get("preview_hz"), 1.0, 120.0, out.get("preview_hz", 30.0))
+    out.pop("render_mode", None)  # a single renderer now: the engine
     clock_mode_raw = str(payload.get("playback_clock_mode") or out.get("playback_clock_mode") or "timeline").strip().lower()
     out["playback_clock_mode"] = "absolute_clock" if clock_mode_raw == "absolute_clock" else "timeline"
     out["playback_engine_hz"] = _clamp_float(payload.get("playback_engine_hz"), 40.0, 240.0, out.get("playback_engine_hz", 120.0))
@@ -409,10 +414,10 @@ def _apply_runtime_settings(engine: Any, runtime: Dict[str, Any]) -> None:
             engine._quantize = int(runtime.get("quantize", engine._quantize))
         if hasattr(engine, "_force_continuous"):
             engine._force_continuous = bool(runtime.get("continuous", engine._force_continuous))
-        if hasattr(engine, "set_render_mode"):
-            engine.set_render_mode(runtime.get("render_mode", "ui"))
-        elif hasattr(engine, "_render_mode"):
-            engine._render_mode = str(runtime.get("render_mode", "ui")).strip().lower()
+        if hasattr(engine, "set_emit_hz"):
+            engine.set_emit_hz(runtime.get("emit_hz", 500.0))
+        if hasattr(engine, "set_preview_hz"):
+            engine.set_preview_hz(runtime.get("preview_hz", 30.0))
         if hasattr(engine, "set_playback_clock_mode"):
             engine.set_playback_clock_mode(runtime.get("playback_clock_mode", "timeline"))
         elif hasattr(engine, "_playback_clock_mode"):
@@ -1467,6 +1472,39 @@ def api_live_channels_bulk():
 
 
 # ---------- NEW API: EFFECT GROUPS ----------
+
+@app.route("/api/live/attrs", methods=["POST"])
+def api_live_attrs():
+    """Hold / release fixture attributes — the UI's only way to drive values.
+
+    Payload: {"updates": [{"device_id": "3", "attr": "main.dimmer", "value": 200}, ...]}
+    A null value releases that attribute. Also accepts {"release": ["3", "4"]}
+    and {"release_all": true}. The engine resolves attr -> DMX channel from the
+    device's attr_map, so the browser never deals in channels.
+    """
+    if RENDER_ENGINE is None:
+        return jsonify({"error": "engine not running"}), 503
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "bad payload"}), 400
+
+    try:
+        applied = 0
+        released = 0
+        if payload.get("release_all"):
+            released += RENDER_ENGINE.release_manual_attrs(None)
+        release = payload.get("release")
+        if isinstance(release, list) and release:
+            released += RENDER_ENGINE.release_manual_attrs([str(x) for x in release])
+        updates = payload.get("updates")
+        if isinstance(updates, list) and updates:
+            applied = RENDER_ENGINE.set_manual_attrs(updates)
+        return jsonify({"ok": True, "applied": applied, "released": released})
+    except Exception as e:
+        app.logger.exception("[API] live/attrs error")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/live/effects/groups", methods=["POST"])
 def api_live_effect_groups():

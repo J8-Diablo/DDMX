@@ -623,8 +623,6 @@
   async function pushCurrentStateAfterTimelineRestore() {
     try {
       if (
-        typeof window.isBackendMode === "function" &&
-        window.isBackendMode() &&
         typeof buildBackendCuePayloadFromCurrentState === "function" &&
         typeof sendBackendCuePayload === "function"
       ) {
@@ -632,8 +630,6 @@
         if (typeof syncBackendLiveGroups === "function") {
           await syncBackendLiveGroups();
         }
-      } else if (typeof sendToEngineWithEffects === "function") {
-        await sendToEngineWithEffects(1.0);
       }
     } catch (err) {
       console.warn("[TIMELINE] failed to push restored state:", err);
@@ -827,17 +823,10 @@
     if (typeof syncPosWidgetFromFirstDevice === "function") syncPosWidgetFromFirstDevice();
 
     if (
-      typeof window.isBackendMode === "function" &&
-      window.isBackendMode() &&
       typeof buildBackendCuePayloadFromCurrentState === "function" &&
       typeof sendBackendCuePayload === "function"
     ) {
       await sendBackendCuePayload(buildBackendCuePayloadFromCurrentState());
-      return;
-    }
-
-    if (typeof sendToEngineWithEffects === "function") {
-      await sendToEngineWithEffects(1.0, groupMix);
     }
   }
 

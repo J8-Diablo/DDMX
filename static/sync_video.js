@@ -391,7 +391,8 @@
     };
 
     const runtimeSettings = {
-      render_mode: document.getElementById("rt-render-mode")?.value || "ui",
+      emit_hz: parseFloat(document.getElementById("rt-emit-hz")?.value || "500"),
+      preview_hz: parseFloat(document.getElementById("rt-preview-hz")?.value || "30"),
       playback_clock_mode: document.getElementById("rt-playback-clock-mode")?.value || "timeline",
       playback_engine_hz: parseFloat(document.getElementById("rt-playback-engine-hz")?.value || "120"),
       playback_ui_fps: parseFloat(document.getElementById("rt-playback-ui-fps")?.value || "12"),
@@ -479,12 +480,6 @@
     );
     if (!ok) return;
     setConfig({ enabled, baseUrl, token });
-    if (runtimeSettings && typeof runtimeSettings.ui_force_full_send === "boolean") {
-      window.DMX_FORCE_FULL_SEND = runtimeSettings.ui_force_full_send;
-    }
-    if (runtimeSettings && typeof window.setRenderMode === "function") {
-      window.setRenderMode(runtimeSettings.render_mode || "ui");
-    }
     if (runtimeSettings && typeof window.setPlaybackUiFps === "function") {
       window.setPlaybackUiFps(runtimeSettings.playback_ui_fps);
     }
@@ -2828,14 +2823,8 @@
       }
       if (data && typeof data === "object") {
         const runtime = data.dmx_runtime || {};
-        if (typeof window.setRenderMode === "function") {
-          window.setRenderMode(runtime.render_mode || "ui");
-        }
         if (typeof window.setPlaybackUiFps === "function") {
           window.setPlaybackUiFps(runtime.playback_ui_fps);
-        }
-        if (typeof runtime.ui_force_full_send === "boolean") {
-          window.DMX_FORCE_FULL_SEND = runtime.ui_force_full_send;
         }
         if (typeof window.setCtcSettings === "function") {
           window.setCtcSettings(data.ctc || {});
@@ -3315,7 +3304,8 @@
         const smoothDisable = Boolean(runtime.smooth_disable);
     const deadband = Number(runtime.deadband ?? 0);
     const quantize = Number(runtime.quantize ?? 1);
-    const renderMode = String(runtime.render_mode || "ui");
+    const emitHz = Number(runtime.emit_hz ?? 500);
+    const previewHz = Number(runtime.preview_hz ?? 30);
     const playbackClockMode = String(runtime.playback_clock_mode || "timeline");
     const playbackEngineHz = Number(runtime.playback_engine_hz ?? 120);
     const playbackUiFps = Number(runtime.playback_ui_fps ?? 12);
@@ -3541,13 +3531,18 @@
 
           <div class="dmx-settings-row">
             <div>
-              <div class="dmx-settings-label">${t("settings.renderMode", "Render mode")}</div>
-              <div class="dmx-settings-desc">${t("settings.renderModeDesc", "UI = browser renders DMX, Backend = Python renders DMX")}</div>
+              <div class="dmx-settings-label">${t("settings.emitHz", "Output rate (Hz)")}</div>
+              <div class="dmx-settings-desc">${t("settings.emitHzDesc", "How often every universe is re-emitted to the nodes, changed or not — like a DMX interface. 500 Hz by default.")}</div>
             </div>
-            <select id="rt-render-mode">
-              <option value="ui" ${renderMode === "ui" ? "selected" : ""}>UI</option>
-              <option value="backend" ${renderMode === "backend" ? "selected" : ""}>Backend</option>
-            </select>
+            <input id="rt-emit-hz" type="number" min="1" max="1000" step="1" value="${emitHz}">
+          </div>
+
+          <div class="dmx-settings-row">
+            <div>
+              <div class="dmx-settings-label">${t("settings.previewHz", "Preview rate (Hz)")}</div>
+              <div class="dmx-settings-desc">${t("settings.previewHzDesc", "How often the browser is sent the values it displays. Only affects the on-screen rig, never the output.")}</div>
+            </div>
+            <input id="rt-preview-hz" type="number" min="1" max="120" step="1" value="${previewHz}">
           </div>
 
           <div class="dmx-settings-row">
