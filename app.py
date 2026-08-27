@@ -1602,6 +1602,9 @@ def api_playback_run():
         # Whole-sequence loop: loop_count 0/absent = forever.
         loop = bool(payload.get("loop", False))
         loop_count = _clamp_int(payload.get("loop_count"), 0, 9999, 0) if payload.get("loop_count") is not None else 0
+        # Dead time before the first cue (a converted v1 sequence puts its old
+        # leading "sleep" here, and a timeline whose first block is not at 0).
+        lead_in_ms = _clamp_int(payload.get("lead_in_ms"), 0, 3600000, 0)
         virtual_groups = payload.get("virtual_groups") or payload.get("virtualGroups") or {}
         if not isinstance(sequence, list):
             return jsonify({"error": "invalid sequence"}), 400
@@ -1621,6 +1624,7 @@ def api_playback_run():
                 timeline=timeline,
                 priority_mode=priority_mode,
                 start_ms=start_ms,
+                lead_in_ms=lead_in_ms,
                 paused=paused,
                 loop=loop,
                 loop_count=loop_count,

@@ -196,11 +196,16 @@ class PlaybackPlanEntry:
     cue_payload: Dict[str, Any]
     device_order: List[str]
     fade_ms: int
-    sleep_ms: int
+    sleep_ms: int          # dead time before this entry's fade: the previous
+                           # cue's hold, or the sequence lead-in for the first
     wait_start_at_ms: int = 0
     wait_end_at_ms: int = 0
     fade_start_at_ms: int = 0
     fade_end_at_ms: int = 0
+    hold_ms: int = 0       # how long THIS cue stays once its fade is done
+    hold_cue_index: int = -1   # whose hold `sleep_ms` is (-1 = the lead-in)
+    hold_cue_name: str = ""
+    hold_only: bool = False    # trailing entry: hold the last cue, fade nothing
 
 
 @dataclass
@@ -820,6 +825,136 @@ class DMXRenderEngine:
             out.append(clone)
         return out
 
+    # -------------------------------------------------------------------------
+    # TIME MODEL
+    # -------------------------------------------------------------------------
+    # A cue occupies `fade` then `duration`: it crossfades toward its values
+    # over `fade` (which may carry a per-device spread operator), then holds
+    # them for `duration`. That is exactly one timeline block of
+    # fade + duration, whose fade-in is `fade`.
+    #
+    # The older model said "wait `sleep`, then crossfade over `duration`", so a
+    # look's on-stage time lived in the NEXT step's sleep and no block could
+    # describe it. Files are converted on the way in.
+
+    TIME_MODEL = 2
+
+    @staticmethod
+    def step_fade_field(step: Dict[str, Any]) -> Any:
+        """The fade time of a step, spread operator included."""
+        if not isinstance(step, dict):
+            return "0"
+        fade = step.get("fade")
+        if fade is not None:
+            return fade
+        return step.get("duration", "0")
+
+    @staticmethod
+    def step_hold_ms(step: Dict[str, Any]) -> int:
+        """How long the cue holds once its fade is done."""
+        if not isinstance(step, dict):
+            return 0
+        if step.get("fade") is None:
+            # A step with no `fade` is still v1: its hold lives elsewhere.
+            return 0
+        try:
+            return max(0, int(float(step.get("duration", 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def step_exit_hold_ms(step: Dict[str, Any]) -> Optional[int]:
+        """The hold used on the LAST pass of a loop group, when it differs.
+
+        None means "same as every other pass".
+        """
+        if not isinstance(step, dict):
+            return None
+        raw = step.get("exit_duration")
+        if raw is None:
+            return None
+        try:
+            return max(0, int(float(raw or 0)))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def is_time_model_v2(cls, sequence: Any) -> bool:
+        """True when every step states its own fade."""
+        if not isinstance(sequence, list) or not sequence:
+            return True
+        return all(
+            isinstance(step, dict) and step.get("fade") is not None
+            for step in sequence
+            if isinstance(step, dict)
+        )
+
+    @classmethod
+    def migrate_sequence_time_model(cls, sequence: Any) -> Tuple[List[Dict[str, Any]], int]:
+        """Convert a v1 sequence to v2. Returns (sequence, lead_in_ms).
+
+        The conversion is exact: the hold of step i is the old sleep of step
+        i+1, and the first sleep becomes the sequence's lead-in. Nothing is
+        rounded, nothing is guessed.
+        """
+        if not isinstance(sequence, list):
+            return [], 0
+        if cls.is_time_model_v2(sequence):
+            return sequence, 0
+
+        def _sleep_of(step: Any) -> int:
+            if not isinstance(step, dict):
+                return 0
+            try:
+                return max(0, int(float(step.get("sleep", 0) or 0)))
+            except (TypeError, ValueError):
+                return 0
+
+        steps = [step for step in sequence if isinstance(step, dict)]
+        lead_in_ms = _sleep_of(steps[0]) if steps else 0
+
+        # The hold of a step is the wait that used to sit in front of whatever
+        # plays next -- and inside a loop group, what plays after its last step
+        # is its FIRST step, not the step following the group. Reading the file
+        # order there would shorten every looped show.
+        holds: List[int] = []
+        exits: List[Optional[int]] = []
+        for idx, step in enumerate(steps):
+            group = step.get("loopGroup")
+            nxt = steps[idx + 1] if idx + 1 < len(steps) else None
+            if group and (nxt is None or nxt.get("loopGroup") != group):
+                first = idx
+                while first - 1 >= 0 and steps[first - 1].get("loopGroup") == group:
+                    first -= 1
+                loop_back = _sleep_of(steps[first])
+                exit_wait = _sleep_of(nxt)
+                holds.append(loop_back)
+                # Only worth writing when the two really differ.
+                exits.append(exit_wait if exit_wait != loop_back else None)
+            else:
+                holds.append(_sleep_of(nxt))
+                exits.append(None)
+
+        out: List[Dict[str, Any]] = []
+        hold_iter = iter(holds)
+        exit_iter = iter(exits)
+        for raw in sequence:
+            if not isinstance(raw, dict):
+                out.append(raw)
+                continue
+            step = dict(raw)
+            if step.get("fade") is None:
+                step["fade"] = raw.get("duration", "0")
+            step["duration"] = next(hold_iter, 0)
+            exit_hold = next(exit_iter, None)
+            if exit_hold is None:
+                step.pop("exit_duration", None)
+            else:
+                step["exit_duration"] = exit_hold
+            step.pop("sleep", None)
+            out.append(step)
+        return out, lead_in_ms
+
     def _build_cue_payload_from_step(self, step: Dict[str, Any], virtual_groups: Any) -> Tuple[Dict[str, Any], List[str]]:
         devices = step.get("devices") or {}
         order_raw = step.get("device_order")
@@ -829,7 +964,7 @@ class DMXRenderEngine:
             device_order = [str(x) for x in devices.keys()]
         payload = {
             "devices": devices if isinstance(devices, dict) else {},
-            "duration": step.get("duration", "0"),
+            "fade": self.step_fade_field(step),
             "effect_groups": self._resolve_effect_groups_for_step(step, virtual_groups),
         }
         return payload, device_order
@@ -839,6 +974,7 @@ class DMXRenderEngine:
         sequence: List[Dict[str, Any]],
         virtual_groups: Any = None,
         speed: float = 1.0,
+        lead_in_ms: int = 0,
     ) -> List[PlaybackPlanEntry]:
         out: List[PlaybackPlanEntry] = []
         if not isinstance(sequence, list):
@@ -846,6 +982,11 @@ class DMXRenderEngine:
 
         speed_factor = max(0.01, float(speed or 1.0))
         cursor_ms = 0
+        # The dead time before a cue's fade is the previous cue's hold; before
+        # the first one it is the sequence lead-in.
+        pending_hold_ms = max(0, int(round(max(0, int(lead_in_ms or 0)) / speed_factor)))
+        pending_hold_index = -1
+        pending_hold_name = ""
         i = 0
         while i < len(sequence):
             step = sequence[i]
@@ -864,19 +1005,27 @@ class DMXRenderEngine:
                     group_end += 1
                 loop_count = max(1, int(step.get("loopCount", 1) or 1))
                 indices = [j for _ in range(loop_count) for j in range(group_start, group_end + 1)]
+                # The very last occurrence is the one that leaves the group.
+                exit_position = len(indices) - 1
                 i = group_end + 1
             else:
                 indices = [i]
+                exit_position = -1
                 i += 1
 
-            for cue_index in indices:
+            for position, cue_index in enumerate(indices):
                 cue_step = sequence[cue_index]
                 cue_payload, device_order = self._build_cue_payload_from_step(cue_step, virtual_groups)
-                schedule = self._compute_schedule(cue_payload.get("duration", "0"), device_order)
+                schedule = self._compute_schedule(cue_payload.get("fade", "0"), device_order)
                 fade_ms_raw = int(max((end for _, end in schedule.values()), default=0))
                 fade_ms = max(0, int(round(fade_ms_raw / speed_factor)))
-                sleep_ms_raw = max(0, int(cue_step.get("sleep", 0) or 0))
-                sleep_ms = max(0, int(round(sleep_ms_raw / speed_factor)))
+                hold_raw = self.step_hold_ms(cue_step)
+                if position == exit_position:
+                    exit_hold = self.step_exit_hold_ms(cue_step)
+                    if exit_hold is not None:
+                        hold_raw = exit_hold
+                hold_ms = max(0, int(round(hold_raw / speed_factor)))
+                sleep_ms = pending_hold_ms
                 cue_name = str(cue_step.get("name") or f"Cue {cue_index + 1}")
                 entry = PlaybackPlanEntry(
                     plan_index=len(out),
@@ -890,9 +1039,36 @@ class DMXRenderEngine:
                     wait_end_at_ms=cursor_ms + sleep_ms,
                     fade_start_at_ms=cursor_ms + sleep_ms,
                     fade_end_at_ms=cursor_ms + sleep_ms + fade_ms,
+                    hold_ms=hold_ms,
+                    hold_cue_index=pending_hold_index,
+                    hold_cue_name=pending_hold_name,
                 )
                 out.append(entry)
                 cursor_ms = entry.fade_end_at_ms
+                pending_hold_ms = hold_ms
+                pending_hold_index = cue_index
+                pending_hold_name = cue_name
+
+        # The last cue holds too: without this the sequence would end on its
+        # fade, cutting the look short and shortening every loop pass.
+        if out and pending_hold_ms > 0:
+            out.append(PlaybackPlanEntry(
+                plan_index=len(out),
+                cue_index=pending_hold_index,
+                cue_name=pending_hold_name,
+                cue_payload={},
+                device_order=[],
+                fade_ms=0,
+                sleep_ms=pending_hold_ms,
+                wait_start_at_ms=cursor_ms,
+                wait_end_at_ms=cursor_ms + pending_hold_ms,
+                fade_start_at_ms=cursor_ms + pending_hold_ms,
+                fade_end_at_ms=cursor_ms + pending_hold_ms,
+                hold_ms=0,
+                hold_cue_index=pending_hold_index,
+                hold_cue_name=pending_hold_name,
+                hold_only=True,
+            ))
         return out
 
     @staticmethod
@@ -2528,7 +2704,13 @@ class DMXRenderEngine:
         duration_override: Optional[Any] = None,
     ):
         devices = cue_data.get("devices", {})
-        duration_field = duration_override if duration_override is not None else cue_data.get("duration", "0")
+        # "fade" is the v2 name; "duration" is what older clients send.
+        if duration_override is not None:
+            duration_field = duration_override
+        elif cue_data.get("fade") is not None:
+            duration_field = cue_data.get("fade")
+        else:
+            duration_field = cue_data.get("duration", "0")
         effect_groups_raw = cue_data.get("effect_groups") or cue_data.get("effectGroups") or []
         now = float(start_time) if start_time is not None else time.perf_counter()
 
@@ -2791,6 +2973,7 @@ class DMXRenderEngine:
         paused: bool = False,
         loop: bool = False,
         loop_count: Any = None,
+        lead_in_ms: int = 0,
     ):
         mode_key = str(mode or "classic").strip().lower()
         if mode_key == "timeline":
@@ -2799,10 +2982,17 @@ class DMXRenderEngine:
         if not isinstance(sequence, list):
             raise ValueError("sequence must be a list")
 
+        # A sequence still written in the old model is converted here, so an
+        # untouched show file keeps its exact timing.
+        sequence, migrated_lead_in_ms = self.migrate_sequence_time_model(sequence)
+        lead_in_ms = max(0, int(lead_in_ms or 0)) or migrated_lead_in_ms
+
         cleaned = [step for step in sequence if isinstance(step, dict)]
         resolved_start_index = self._resolve_playback_start_index(cleaned, int(start_index or 0)) if cleaned else 0
         run_speed = self._normalize_playback_speed(speed if speed is not None else self._playback_speed)
-        full_plan = self._expand_playback_sequence(cleaned, virtual_groups=virtual_groups, speed=run_speed)
+        full_plan = self._expand_playback_sequence(
+            cleaned, virtual_groups=virtual_groups, speed=run_speed, lead_in_ms=lead_in_ms,
+        )
         run_start = 0
         if full_plan:
             for idx, entry in enumerate(full_plan):
@@ -3110,6 +3300,12 @@ class DMXRenderEngine:
                 wait_ms = max(0, int(entry.sleep_ms))
                 skipped_before_start = False
                 skipped_fade = False
+                # A wait that belongs to a cue is that cue HOLDING, and the
+                # operator must see it as such; only the lead-in is a plain wait.
+                holds_previous = int(getattr(entry, "hold_cue_index", -1)) >= 0
+                wait_phase = "holding" if holds_previous else "waiting"
+                wait_cue_index = int(entry.hold_cue_index) if holds_previous else cue_index
+                wait_cue_name = str(entry.hold_cue_name) if holds_previous else entry.cue_name
 
                 cue_token += 1
                 with self._lock:
@@ -3120,10 +3316,10 @@ class DMXRenderEngine:
                         self._update_playback_state_locked(
                             active=True,
                             paused=False,
-                            phase="waiting",
-                            cue_index=cue_index,
+                            phase=wait_phase,
+                            cue_index=wait_cue_index,
                             plan_index=absolute_plan_index,
-                            cue_name=entry.cue_name,
+                            cue_name=wait_cue_name,
                             cue_token=cue_token,
                             phase_remaining_ms=wait_ms,
                             sequence_length=sequence_length,
@@ -3188,10 +3384,10 @@ class DMXRenderEngine:
                             self._update_playback_state_locked(
                                 active=True,
                                 paused=False,
-                                phase="waiting",
-                                cue_index=cue_index,
+                                phase=wait_phase,
+                                cue_index=wait_cue_index,
                                 plan_index=absolute_plan_index,
-                                cue_name=entry.cue_name,
+                                cue_name=wait_cue_name,
                                 cue_token=cue_token,
                                 phase_remaining_ms=max(0, int(round((adjusted_target - now) * 1000.0))),
                                 sequence_length=sequence_length,
@@ -3210,6 +3406,10 @@ class DMXRenderEngine:
                     return
 
                 if skipped_before_start:
+                    continue
+
+                # Trailing hold: nothing left to fade, the look just stays.
+                if bool(getattr(entry, "hold_only", False)):
                     continue
 
                 with self._lock:

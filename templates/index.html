@@ -672,7 +672,7 @@
           <tr>
             <th data-i18n="cues.table.index">#</th>
             <th data-i18n="cues.table.name">Name</th>
-            <th data-i18n="cues.table.sleep">Sleep</th>
+            <th data-i18n="cues.table.fade">Fade</th>
             <th data-i18n="cues.table.duration">Duration</th>
             <th data-i18n="cues.table.devices">Devices</th>
           </tr>
@@ -729,14 +729,16 @@
         <input id="cue-prop-name" data-i18n="cues.placeholderName" data-i18n-attr="placeholder" placeholder="Cue name"/>
       </label>
 
+      <!-- A cue lasts fade + duration: it fades toward its values, then holds
+           them. That is exactly one timeline block. -->
       <label>
-        <span data-i18n="cues.propSleep">Sleep (ms)</span>
-        <input id="cue-prop-sleep" data-i18n="cues.placeholderSleep" data-i18n-attr="placeholder" placeholder="ex: 0 or 500" />
+        <span data-i18n="cues.propFade">Fade (ms / patterns)</span>
+        <input id="cue-prop-fade" data-i18n="cues.placeholderFade" data-i18n-attr="placeholder" placeholder="ex: 500 or 100 >< 1000" />
       </label>
 
       <label>
-        <span data-i18n="cues.propDuration">Duration / Fade (ms / patterns)</span>
-        <input id="cue-prop-duration" data-i18n="cues.placeholderDuration" data-i18n-attr="placeholder" placeholder="ex: 500 or 100 >< 1000" />
+        <span data-i18n="cues.propDuration">Duration (ms)</span>
+        <input id="cue-prop-duration" data-i18n="cues.placeholderDuration" data-i18n-attr="placeholder" placeholder="ex: 0 or 2000" />
       </label>
 
       <button id="cue-prop-apply" data-i18n="cues.propApply">Apply</button>

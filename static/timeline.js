@@ -219,62 +219,93 @@
     };
   }
 
+  function stepFade(step) {
+    return typeof window.stepFadeField === "function" ? window.stepFadeField(step) : (step?.fade ?? "0");
+  }
+
+  function stepHold(step) {
+    return typeof window.stepHoldMs === "function" ? window.stepHoldMs(step) : 0;
+  }
+
+  // A block IS the cue: it lasts fade + duration and its fade-in is the fade.
+  // Those two come from the step and are re-derived every time, so editing in
+  // one view can never leave the other describing something else. The timeline
+  // owns only what the classic list has no word for: position and lane.
   function ensureStepTimeline(step, fallbackStartMs = 0) {
     if (!step || typeof step !== "object") return null;
     if (!step.timeline || typeof step.timeline !== "object") {
       step.timeline = {};
     }
     const meta = step.timeline;
-    const durationMeta = parseDurationMeta(step.duration);
+    const fadeMeta = parseDurationMeta(stepFade(step));
+    const holdMs = stepHold(step);
+
     meta.lane = Math.max(0, parseInt(meta.lane, 10) || 0);
     meta.start_ms = Math.max(0, parseInt(meta.start_ms, 10) || Math.max(0, fallbackStartMs));
-    meta.length_ms = Math.max(MIN_BLOCK_MS, parseInt(meta.length_ms, 10) || Math.max(MIN_BLOCK_MS, durationMeta.total_ms || 500));
-    meta.fade_start_ms = clamp(parseInt(meta.fade_start_ms, 10) || 0, 0, meta.length_ms);
-    const fallbackFadeEnd = durationMeta.total_ms > 0 ? durationMeta.total_ms : Math.min(meta.length_ms, Math.max(0, durationMeta.base_ms || 0));
-    meta.fade_end_ms = clamp(parseInt(meta.fade_end_ms, 10) || fallbackFadeEnd || 0, meta.fade_start_ms, meta.length_ms);
-    meta.fade_operator = OPERATOR_OPTIONS.includes(String(meta.fade_operator || "").trim()) ? String(meta.fade_operator || "").trim() : durationMeta.operator;
-    // Premiere-style edge fades (durations from each edge). Migrate from the
-    // legacy fade_start/fade_end ramp the first time we see this block.
-    let fadeIn = parseInt(meta.fade_in_ms, 10);
-    let fadeOut = parseInt(meta.fade_out_ms, 10);
-    if (!Number.isFinite(fadeIn)) fadeIn = Math.max(0, meta.fade_end_ms - meta.fade_start_ms);
-    if (!Number.isFinite(fadeOut)) fadeOut = 0;
-    meta.fade_in_ms = clamp(fadeIn, 0, meta.length_ms);
-    meta.fade_out_ms = clamp(fadeOut, 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
+    meta.length_ms = Math.max(MIN_BLOCK_MS, fadeMeta.total_ms + holdMs);
+    meta.fade_in_ms = clamp(fadeMeta.total_ms, 0, meta.length_ms);
+    meta.fade_operator = fadeMeta.operator;
+    // The out fade has no equivalent in the classic list (there, the next cue's
+    // crossfade takes the look away), so it stays a timeline-only refinement.
+    meta.fade_out_ms = clamp(parseInt(meta.fade_out_ms, 10) || 0, 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
+    // Legacy single-ramp fields, kept coherent for the engine's older path.
+    meta.fade_start_ms = 0;
+    meta.fade_end_ms = meta.fade_in_ms;
     return meta;
   }
 
+  // Editing a clip writes back into the step, which is where time lives.
+  function applyBlockLengthToStep(step, lengthMs) {
+    if (!step || typeof step !== "object") return;
+    const fadeMeta = parseDurationMeta(stepFade(step));
+    step.duration = Math.max(0, Math.round(lengthMs - fadeMeta.total_ms));
+  }
+
+  function applyBlockOperatorToStep(step, operator) {
+    if (!step || typeof step !== "object") return;
+    const fadeMeta = parseDurationMeta(stepFade(step));
+    const op = OPERATOR_OPTIONS.includes(String(operator || "").trim()) ? String(operator).trim() : "";
+    // Dropping the spread keeps the same total fade for everybody, so the clip
+    // does not change length under the operator's feet.
+    step.fade = op
+      ? `${fadeMeta.base_ms} ${op} ${fadeMeta.spread_ms}`
+      : String(fadeMeta.base_ms + fadeMeta.spread_ms);
+  }
+
+  function applyBlockFadeToStep(step, fadeInMs) {
+    if (!step || typeof step !== "object") return;
+    const fadeMeta = parseDurationMeta(stepFade(step));
+    const base = Math.max(0, Math.round(fadeInMs - fadeMeta.spread_ms));
+    // Keep the spread and its operator: only the fade time itself is dragged.
+    step.fade = fadeMeta.operator
+      ? `${base} ${fadeMeta.operator} ${fadeMeta.spread_ms}`
+      : String(base);
+  }
+
   function syncStepTimelineBounds(step) {
-    const meta = ensureStepTimeline(step);
-    if (!meta) return;
-    meta.start_ms = Math.max(0, parseInt(meta.start_ms, 10) || 0);
-    meta.length_ms = Math.max(MIN_BLOCK_MS, parseInt(meta.length_ms, 10) || MIN_BLOCK_MS);
-    meta.fade_start_ms = clamp(parseInt(meta.fade_start_ms, 10) || 0, 0, meta.length_ms);
-    meta.fade_end_ms = clamp(parseInt(meta.fade_end_ms, 10) || 0, meta.fade_start_ms, meta.length_ms);
-    meta.fade_in_ms = clamp(parseInt(meta.fade_in_ms, 10) || 0, 0, meta.length_ms);
-    meta.fade_out_ms = clamp(parseInt(meta.fade_out_ms, 10) || 0, 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
+    // Everything but the position is derived, so re-deriving is the whole job.
+    ensureStepTimeline(step);
   }
 
   // Continuous Timeline -> CueList sync: keep each step's classic sleep/duration
   // consistent with its timeline block so both views (and classic playback)
   // stay in agreement. Ordering is by block start time.
+  // Timeline -> cue list. There is almost nothing left to translate: fade and
+  // duration already live in the step, and the block is derived from them. Only
+  // the dead time before the first block has no step to live in.
+  //
+  // What the classic list still cannot express -- overlapping cues, holes
+  // between them -- is not silently flattened into a wait any more; it is
+  // reported by cueListTimeIssues() and the user is asked what to do.
   function syncSequenceFromTimeline() {
     const seq = Array.isArray(cuesObj?.sequence) ? cuesObj.sequence : [];
-    const order = seq
-      .map((step, idx) => ({ idx, meta: ensureStepTimeline(step) }))
-      .filter((e) => e.meta)
-      .sort((a, b) => (a.meta.start_ms - b.meta.start_ms) || (a.idx - b.idx));
-    let prevEnd = 0;
-    for (const { idx, meta } of order) {
-      const step = seq[idx];
-      if (!step) continue;
-      const sleep = Math.max(0, Math.round(meta.start_ms - prevEnd));
-      step.sleep = sleep;
-      // Encode fade timing into the classic duration string.
-      const op = meta.fade_operator || "";
-      step.duration = op ? `${meta.fade_in_ms} ${op} ${meta.fade_out_ms}` : String(meta.length_ms);
-      prevEnd = meta.start_ms + meta.length_ms;
+    let firstStart = null;
+    for (const step of seq) {
+      const meta = ensureStepTimeline(step);
+      if (!meta) continue;
+      if (firstStart === null || meta.start_ms < firstStart) firstStart = meta.start_ms;
     }
+    if (cuesObj) cuesObj.lead_in_ms = Math.max(0, Math.round(firstStart || 0));
   }
 
   function rebuildLinearTimelineFromSequence() {
@@ -303,12 +334,9 @@
         for (let blockIndex = groupStart; blockIndex <= groupEnd; blockIndex += 1) {
           const groupStep = seq[blockIndex];
           const hasTimeline = groupStep.timeline && typeof groupStep.timeline === "object" && Number.isFinite(Number(groupStep.timeline.start_ms));
-          const sleepMs = Math.max(0, parseInt(groupStep?.sleep, 10) || 0);
-          const durationMeta = parseDurationMeta(groupStep?.duration);
-          const meta = ensureStepTimeline(groupStep, localCursorMs + sleepMs);
+          const meta = ensureStepTimeline(groupStep, localCursorMs);
           if (!hasTimeline) {
-            meta.start_ms = Math.max(0, localCursorMs + sleepMs);
-            meta.length_ms = Math.max(MIN_BLOCK_MS, parseInt(meta.length_ms, 10) || Math.max(MIN_BLOCK_MS, durationMeta.total_ms || 500));
+            meta.start_ms = Math.max(0, localCursorMs);
           }
           syncStepTimelineBounds(groupStep);
           groupMinStartMs = Math.min(groupMinStartMs, meta.start_ms);
@@ -327,12 +355,11 @@
       }
 
       const hasTimeline = step.timeline && typeof step.timeline === "object" && Number.isFinite(Number(step.timeline.start_ms));
-      const sleepMs = Math.max(0, parseInt(step.sleep, 10) || 0);
-      const durationMeta = parseDurationMeta(step.duration);
-      const meta = ensureStepTimeline(step, cursorMs + sleepMs);
+      const meta = ensureStepTimeline(step, cursorMs);
       if (!hasTimeline) {
-        meta.start_ms = Math.max(0, cursorMs + sleepMs);
-        meta.length_ms = Math.max(MIN_BLOCK_MS, parseInt(meta.length_ms, 10) || Math.max(MIN_BLOCK_MS, durationMeta.total_ms || 500));
+        // Never placed by hand: lay the cues back to back, which is exactly
+        // what the classic list plays.
+        meta.start_ms = Math.max(0, cursorMs);
       }
       syncStepTimelineBounds(step);
       cursorMs = Math.max(cursorMs, meta.start_ms + meta.length_ms);
@@ -1109,9 +1136,12 @@
       btn.textContent = operator || "Cut";
       btn.addEventListener("click", () => {
         const step = cuesObj.sequence[occurrence.source_index];
-        const meta = ensureStepTimeline(step);
-        meta.fade_operator = operator;
+        // The spread type lives in the step's fade, like the fade time itself:
+        // written on the block it would vanish on the next derive.
+        applyBlockOperatorToStep(step, operator);
+        syncStepTimelineBounds(step);
         hideTimelineContextMenu();
+        renderTimelineEditor();
         if (typeof window.renderCueTable === "function") window.renderCueTable();
       });
       menu.appendChild(btn);
@@ -1175,15 +1205,15 @@
       meta.start_ms = Math.max(0, dragState.start_ms + deltaMs);
       meta.lane = Math.max(0, dragState.lane + deltaLane);
     } else if (dragState.mode === "resize") {
-      meta.length_ms = Math.max(MIN_BLOCK_MS, dragState.length_ms + deltaMs);
+      applyBlockLengthToStep(step, Math.max(MIN_BLOCK_MS, dragState.length_ms + deltaMs));
     } else if (dragState.mode === "resize-left") {
       // Drag the left edge: move start, keep the right edge anchored.
       const maxDelta = dragState.length_ms - MIN_BLOCK_MS;
       const d = Math.min(maxDelta, Math.max(-dragState.start_ms, deltaMs));
       meta.start_ms = Math.max(0, dragState.start_ms + d);
-      meta.length_ms = Math.max(MIN_BLOCK_MS, dragState.length_ms - d);
+      applyBlockLengthToStep(step, Math.max(MIN_BLOCK_MS, dragState.length_ms - d));
     } else if (dragState.mode === "fade-in") {
-      meta.fade_in_ms = clamp(dragState.fade_in_ms + deltaMs, 0, meta.length_ms - meta.fade_out_ms);
+      applyBlockFadeToStep(step, clamp(dragState.fade_in_ms + deltaMs, 0, meta.length_ms - meta.fade_out_ms));
     } else if (dragState.mode === "fade-out") {
       // Out handle sits at (length - fade_out); dragging it left grows fade-out.
       meta.fade_out_ms = clamp(dragState.fade_out_ms - deltaMs, 0, meta.length_ms - meta.fade_in_ms);
@@ -1262,13 +1292,15 @@
       const nameEl = document.getElementById("tlp-name");
       if (nameEl) step.name = nameEl.value;
       meta.start_ms = Math.max(0, num("tlp-start", meta.start_ms));
-      meta.length_ms = Math.max(MIN_BLOCK_MS, num("tlp-length", meta.length_ms));
       meta.lane = Math.max(0, num("tlp-lane", meta.lane));
-      meta.fade_in_ms = clamp(num("tlp-fadein", meta.fade_in_ms), 0, meta.length_ms);
-      meta.fade_out_ms = clamp(num("tlp-fadeout", meta.fade_out_ms), 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
-      const opv = document.getElementById("tlp-op")?.value ?? "";
-      meta.fade_operator = OPERATOR_OPTIONS.includes(opv) ? opv : "";
+      // Fade, spread type and length belong to the STEP -- writing them into
+      // the block would be undone the next time it is derived. Order matters:
+      // the length is measured from the fade.
+      applyBlockOperatorToStep(step, document.getElementById("tlp-op")?.value ?? "");
+      applyBlockFadeToStep(step, Math.max(0, num("tlp-fadein", meta.fade_in_ms)));
+      applyBlockLengthToStep(step, Math.max(MIN_BLOCK_MS, num("tlp-length", meta.length_ms)));
       syncStepTimelineBounds(step);
+      meta.fade_out_ms = clamp(num("tlp-fadeout", meta.fade_out_ms), 0, Math.max(0, meta.length_ms - meta.fade_in_ms));
       resolveTimelineLaneConflicts(idx);
       syncSequenceFromTimeline();
       renderTimelineEditor();

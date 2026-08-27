@@ -1283,6 +1283,16 @@ async function handleLoadCueClick() {
   }
 
   sel.value = filename;
+  // Opening goes through the timing check: a list authored on the timeline may
+  // hold passages the cue-list mode cannot play (openCueListChecked asks).
+  if (typeof window.openCueListChecked === "function") {
+    const opened = await window.openCueListChecked(filename);
+    if (!opened) {
+      // Cancelled: leave the selector on whatever is actually loaded.
+      sel.value = currentCueFilename || "";
+    }
+    return;
+  }
   loadCueFile(filename);
 }
 

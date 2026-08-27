@@ -3164,6 +3164,32 @@ input[type="range"].vertical.tilt-slider {
   padding: 6px 14px;
 }
 
+/* Cue list / Timeline compatibility dialog: a short explanation, the list of
+   what was detected, and the third way out next to OK / Cancel. */
+.dmx-modal-text {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.dmx-modal-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dmx-modal-list li {
+  margin: 2px 0;
+}
+
+.dmx-modal-actions-inline {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .dmx-modal.dmx-modal-warning {
   border-color: rgba(245, 158, 11, 0.55);
   box-shadow: 0 20px 42px rgba(120, 53, 15, 0.34);

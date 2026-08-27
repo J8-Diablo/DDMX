@@ -55,21 +55,34 @@
     return match ? Math.max(0, parseFloat(match[0])) : 0;
   }
 
-  // Pads always run the file as a cue list, so the estimate is the sequential
-  // one: the sum of every step's sleep + fade (both can be spread patterns like
-  // "500 > 5000", hence the leading number only — it is a rough figure).
+  // A cue lasts fade + duration, so the estimate is their sum over the list
+  // (a fade can be a spread pattern like "500 > 5000": the leading number only,
+  // it is a rough figure).
+  //
+  // The pads also learn here whether the list can be played as a cue list at
+  // all: one with overlapping cues or holes is fired in TIMELINE mode, without
+  // asking, because that is the only mode that renders it as authored.
   function analyzeCueFile(data) {
     const sequence = Array.isArray(data?.sequence) ? data.sequence : [];
     let approx = 0;
     for (const step of sequence) {
       if (!step || typeof step !== "object") continue;
-      approx += firstNumber(step.sleep) + firstNumber(step.duration);
+      const fade = typeof window.stepFadeField === "function" ? window.stepFadeField(step) : step.fade;
+      const hold = typeof window.stepHoldMs === "function" ? window.stepHoldMs(step) : 0;
+      approx += firstNumber(fade) + hold;
+    }
+    let timing = null;
+    try {
+      if (typeof window.analyzeCueListTiming === "function") timing = window.analyzeCueListTiming(data);
+    } catch (err) {
+      console.warn("[RAPIDFIRE] analyse du temps impossible:", err);
     }
     return {
       steps: sequence.length,
       durationMs: approx,
       loop: Boolean(data?.loop),
       loopCount: Number.isFinite(Number(data?.loop_count)) ? Number(data.loop_count) : null,
+      timelineOnly: Boolean(timing && !timing.compatible),
       error: null,
     };
   }
@@ -156,18 +169,22 @@
         return;
       }
       if (typeof startEffectRenderLoop === "function") startEffectRenderLoop();
-      // Pads always run as a cue list, from step 1 — never through the timeline
-      // pipeline, whatever the file carries and whatever view is active.
+      // Pads run as a cue list, from step 1, whatever view is active — EXCEPT
+      // when the list holds passages a cue list cannot play (cues on top of
+      // each other, or holes): those are fired in timeline mode, which is the
+      // only one that renders them as authored. No dialog: a pad is one click.
       // Loop: the panel toggle repeats forever; otherwise the cue list's own
       // loop / loop_count applies.
       const forced = isLoopEnabled();
+      const asTimeline = Boolean(meta.timelineOnly);
       await runBackendSequence(sequence, 0, {
-        timeline: false,
+        timeline: asTimeline,
         loop: forced || Boolean(meta.loop),
         loopCount: forced ? 0 : (meta.loop ? (meta.loopCount || 0) : 0),
       });
       const suffix = (forced || meta.loop) ? ` (${tr("cues.rapidFireLoop", "loop")})` : "";
-      toast(`${tr("cues.rapidFireFired", "Fired")} ${displayName(file)}${suffix}`, "info");
+      const mode = asTimeline ? ` · ${tr("cues.rapidFireAsTimeline", "timeline")}` : "";
+      toast(`${tr("cues.rapidFireFired", "Fired")} ${displayName(file)}${suffix}${mode}`, "info");
     } catch (err) {
       console.error("[RAPIDFIRE]", err);
       toast(tr("cues.rapidFireFailed", "Rapid Fire launch failed"), "error");

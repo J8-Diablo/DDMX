@@ -600,6 +600,68 @@ window.ui = (() => {
     });
   }
 
+  // A cue list whose blocks overlap or leave holes cannot be played as a cue
+  // list: three ways out, and the operator picks. Returns "classic",
+  // "timeline", or null when cancelled.
+  async function cueTimeModelModal(config) {
+    const state = { choice: "classic" };
+    const name = String(config?.name || "");
+    const lines = Array.isArray(config?.lines) ? config.lines : [];
+    const tr = (key, fallback) => (typeof window.t === "function" ? window.t(key, fallback) : fallback);
+
+    return await openGuiModal({
+      title: tr("cues.timeIssuesTitle", "This cue list does not fit the Cue list mode"),
+      confirmText: tr("cues.timeIssuesOpenClassic", "Open as Cue list"),
+      cancelText: tr("common.cancel", "Cancel"),
+      showCancel: true,
+      modalClass: "dmx-modal-warning",
+      buildBody: (form) => {
+        const intro = document.createElement("p");
+        intro.className = "dmx-modal-text";
+        intro.textContent = tr(
+          "cues.timeIssuesIntro",
+          "Some passages were detected as incompatible and playback may not behave as authored.",
+        ) + (name ? ` (${name})` : "");
+        form.appendChild(intro);
+
+        if (lines.length) {
+          const list = document.createElement("ul");
+          list.className = "dmx-modal-list";
+          for (const line of lines) {
+            const li = document.createElement("li");
+            li.textContent = line;
+            list.appendChild(li);
+          }
+          form.appendChild(list);
+        }
+
+        const risk = document.createElement("p");
+        risk.className = "dmx-modal-text muted";
+        risk.textContent = tr(
+          "cues.timeIssuesRisk",
+          "A cue list plays one cue at a time with no gaps: overlaps get serialised and holes keep the previous look instead of going dark.",
+        );
+        form.appendChild(risk);
+
+        // The third way out: same dialog, other mode.
+        const row = document.createElement("div");
+        row.className = "dmx-modal-actions-inline";
+        const timelineBtn = document.createElement("button");
+        timelineBtn.type = "button";
+        timelineBtn.className = "secondary";
+        timelineBtn.textContent = tr("cues.timeIssuesOpenTimeline", "Open in Timeline mode");
+        timelineBtn.addEventListener("click", () => {
+          state.choice = "timeline";
+          if (typeof form.requestSubmit === "function") form.requestSubmit();
+          else form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        });
+        row.appendChild(timelineBtn);
+        form.appendChild(row);
+      },
+      onSubmit: () => state.choice,
+    });
+  }
+
   async function operationStatusModal(config) {
     const status = String(config?.status || "success").toLowerCase();
     const modalClass = status === "error" ? "dmx-modal-error" : "dmx-modal-success";
@@ -955,6 +1017,7 @@ window.ui = (() => {
     bulkAddDeviceModal,
     fixtureChangeDecisionModal,
     fixtureRemapModal,
+    cueTimeModelModal,
     operationStatusModal,
     htmlModal
   };

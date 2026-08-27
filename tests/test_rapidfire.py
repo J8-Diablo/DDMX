@@ -118,15 +118,23 @@ def test_backend_sequence_accepts_a_forced_pipeline():
     assert "if (useTimeline)" in body
 
 
-def test_pads_always_run_as_a_cue_list():
-    """Whatever the file carries and whatever view is active."""
+def test_pads_run_as_a_cue_list_unless_the_list_cannot_be_one():
+    """A pad plays the file as a cue list, from step 1, whatever view is active.
+
+    The single exception is a list the cue-list mode cannot render at all --
+    cues on top of each other, or holes between them. Those are fired in
+    timeline mode without asking, because a pad is meant to be one click.
+    """
     src = _read("static/rapidfire.js")
     body = src[src.index("async function firePad"):src.index("async function togglePad")]
     assert "runBackendSequence(sequence, 0, {" in body
-    assert "timeline: false" in body
-    # The old "fire timeline-authored files through the timeline" branch is gone.
+    assert "timeline: asTimeline" in body
+    assert "meta.timelineOnly" in body
+    # The old "fire every timeline-authored file through the timeline" branch,
+    # which keyed off the mere presence of timeline data, stays gone.
     assert "hasTimeline" not in src
-    assert "rapidFireTimelineBadge" not in src
+    # The decision comes from the timing analysis, not from a stored flag.
+    assert "window.analyzeCueListTiming" in src
 
 
 def test_loop_option_is_wired_end_to_end():

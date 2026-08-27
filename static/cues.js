@@ -11,7 +11,7 @@ window.identMode = window.identMode || false;
 let playbackCueIndex = -1;        // Current cue index during playback (-1 = none)
 let playbackPaused = false;       // Is playback paused?
 let liveWaitAdjust = 0;           // Live adjustment to wait time (ms)
-let playbackPhase = "idle";       // "idle" | "waiting" | "fading"
+let playbackPhase = "idle";       // "idle" | "waiting" | "holding" | "fading"
 let playbackWaitRemaining = 0;    // Remaining phase time (ms)
 let playbackPhaseEndHostMs = 0;
 let playbackCueName = "";
@@ -188,7 +188,7 @@ function ensurePlaybackUiTimer() {
   if (playbackUiTimer != null) return;
   playbackUiTimer = window.setInterval(() => {
     if (!playbackActive || playbackPaused || playbackPhaseEndHostMs <= 0) return;
-    if (playbackPhase !== "waiting" && playbackPhase !== "fading") return;
+    if (playbackPhase !== "waiting" && playbackPhase !== "holding" && playbackPhase !== "fading") return;
     const nextRemaining = Math.max(0, playbackPhaseEndHostMs - Date.now());
     if (Math.abs(nextRemaining - playbackWaitRemaining) >= 50) {
       playbackWaitRemaining = nextRemaining;
@@ -309,6 +309,291 @@ async function runSyncVideoCue(step) {
     await window.syncVideo.runCueAction(step);
   }
 }
+
+///////////////////////
+// MODÈLE DE TEMPS (v2)
+///////////////////////
+//
+// Une cue occupe `fade` puis `duration` : elle fond vers ses valeurs pendant
+// `fade` (opérateur d'étalement compris), puis les maintient pendant
+// `duration`. C'est exactement un bloc de timeline de fade + duration, dont le
+// fondu d'entrée est `fade` — les deux vues décrivent enfin la même chose.
+//
+// L'ancien modèle disait « attendre `sleep`, puis fondre pendant `duration` » :
+// le temps d'affichage d'un look vivait dans le `sleep` de la step SUIVANTE,
+// qu'aucun bloc ne peut décrire. Les fichiers v1 sont convertis au chargement,
+// et la conversion est exacte (vérifiée sur les shows existants).
+
+const TIME_MODEL = 2;
+
+function stepFadeField(step) {
+  if (!step || typeof step !== "object") return "0";
+  return step.fade != null ? step.fade : (step.duration != null ? step.duration : "0");
+}
+
+function stepHoldMs(step) {
+  if (!step || typeof step !== "object") return 0;
+  // Une step sans `fade` est encore en v1 : son maintien vit ailleurs.
+  if (step.fade == null) return 0;
+  const n = parseInt(step.duration, 10);
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
+}
+
+// Maintien de la DERNIÈRE passe d'un loop group, quand il diffère des autres.
+function stepExitHoldMs(step) {
+  if (!step || typeof step !== "object" || step.exit_duration == null) return null;
+  const n = parseInt(step.exit_duration, 10);
+  return Number.isFinite(n) ? Math.max(0, n) : null;
+}
+
+function isTimeModelV2(sequence) {
+  if (!Array.isArray(sequence) || !sequence.length) return true;
+  return sequence.every((step) => !step || typeof step !== "object" || step.fade != null);
+}
+
+// Convertit une séquence v1 en v2. Renvoie { sequence, lead_in_ms }.
+// Le maintien d'une step est l'attente qui précédait ce qui joue ENSUITE — et
+// dans un loop group, ce qui suit sa dernière step est sa PREMIÈRE step, pas la
+// step d'après le groupe. Lire l'ordre du fichier raccourcirait chaque show
+// bouclé (mesuré : UltraMC perdait 350 ms et dérivait de 450 ms dès la cue 6).
+function migrateSequenceTimeModel(sequence) {
+  if (!Array.isArray(sequence)) return { sequence: [], lead_in_ms: 0 };
+  if (isTimeModelV2(sequence)) return { sequence, lead_in_ms: 0 };
+
+  const sleepOf = (step) => {
+    if (!step || typeof step !== "object") return 0;
+    const n = parseInt(step.sleep, 10);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  };
+
+  const steps = sequence.filter((step) => step && typeof step === "object");
+  const leadInMs = steps.length ? sleepOf(steps[0]) : 0;
+
+  const holds = [];
+  const exits = [];
+  steps.forEach((step, idx) => {
+    const group = step.loopGroup;
+    const next = idx + 1 < steps.length ? steps[idx + 1] : null;
+    if (group && (!next || next.loopGroup !== group)) {
+      let first = idx;
+      while (first - 1 >= 0 && steps[first - 1].loopGroup === group) first -= 1;
+      const loopBack = sleepOf(steps[first]);
+      const exitWait = sleepOf(next);
+      holds.push(loopBack);
+      exits.push(exitWait !== loopBack ? exitWait : null);
+    } else {
+      holds.push(sleepOf(next));
+      exits.push(null);
+    }
+  });
+
+  let cursor = 0;
+  const out = sequence.map((raw) => {
+    if (!raw || typeof raw !== "object") return raw;
+    const step = { ...raw };
+    if (step.fade == null) step.fade = raw.duration != null ? raw.duration : "0";
+    step.duration = holds[cursor] ?? 0;
+    const exitHold = exits[cursor];
+    if (exitHold == null) delete step.exit_duration;
+    else step.exit_duration = exitHold;
+    delete step.sleep;
+    cursor += 1;
+    return step;
+  });
+  return { sequence: out, lead_in_ms: leadInMs };
+}
+
+// Convertit un objet de cue list en place et le marque.
+function migrateCuesObjTimeModel(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  const migrated = migrateSequenceTimeModel(Array.isArray(obj.sequence) ? obj.sequence : []);
+  if (migrated.sequence !== obj.sequence) {
+    obj.sequence = migrated.sequence;
+    if (!Number.isFinite(parseInt(obj.lead_in_ms, 10))) obj.lead_in_ms = migrated.lead_in_ms;
+    console.info(`[CUES] liste convertie au modèle de temps v2 (lead-in ${migrated.lead_in_ms} ms)`);
+  }
+  obj.time_model = TIME_MODEL;
+  if (!Number.isFinite(parseInt(obj.lead_in_ms, 10))) obj.lead_in_ms = 0;
+  return obj;
+}
+
+window.stepFadeField = stepFadeField;
+window.stepHoldMs = stepHoldMs;
+window.stepExitHoldMs = stepExitHoldMs;
+window.migrateSequenceTimeModel = migrateSequenceTimeModel;
+window.migrateCuesObjTimeModel = migrateCuesObjTimeModel;
+
+///////////////////////
+// COMPATIBILITÉ CUE LIST / TIMELINE
+///////////////////////
+//
+// Une cue list joue ses cues l'une après l'autre : une seule à la fois, sans
+// trou. Une timeline peut placer deux cues en même temps et laisser du vide
+// entre elles. Les deux situations existent dans le fichier, mais la lecture
+// « cue list » ne peut pas les rendre :
+//   - recouvrement : elle sérialiserait ce qui devait être simultané ;
+//   - trou : le look précédent resterait affiché là où la timeline fait un noir.
+// On les détecte et on demande à l'utilisateur, au lieu de choisir pour lui.
+
+// Occurrences d'une cue list (loop groups déroulés), sans toucher à l'objet.
+function cueListOccurrences(obj) {
+  const seq = Array.isArray(obj?.sequence) ? obj.sequence : [];
+  const migrated = isTimeModelV2(seq) ? seq : migrateSequenceTimeModel(seq).sequence;
+  const steps = migrated.filter((step) => step && typeof step === "object");
+
+  const fadeTotal = (step) => {
+    const text = String(stepFadeField(step) ?? "0");
+    const parts = text.split(/<>|><|\|\||\||>|<|\?/);
+    const base = Math.max(0, parseInt(parts[0], 10) || 0);
+    const spread = parts.length > 1 ? Math.max(0, parseInt(parts[1], 10) || 0) : 0;
+    return base + spread;
+  };
+
+  // Positions: the timeline's when it placed them, back to back otherwise.
+  let cursor = Math.max(0, parseInt(obj?.lead_in_ms, 10) || 0);
+  const placed = steps.map((step) => {
+    const meta = step.timeline && typeof step.timeline === "object" ? step.timeline : null;
+    const stored = meta ? parseInt(meta.start_ms, 10) : NaN;
+    const start = Number.isFinite(stored) ? Math.max(0, stored) : cursor;
+    const length = Math.max(1, fadeTotal(step) + stepHoldMs(step));
+    const lane = meta ? Math.max(0, parseInt(meta.lane, 10) || 0) : 0;
+    cursor = start + length;
+    return { step, start, length, lane };
+  });
+
+  // Loop groups repeat, so they produce several occurrences of the same cue.
+  const out = [];
+  let index = 0;
+  while (index < placed.length) {
+    const group = placed[index].step.loopGroup;
+    if (!group) {
+      out.push({ index, iteration: 0, ...placed[index] });
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end + 1 < placed.length && placed[end + 1].step.loopGroup === group) end += 1;
+    const loopCount = Math.max(1, parseInt(placed[index].step.loopCount, 10) || 1);
+    const spanStart = Math.min(...placed.slice(index, end + 1).map((p) => p.start));
+    const spanEnd = Math.max(...placed.slice(index, end + 1).map((p) => p.start + p.length));
+    const span = Math.max(1, spanEnd - spanStart);
+    for (let iteration = 0; iteration < loopCount; iteration += 1) {
+      for (let i = index; i <= end; i += 1) {
+        out.push({ index: i, iteration, ...placed[i], start: placed[i].start + iteration * span });
+      }
+    }
+    index = end + 1;
+  }
+  return out.sort((a, b) => (a.start - b.start) || (a.index - b.index));
+}
+
+// { overlaps, gaps, order_mismatch, compatible }
+function analyzeCueListTiming(obj) {
+  const occurrences = cueListOccurrences(obj);
+  const overlaps = [];
+  const gaps = [];
+
+  for (let i = 0; i < occurrences.length; i += 1) {
+    for (let j = i + 1; j < occurrences.length; j += 1) {
+      const a = occurrences[i];
+      const b = occurrences[j];
+      if (b.start >= a.start + a.length) break;          // sorted: no later one can overlap
+      overlaps.push({
+        a: a.index, b: b.index,
+        from_ms: Math.max(a.start, b.start),
+        to_ms: Math.min(a.start + a.length, b.start + b.length),
+      });
+    }
+  }
+
+  // Holes in the coverage between the first and the last occurrence. The dead
+  // time BEFORE the first one is not a hole: lead_in_ms expresses it.
+  let covered = occurrences.length ? occurrences[0].start : 0;
+  for (const occ of occurrences) {
+    if (occ.start > covered) gaps.push({ from_ms: covered, to_ms: occ.start });
+    covered = Math.max(covered, occ.start + occ.length);
+  }
+
+  // The classic list plays file order; the timeline plays clock order.
+  let orderMismatch = false;
+  let previous = -1;
+  for (const occ of occurrences) {
+    if (occ.iteration !== 0) continue;
+    if (occ.index < previous) { orderMismatch = true; break; }
+    previous = occ.index;
+  }
+
+  return {
+    overlaps,
+    gaps,
+    order_mismatch: orderMismatch,
+    compatible: !overlaps.length && !gaps.length && !orderMismatch,
+    occurrences: occurrences.length,
+  };
+}
+
+function formatMsShort(ms) {
+  const value = Math.max(0, Math.round(Number(ms) || 0));
+  return value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(value % 1000 ? 1 : 0)}s`;
+}
+
+// Lignes lisibles décrivant ce qui a été détecté.
+function describeCueListIssues(issues) {
+  const lines = [];
+  const tr = (key, fallback) => (typeof t === "function" ? t(key, fallback) : fallback);
+  for (const ov of (issues?.overlaps || []).slice(0, 4)) {
+    lines.push(`${tr("cues.timeIssuesOverlap", "Cues qui se superposent")} : #${ov.a + 1} + #${ov.b + 1} (${formatMsShort(ov.from_ms)} → ${formatMsShort(ov.to_ms)})`);
+  }
+  if ((issues?.overlaps || []).length > 4) {
+    lines.push(`… +${issues.overlaps.length - 4}`);
+  }
+  for (const gap of (issues?.gaps || []).slice(0, 4)) {
+    lines.push(`${tr("cues.timeIssuesGap", "Passage sans cue")} : ${formatMsShort(gap.from_ms)} → ${formatMsShort(gap.to_ms)}`);
+  }
+  if ((issues?.gaps || []).length > 4) {
+    lines.push(`… +${issues.gaps.length - 4}`);
+  }
+  if (issues?.order_mismatch) {
+    lines.push(tr("cues.timeIssuesOrder", "L'ordre des blocs ne suit pas l'ordre de la liste"));
+  }
+  return lines;
+}
+
+// Ouvre une cue list en demandant d'abord si un passage n'est pas jouable en
+// mode « cue list ». Renvoie le mode réellement ouvert, ou null si annulé.
+async function openCueListChecked(filename) {
+  if (!filename) return null;
+  let data = null;
+  try {
+    const res = await fetch(`/api/cues/${encodeURIComponent(filename)}`);
+    data = await res.json();
+  } catch (e) {
+    console.warn("[CUES] lecture impossible pour l'analyse:", e);
+  }
+
+  const classicMode = !(typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode());
+  const issues = data ? analyzeCueListTiming(data) : null;
+
+  if (classicMode && issues && !issues.compatible && window.ui?.cueTimeModelModal) {
+    const choice = await window.ui.cueTimeModelModal({
+      name: filename,
+      lines: describeCueListIssues(issues),
+    });
+    if (!choice) return null;
+    if (choice === "timeline" && typeof window.setCueEditorSettings === "function") {
+      window.setCueEditorSettings({ view_mode: "timeline" });
+    }
+    await loadCueFile(filename);
+    return choice;
+  }
+
+  await loadCueFile(filename);
+  return classicMode ? "classic" : "timeline";
+}
+
+window.analyzeCueListTiming = analyzeCueListTiming;
+window.describeCueListIssues = describeCueListIssues;
+window.openCueListChecked = openCueListChecked;
 
 ///////////////////////
 // FICHIERS DE CUE
@@ -441,6 +726,10 @@ async function loadCueFile(filename) {
 
     const sel = $id("cue-file-select");
     if (sel && [...sel.options].some((o) => o.value === filename)) sel.value = filename;
+
+    // An untouched v1 show is converted here, exactly: the timing it plays is
+    // the timing it played before.
+    migrateCuesObjTimeModel(cuesObj);
 
     rebuildVirtualGroupsFromCues();
     // When a project is active the rig is owned by the project, so switching
@@ -749,8 +1038,8 @@ function cueDuplicate() {
 function fillCuePropsFromSelected() {
   const step = selectedCueIndex != null ? cuesObj.sequence[selectedCueIndex] : null;
   $id("cue-prop-name") && ($id("cue-prop-name").value = step?.name ?? "");
-  $id("cue-prop-sleep") && ($id("cue-prop-sleep").value = step?.sleep ?? "0");
-  $id("cue-prop-duration") && ($id("cue-prop-duration").value = step?.duration ?? "0");
+  $id("cue-prop-fade") && ($id("cue-prop-fade").value = stepFadeField(step));
+  $id("cue-prop-duration") && ($id("cue-prop-duration").value = String(stepHoldMs(step)));
 }
 
 function applyCueProps() {
@@ -758,8 +1047,8 @@ function applyCueProps() {
   
   const step = cuesObj.sequence[selectedCueIndex];
   step.name = $id("cue-prop-name")?.value || "";
-  step.sleep = $id("cue-prop-sleep")?.value || "0";
-  step.duration = $id("cue-prop-duration")?.value || "0";
+  step.fade = $id("cue-prop-fade")?.value || "0";
+  step.duration = Math.max(0, parseInt($id("cue-prop-duration")?.value, 10) || 0);
 
   if (typeof window.isTimelineEditorMode === "function" && window.isTimelineEditorMode() && step.timeline) {
     const text = String(step.duration || "0").trim();
@@ -854,19 +1143,19 @@ function renderCueTable() {
     const tdName = document.createElement("td");
     tdName.textContent = step.name || "";
 
-    const tdDelay = document.createElement("td");
-    tdDelay.textContent = (step.sleep ?? 0) + "ms";
-
     const tdFade = document.createElement("td");
-    tdFade.textContent = step.duration != null ? String(step.duration) : "0";
+    tdFade.textContent = String(stepFadeField(step));
+
+    const tdDuration = document.createElement("td");
+    tdDuration.textContent = stepHoldMs(step) + "ms";
 
     const tdDevs = document.createElement("td");
     tdDevs.textContent = Object.keys(step.devices || {}).length;
 
     tr.appendChild(tdIdx);
     tr.appendChild(tdName);
-    tr.appendChild(tdDelay);
     tr.appendChild(tdFade);
+    tr.appendChild(tdDuration);
     tr.appendChild(tdDevs);
 
     tr.onclick = (e) => {
@@ -1197,7 +1486,9 @@ function buildBackendCuePayload(step) {
   const effectGroups = buildBackendEffectGroupsFromStep(step);
   return {
     devices,
-    duration: step?.duration ?? "0",
+    // v2 names the crossfade time `fade`; the engine still reads `duration`
+    // from older clients.
+    fade: stepFadeField(step),
     device_order: order,
     effect_groups: effectGroups
   };
@@ -1232,7 +1523,7 @@ function buildBackendCuePayloadFromCurrentState() {
     devices,
     device_order: order,
     device_groups: deviceGroups,
-    duration: "0",
+    fade: "0",
   });
 }
 
@@ -1539,7 +1830,7 @@ function updatePlaybackUI() {
     playbackActive &&
     !playbackPaused &&
     playbackPhaseEndHostMs > 0 &&
-    (playbackPhase === "waiting" || playbackPhase === "fading" || playbackPhase === "active")
+    (playbackPhase === "waiting" || playbackPhase === "holding" || playbackPhase === "fading" || playbackPhase === "active")
   ) ? Math.max(0, playbackPhaseEndHostMs - Date.now()) : playbackWaitRemaining;
 
   const cueText = (playbackCueIndex != null && playbackCueIndex >= 0)
@@ -1550,6 +1841,7 @@ function updatePlaybackUI() {
   let phaseText, phaseColor;
   if (playbackPaused)              { phaseText = "PAUSED";  phaseColor = "#fbbf24"; }
   else if (playbackPhase === "waiting") { phaseText = "Waiting"; phaseColor = "#60a5fa"; }
+  else if (playbackPhase === "holding") { phaseText = "Holding"; phaseColor = "#60a5fa"; }
   else if (playbackPhase === "fading")  { phaseText = "Fading";  phaseColor = "#22c55e"; }
   else if (playbackPhase === "active")  { phaseText = "Active";  phaseColor = "#93c5fd"; }
   else                                  { phaseText = "--";      phaseColor = "#94a3b8"; }
@@ -1557,7 +1849,7 @@ function updatePlaybackUI() {
   _setStyleIfChanged(phaseEl, phaseColor, "phaseColor");
 
   const countdownText = (playbackActive && liveRemaining > 0 &&
-    (playbackPhase === "waiting" || playbackPhase === "fading" || playbackPhase === "active"))
+    (playbackPhase === "waiting" || playbackPhase === "holding" || playbackPhase === "fading" || playbackPhase === "active"))
     ? `${Math.ceil(liveRemaining)}ms`
     : "--";
   _setIfChanged(countdownEl, "textContent", countdownText, "countdown");
@@ -1668,6 +1960,9 @@ async function runBackendSequence(seq, startIndex = 0, options = {}) {
         virtual_groups: virtualGroups || {},
         speed: playbackSpeed,
         mode: "classic",
+        // Dead time before the first cue (a converted v1 show keeps its old
+        // leading "sleep" here).
+        lead_in_ms: Math.max(0, parseInt(cuesObj?.lead_in_ms, 10) || 0),
         // Whole-sequence loop (Rapid Fire); loop_count 0 = forever.
         loop: Boolean(options && options.loop),
         loop_count: Math.max(0, parseInt(options && options.loopCount, 10) || 0),
