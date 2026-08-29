@@ -35,9 +35,45 @@ from version import (
 
 
 HOST = "127.0.0.1"
-PORT = 5000
+# Preferred port, not a requirement: 5000 is crowded on Windows (Logitech
+# G HUB's CS:GO Arx applet takes it, and so do a few dev servers), and binding
+# over an exclusive socket there fails with "access forbidden" instead of
+# "already in use". Fall back to the next free port rather than refusing to
+# start. DDMX_PORT forces one for good.
+PREFERRED_PORT = 5000
+PORT = PREFERRED_PORT
 URL = f"http://{HOST}:{PORT}/"
 META_URL = f"{URL}api/meta"
+
+
+def _port_is_free(port: int) -> bool:
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # No SO_REUSEADDR: we want to know whether make_server could really
+        # take it, and on Windows reuse would happily bind over a live socket.
+        probe.bind((HOST, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def choose_port() -> int:
+    """Settle on a port and point the app's URLs at it."""
+    global PORT, URL, META_URL
+    forced = os.environ.get("DDMX_PORT", "").strip()
+    if forced.isdigit():
+        candidates = [int(forced)]
+    else:
+        candidates = [PREFERRED_PORT] + [PREFERRED_PORT + i for i in range(1, 21)]
+    chosen = next((p for p in candidates if _port_is_free(p)), None)
+    if chosen is None:
+        chosen = candidates[0]      # let make_server report the real error
+    PORT = chosen
+    URL = f"http://{HOST}:{PORT}/"
+    META_URL = f"{URL}api/meta"
+    return PORT
 _popup_views = []
 MAX_LOAD_ATTEMPTS = 40
 LOAD_RETRY_MS = 700
@@ -278,7 +314,9 @@ def start_server() -> None:
             check_fn=check_for_updates,
             install_fn=install_update,
         )
-        HTTP_SERVER = make_server(HOST, PORT, app, threaded=True)
+        # PORT is settled by choose_port() before this thread starts; call it
+        # again only if something ran the server on its own.
+        HTTP_SERVER = make_server(HOST, PORT if PORT else choose_port(), app, threaded=True)
         SERVER_READY.set()
         HTTP_SERVER.serve_forever()
     except Exception as exc:
@@ -529,6 +567,11 @@ if __name__ == "__main__":
         APP_ICON = build_svg_icon(ICON_SVG_PATH)
     splash_logo = build_svg_pixmap(ICON_SVG_PATH, 96)
     splash = StartupSplash(splash_logo)
+    # Settle the port here: the splash and the web view read URL/PORT while the
+    # server thread is still booting.
+    chosen = choose_port()
+    if chosen != PREFERRED_PORT:
+        print(f"[GUI] port {PREFERRED_PORT} is taken; serving on {chosen} instead")
     threading.Thread(target=start_server, daemon=True).start()
     if APP_ICON is not None:
         splash.setWindowIcon(APP_ICON)
