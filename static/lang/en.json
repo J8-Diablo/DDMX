@@ -1,12 +1,4 @@
 {
-  "autolight.allowStrobe": "Strobe",
-  "autolight.ceiling": "Intensity ceiling",
-  "autolight.contrast": "Contrast",
-  "autolight.guardrails": "Guardrails",
-  "autolight.metadata": "Online metadata",
-  "autolight.phrase": "phrase",
-  "autolight.smallVenue": "Small venue",
-  "bottomTab.autolight": "Auto-Light",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Video",
   "calib.applySelected": "Apply row values to selection",

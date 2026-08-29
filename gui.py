@@ -484,37 +484,22 @@ class StartupSplash(QWidget):
 
 
 class PopupPage(QWebEnginePage):
-    # Web features the embedded page is allowed to use without an OS-level
-    # permission prompt. Camera + microphone are required by the AutoLight
-    # training modal's calibration step (getUserMedia hangs forever inside
-    # QtWebEngine until we explicitly answer the permission request).
-    _AUTO_GRANT_FEATURES = (
-        QWebEnginePage.MediaAudioCapture,
-        QWebEnginePage.MediaVideoCapture,
-        QWebEnginePage.MediaAudioVideoCapture,
-    )
-
     def __init__(self, profile, parent=None):
         super().__init__(profile, parent)
         self.settings().setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, True)
         self.settings().setAttribute(QWebEngineSettings.JavascriptCanAccessClipboard, True)
-        # Wire the permission gate. QtWebEngine doesn't show a native prompt
-        # — it just emits this signal and waits for our answer. Without a
-        # connection getUserMedia stays pending forever.
+        # QtWebEngine shows no native prompt: it emits this signal and waits
+        # for an answer, so a request left unconnected stays pending forever.
         self.featurePermissionRequested.connect(self._on_feature_permission)
 
     def javaScriptConsoleMessage(self, level, message, line_number, source_id):
         print(f"[JS] {source_id}:{line_number} {message}")
 
     def _on_feature_permission(self, security_origin, feature):
-        # Auto-grant media capture for the embedded localhost UI; deny
-        # anything else (geolocation / notifications would be misleading
-        # in a desktop overlay).
-        if feature in self._AUTO_GRANT_FEATURES:
-            policy = QWebEnginePage.PermissionGrantedByUser
-        else:
-            policy = QWebEnginePage.PermissionDeniedByUser
-        self.setFeaturePermission(security_origin, feature, policy)
+        # Nothing in the UI needs camera, microphone, geolocation or
+        # notifications, and QtWebEngine waits forever for an answer instead of
+        # showing a prompt -- so answer, and answer no.
+        self.setFeaturePermission(security_origin, feature, QWebEnginePage.PermissionDeniedByUser)
 
     def createWindow(self, _type):
         view = QWebEngineView()

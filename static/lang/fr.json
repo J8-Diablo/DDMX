@@ -1,12 +1,4 @@
 {
-  "autolight.allowStrobe": "Stroboscope",
-  "autolight.ceiling": "Plafond d'intensité",
-  "autolight.contrast": "Contraste",
-  "autolight.guardrails": "Garde-fous",
-  "autolight.metadata": "Métadonnées en ligne",
-  "autolight.phrase": "phrase",
-  "autolight.smallVenue": "Petit lieu",
-  "bottomTab.autolight": "Auto-Light",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Vidéo",
   "calib.applySelected": "Appliquer les valeurs à la sélection",

@@ -182,8 +182,8 @@ function buildRigRegisterPayload() {
 }
 
 async function syncRigToBackend(force = false) {
-  // Always push the rig to the backend: even in UI render mode AutoLight
-  // needs the device list to know which channels to drive.
+  // Always push the rig to the backend: it is what tells the engine which
+  // channels each device owns.
   const payload = buildRigRegisterPayload();
   const body = JSON.stringify(payload);
   if (!force && body === lastRigPayload) return;

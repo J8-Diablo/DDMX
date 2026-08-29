@@ -1,12 +1,4 @@
 {
-  "autolight.allowStrobe": "Stroboscoop",
-  "autolight.ceiling": "Intensiteitsplafond",
-  "autolight.contrast": "Contrast",
-  "autolight.guardrails": "Beveiligingen",
-  "autolight.metadata": "Online metadata",
-  "autolight.phrase": "frase",
-  "autolight.smallVenue": "Kleine zaal",
-  "bottomTab.autolight": "Auto-Light",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Video",
   "calib.applySelected": "Waarden toepassen op selectie",

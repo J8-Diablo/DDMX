@@ -501,7 +501,7 @@ function refreshEnginePreviewFrame() {
   enginePreviewLastDrawTs = performance.now();
 
   // The rig widgets are receivers: their colours come from the DMX the engine
-  // actually emitted, whatever produced it (manual, cue, effect, AutoLight).
+  // actually emitted, whatever produced it (manual, cue, effect).
   {
     devicePreviewRGB = {};
     devicePreviewDimmer = {};
@@ -877,7 +877,7 @@ window.invalidateDeviceAttrCache = invalidateDeviceAttrCache;
 // Le navigateur n'écrit plus de canaux DMX : il déclare une intention par
 // attribut de fixture ({device, attr, value}) et l'engine résout le canal via
 // l'attr_map du device. Tout ce qui varie dans le temps — fondus, effets, cues,
-// timeline, AutoLight — est calculé et émis par Python.
+// timeline — est calculé et émis par Python.
 //
 // lastDmxFrames est alimenté par la SSE : c'est ce que l'engine envoie
 // réellement aux nœuds, et la seule source de l'aperçu du rig.

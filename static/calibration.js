@@ -1,5 +1,5 @@
 // static/calibration.js
-// Per-fixture "audience home" position + axis inversion for AutoLight 2.0.
+// Per-fixture "audience home" position + axis inversion.
 // Inline collapsible panel (NOT a modal) so it never depends on modal stacking.
 //
 // Reads/writes rigDevices[id].home_pan / home_tilt / invert_pan / invert_tilt

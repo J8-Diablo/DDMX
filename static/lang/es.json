@@ -1,12 +1,4 @@
 {
-  "autolight.allowStrobe": "Estrobo",
-  "autolight.ceiling": "Tope de intensidad",
-  "autolight.contrast": "Contraste",
-  "autolight.guardrails": "Limites",
-  "autolight.metadata": "Metadatos en línea",
-  "autolight.phrase": "frase",
-  "autolight.smallVenue": "Sala pequeña",
-  "bottomTab.autolight": "Auto-Light",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Video",
   "calib.applySelected": "Aplicar valores a la seleccion",

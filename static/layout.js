@@ -9,18 +9,16 @@
   const LS_RIGW = "dmx_rig_w";
   const LS_TOPH = "dmx_top_h";
 
-  const TAB_LABELS = { cues: "Cues", sync: "Sync Video", autolight: "Auto-Light" };
+  const TAB_LABELS = { cues: "Cues", sync: "Sync Video" };
 
   function _t(key, fallback) { return (typeof window.t === "function") ? window.t(key, fallback) : fallback; }
 
-  // Tag by exclusion: Sync Video and Auto-Light are their own tabs; everything
-  // else in the cues panel (cue files, toolbar, loop actions, table, timeline,
-  // props…) belongs to the "cues" tab. The panel header + tab bar stay visible.
+  // Tag by exclusion: Sync Video has its own tab; everything else in the cues
+  // panel (cue files, toolbar, loop actions, table, timeline, props…) belongs
+  // to the "cues" tab. The panel header + tab bar stay visible.
   function tagGroups(panel) {
     const sync = panel.querySelector("#sync-video-section");
     if (sync) sync.setAttribute("data-bgroup", "sync");
-    const al = panel.querySelector("#autolight-section");
-    if (al) al.setAttribute("data-bgroup", "autolight");
     Array.from(panel.children).forEach((ch) => {
       if (ch.classList.contains("panel-header") || ch.classList.contains("cues-tabbar")) return;
       if (ch.getAttribute("data-bgroup")) return;

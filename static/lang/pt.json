@@ -1,12 +1,4 @@
 {
-  "autolight.allowStrobe": "Estroboscópio",
-  "autolight.ceiling": "Teto de intensidade",
-  "autolight.contrast": "Contraste",
-  "autolight.guardrails": "Limites",
-  "autolight.metadata": "Metadados online",
-  "autolight.phrase": "frase",
-  "autolight.smallVenue": "Local pequeno",
-  "bottomTab.autolight": "Auto-Light",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Video",
   "calib.applySelected": "Aplicar valores a selecao",

@@ -1,12 +1,4 @@
 {
-  "autolight.allowStrobe": "Stroboskop",
-  "autolight.ceiling": "Intensitätsgrenze",
-  "autolight.contrast": "Kontrast",
-  "autolight.guardrails": "Schutzgrenzen",
-  "autolight.metadata": "Online-Metadaten",
-  "autolight.phrase": "Phrase",
-  "autolight.smallVenue": "Kleiner Saal",
-  "bottomTab.autolight": "Auto-Light",
   "bottomTab.cues": "Cues",
   "bottomTab.sync": "Sync Video",
   "calib.applySelected": "Werte auf Auswahl anwenden",

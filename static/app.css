@@ -44,14 +44,12 @@ body {
 }
 
 /* textes */
-
 .muted {
   color: var(--text-muted);
   font-size: 12px;
 }
 
 /* TOPBAR */
-
 .topbar {
   display: flex;
   align-items: center;
@@ -246,7 +244,6 @@ body {
 }
 
 /* BUTTONS / INPUTS / SELECTS */
-
 button,
 select,
 input {
@@ -332,7 +329,6 @@ select:focus {
 }
 
 /* LAYOUT PRINCIPAL (Rig | splitter | Cues) */
-
 .main-grid {
   display: flex;
   flex-direction: row;
@@ -342,7 +338,6 @@ select:focus {
 }
 
 /* PANELS GÉNÉRIQUES */
-
 .panel {
   background: radial-gradient(circle at top left, rgba(37, 99, 235, 0.06), transparent 50%),
               radial-gradient(circle at bottom right, rgba(15, 23, 42, 0.7), #020617 70%);
@@ -388,7 +383,6 @@ select:focus {
 }
 
 /* RIG PANEL */
-
 .rig-panel {
   display: flex;
   flex-direction: column;
@@ -467,7 +461,6 @@ select:focus {
 }
 
 /* SPLITTER entre RIG et CUES */
-
 .splitter-vertical {
   flex: 0 0 6px;
   background: #111420;
@@ -484,7 +477,6 @@ select:focus {
 }
 
 /* CUES PANEL */
-
 .cues-panel {
   display: flex;
   flex-direction: column;
@@ -1038,7 +1030,6 @@ select:focus {
 }
 
 /* CONTROLLER */
-
 .controller-panel {
   margin: 0 12px 12px;
 }
@@ -1134,7 +1125,6 @@ body.cue-editor-mode-timeline .controller-panel .tab-content.active {
 }
 
 /* sliders & valeurs */
-
 .ctrl-row {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -1169,7 +1159,6 @@ body.cue-editor-mode-timeline .controller-panel .tab-content.active {
 }
 
 /* ROUE COULEUR */
-
 .color-wheel {
   width: 120px;
   height: 120px;
@@ -1212,19 +1201,20 @@ body.cue-editor-mode-timeline .controller-panel .tab-content.active {
   margin-bottom: 6px;
 }
 
-/* XY PAN/TILT */
 /* Ligne contenant la position + les sliders */
 .pos-row {
   display: flex;
   align-items: center;   /* centre Tilt verticalement par rapport au carré */
   gap: 16px;
 }
+
 /* Colonne gauche : XY au-dessus, Pan en dessous */
 .pos-left {
   display: flex;
   flex-direction: column;
   gap: 6px;             /* espace entre XY et le slider Pan */
 }
+
 /* Colonne droite : Tilt centré verticalement */
 .pos-right {
   display: flex;
@@ -1232,6 +1222,7 @@ body.cue-editor-mode-timeline .controller-panel .tab-content.active {
   align-items: center;
   height: 120px;        /* même hauteur que ton carré XY */
 }
+
 /* si ton .vertical n’est pas déjà défini, un exemple : */
 input[type="range"].vertical.tilt-slider {
   writing-mode: bt-lr;                 /* pour Firefox */
@@ -1239,6 +1230,7 @@ input[type="range"].vertical.tilt-slider {
   appearance: slider-vertical;         /* standard */
   height: 120px;
 }
+
 .xy-area {
   width: 120px;
   height: 120px;
@@ -1251,6 +1243,7 @@ input[type="range"].vertical.tilt-slider {
   cursor: crosshair;
   margin-bottom: 6px;
 }
+
 .xy-area .xy-cursor {
   position: absolute;
   width: 10px;
@@ -1262,11 +1255,10 @@ input[type="range"].vertical.tilt-slider {
   box-shadow: 0 0 0 1px #000;
 }
 
-
 /* Layout 2x2 :
    [ XY      ][ Tilt ]
    [ Pan     ][      ] */
-   .position-layout {
+.position-layout {
     display: grid;
     grid-template-columns: auto auto;
     grid-template-rows: auto auto;
@@ -1274,31 +1266,34 @@ input[type="range"].vertical.tilt-slider {
     row-gap: 8px;
     align-items: start;
   }
+
   
   /* carré de position (haut gauche) */
-  .position-xy-wrapper {
+.position-xy-wrapper {
     grid-row: 1 / 2;
     grid-column: 1 / 2;
   }
+
   
   /* slider Pan sous le carré */
-  .position-pan-wrapper {
+.position-pan-wrapper {
     grid-row: 2 / 3;
     grid-column: 1 / 2;
   }
+
   
   /* bloc Tilt à droite, centré verticalement par rapport au carré */
-  .position-tilt-wrapper {
+.position-tilt-wrapper {
     grid-row: 1 / 3;      /* span sur les deux lignes */
     grid-column: 2 / 3;
     display: flex;
     align-items: center;  /* centre le slider sur la hauteur du carré */
   }
+
   
-  /* ---- style du slider Tilt en vertical ---- */
   /* adapte les sélecteurs si ton addLocalSlider rajoute un wrapper,
      mais l'idée est : l'input à l'intérieur de position-tilt-wrapper devient vertical */
-  .position-tilt-wrapper input[type="range"] {
+.position-tilt-wrapper input[type="range"] {
     writing-mode: bt-lr;                 /* Firefox */
     appearance: slider-vertical;         /* Standard */
     -webkit-appearance: slider-vertical; /* Chrome / Edge */
@@ -1310,18 +1305,22 @@ input[type="range"].vertical.tilt-slider {
 .distribute-card {
   margin-top: 4px;
 }
+
 .distribute-block {
   margin-bottom: 10px;
 }
+
 .distribute-block:last-child {
   margin-bottom: 0;
 }
+
 .distribute-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 4px;
 }
+
 .distribute-row {
   display: flex;
   align-items: center;
@@ -1329,15 +1328,18 @@ input[type="range"].vertical.tilt-slider {
   margin-bottom: 4px;
   flex-wrap: wrap;
 }
+
 .distribute-small {
   font-size: 11px;
   color: var(--text-muted);
 }
+
 .distribute-sep {
   font-size: 12px;
   color: var(--text-muted);
   padding: 0 2px;
 }
+
 .distribute-input {
   width: 56px;
   padding: 2px 4px;
@@ -1348,32 +1350,35 @@ input[type="range"].vertical.tilt-slider {
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
+
 .distribute-slider-row {
   display: flex;
   gap: 6px;
   margin-bottom: 4px;
 }
+
 .distribute-slider {
   flex: 1;
   min-width: 0;
 }
+
 .distribute-btn-row {
   display: flex;
   gap: 6px;
 }
+
 .distribute-btn {
   flex: 1;
   font-size: 11px;
   padding: 4px 8px;
 }
+
 .distribute-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-
 /* TABS */
-
 .controller-tabs {
   display: flex;
   gap: 6px;
@@ -1404,7 +1409,6 @@ input[type="range"].vertical.tilt-slider {
 }
 
 /* EFFECTS */
-
 .effects-grid {
   display: grid;
   grid-template-columns: 1.2fr 0.8fr;
@@ -1692,7 +1696,6 @@ input[type="range"].vertical.tilt-slider {
 }
 
 /* SCROLLBARS */
-
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -1712,7 +1715,6 @@ input[type="range"].vertical.tilt-slider {
 }
 
 /* RESPONSIVE */
-
 @media (max-width: 1100px) {
   .main-grid {
     flex-direction: column;
@@ -1763,7 +1765,6 @@ input[type="range"].vertical.tilt-slider {
 }
 
 /* POPUP BUTTONS */
-
 .popup-btn {
   width: 28px;
   height: 28px;
@@ -1787,7 +1788,6 @@ input[type="range"].vertical.tilt-slider {
 }
 
 /* PANEL PLACEHOLDER (when panel is popped out) */
-
 .panel-placeholder {
   background: radial-gradient(circle at center, rgba(37, 99, 235, 0.08), transparent 70%),
               linear-gradient(135deg, rgba(15, 23, 42, 0.6), rgba(2, 6, 23, 0.8));
@@ -1876,933 +1876,6 @@ input[type="range"].vertical.tilt-slider {
 .sync-video-row button {
   font-size: 12px;
   padding: 4px 10px;
-}
-
-.autolight-section {
-  margin-top: 8px;
-  padding: 10px;
-  background: rgba(16, 185, 129, 0.08);
-  border-radius: 8px;
-  border: 1px solid rgba(16, 185, 129, 0.22);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* When AutoLight is disabled / mode == off, collapse the panel down to
-   just the header + a small "Enable" button. Avoids drowning the rest
-   of the UI with controls the user explicitly chose not to use. */
-.autolight-section.is-collapsed {
-  background: rgba(100, 116, 139, 0.05);
-  border-color: rgba(100, 116, 139, 0.18);
-  gap: 0;
-}
-
-.autolight-section.is-collapsed > *:not(.autolight-header) {
-  display: none !important;
-}
-
-.autolight-quick-enable {
-  font-size: 11px;
-  padding: 3px 12px;
-  min-width: 64px;
-  margin-left: 8px;
-  /* Match the badge height so the header reads as a single line on
-     narrow viewports — the badge has min-width 76px and 4px 8px
-     padding, this keeps both at the same vertical centerline. */
-  align-self: center;
-}
-
-/* Make the header's right-side cluster (badge + Enable button) sit
-   together rather than the badge floating mid-row when both are
-   present. Without this, justify-content:space-between pushes the
-   badge to the far right and the button drifts. */
-.autolight-header {
-  align-items: center;
-}
-.autolight-header > h3 {
-  flex: 1 1 auto;
-}
-.autolight-header > #autolight-status-badge,
-.autolight-header > #autolight-quick-enable {
-  flex: 0 0 auto;
-}
-
-.autolight-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.autolight-header h3 {
-  margin: 0;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.autolight-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 76px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: rgba(148, 163, 184, 0.18);
-  color: #dbe4f0;
-}
-
-.autolight-badge.is-live {
-  background: rgba(34, 197, 94, 0.22);
-  color: #bbf7d0;
-}
-
-.autolight-badge.is-assist {
-  background: rgba(245, 158, 11, 0.22);
-  color: #fde68a;
-}
-
-.autolight-badge.is-off {
-  background: rgba(148, 163, 184, 0.16);
-  color: #cbd5e1;
-}
-
-.autolight-badge.is-error {
-  background: rgba(239, 68, 68, 0.22);
-  color: #fecaca;
-}
-
-.autolight-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.autolight-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.autolight-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* Unified sizing for every button + select inside a .autolight-row.
-   Previously each row added its own padding override (genre 2px/8px,
-   mode 4px/10px, etc.), which produced a visible "stair-step" of button
-   heights inside the same panel. One ruleset, every row consistent. */
-.autolight-row button,
-.autolight-row select {
-  font-size: 11px;
-  padding: 3px 10px;
-  line-height: 1.2;
-}
-
-.autolight-row select {
-  padding: 3px 8px;
-}
-
-.autolight-row button.is-active {
-  background: #10b981;
-  border-color: #10b981;
-  color: #04130e;
-}
-
-.autolight-row-label {
-  font-size: 11px;
-  color: var(--autolight-muted, #94a3b8);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-right: 4px;
-  align-self: center;
-}
-
-/* Single source of truth for the muted text colour used across the
-   AutoLight panel + training modal. Various rules used to hard-code
-   #94a3b8 / #8b97a6 / var(--muted) interchangeably which read as a
-   subtle inconsistency under good lighting. */
-.autolight-section,
-.autolight-modal-panel {
-  --autolight-muted: #94a3b8;
-}
-
-/* ---- Training modal ---------------------------------------------- */
-
-.autolight-training-panel {
-  max-width: 920px;
-  width: 92vw;
-}
-
-.autolight-training-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding-top: 8px;
-}
-
-.autolight-training-section {
-  border-top: 1px solid #1f2937;
-  padding-top: 12px;
-}
-
-.autolight-training-section h4 {
-  margin: 0 0 8px 0;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #cbd5e1;
-}
-
-/* Inline help text inside training-modal sections. Replaces the
-   repeated `style="font-size:12px;margin-bottom:8px"` hard-coded on
-   three sections (Camera, Move scores, Library). */
-.autolight-training-hint {
-  font-size: 12px;
-  color: var(--autolight-muted, #94a3b8);
-  margin: 0 0 8px 0;
-  line-height: 1.4;
-}
-
-.autolight-training-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.autolight-training-row input[type="text"] {
-  flex: 1 1 320px;
-  min-width: 240px;
-  padding: 6px 10px;
-  font-size: 13px;
-  background: #0f172a;
-  border: 1px solid #334155;
-  color: #e2e8f0;
-  border-radius: 4px;
-}
-
-.autolight-training-toggle-big {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-#autolight-training-state.is-on {
-  color: #10b981;
-  font-weight: 600;
-}
-
-.autolight-training-library-wrap {
-  max-height: 280px;
-  overflow-y: auto;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-}
-
-.autolight-training-library-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.autolight-training-library-table th,
-.autolight-training-library-table td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid #1f2937;
-}
-
-.autolight-training-library-table thead th {
-  position: sticky;
-  top: 0;
-  background: #111827;
-  color: #94a3b8;
-  font-weight: 600;
-}
-
-.autolight-training-library-table tbody tr.is-current {
-  background: rgba(16, 185, 129, 0.10);
-}
-
-.autolight-training-library-table button {
-  font-size: 11px;
-  padding: 2px 8px;
-}
-
-#autolight-training-now-playing.is-active {
-  color: #10b981;
-}
-
-/* Satisfaction slider — red→yellow→green gradient track. The slider
-   captures every drag pixel; JS throttles outgoing POSTs to 10 Hz. */
-
-.autolight-training-slider-wrap {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 8px 0;
-}
-
-.autolight-training-slider-label {
-  font-size: 12px;
-  color: #94a3b8;
-  min-width: 60px;
-  text-align: center;
-}
-
-.autolight-training-slider {
-  flex: 1;
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 24px;
-  border-radius: 12px;
-  background: linear-gradient(
-    to right,
-    #ef4444 0%,
-    #f59e0b 30%,
-    #eab308 50%,
-    #84cc16 70%,
-    #10b981 100%
-  );
-  outline: none;
-  cursor: pointer;
-}
-
-.autolight-training-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #f1f5f9;
-  border: 3px solid #1e293b;
-  cursor: grab;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-}
-
-.autolight-training-slider::-webkit-slider-thumb:active {
-  cursor: grabbing;
-}
-
-.autolight-training-slider::-moz-range-thumb {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #f1f5f9;
-  border: 3px solid #1e293b;
-  cursor: grab;
-}
-
-#autolight-training-slider-readout {
-  font-size: 12px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.autolight-training-move {
-  padding: 8px 12px;
-  margin: 8px 0;
-  border-radius: 6px;
-  background: #0f172a;
-  border: 1px solid #1f2937;
-  font-size: 13px;
-}
-
-.autolight-training-move.is-active {
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.15), rgba(59, 130, 246, 0.10));
-  border-color: #10b981;
-  color: #e0f2fe;
-}
-
-.autolight-training-move-scores-wrap {
-  max-height: 240px;
-  overflow-y: auto;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-}
-
-.autolight-training-move-scores {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.autolight-training-move-scores th,
-.autolight-training-move-scores td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid #1f2937;
-}
-
-.autolight-training-move-scores thead th {
-  position: sticky;
-  top: 0;
-  background: #111827;
-  color: #94a3b8;
-  font-weight: 600;
-}
-
-.autolight-training-move-scores .score-pos { color: #10b981; font-weight: 600; }
-.autolight-training-move-scores .score-neg { color: #ef4444; font-weight: 600; }
-.autolight-training-move-scores .score-zero { color: #94a3b8; }
-
-.autolight-camera-select {
-  flex: 1 1 240px;
-  min-width: 200px;
-  padding: 6px 10px;
-  font-size: 13px;
-  background: #0f172a;
-  border: 1px solid #334155;
-  color: #e2e8f0;
-  border-radius: 4px;
-}
-
-/* ---- Camera calibration stage ----------------------------------- */
-
-.autolight-camera-stage {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: #000;
-  border-radius: 6px;
-  overflow: hidden;
-  margin-top: 8px;
-  border: 1px solid #1f2937;
-}
-
-.autolight-camera-stage video,
-.autolight-camera-stage canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-#autolight-camera-overlay {
-  pointer-events: none;
-}
-
-#autolight-camera-status.is-on {
-  color: #10b981;
-}
-
-#autolight-camera-status.is-error {
-  color: #ef4444;
-}
-
-.autolight-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text);
-}
-
-.autolight-meters {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 0;
-}
-
-.autolight-meter {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.autolight-meter-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted, #8b97a6);
-}
-
-.autolight-meter-bar {
-  position: relative;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.autolight-meter-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 0%;
-  background: linear-gradient(90deg, #0ea5e9, #8b5cf6);
-  border-radius: 3px;
-  transition: width 80ms linear;
-}
-
-.autolight-meter[data-band="bass"] .autolight-meter-fill {
-  background: linear-gradient(90deg, #ef4444, #f59e0b);
-}
-.autolight-meter[data-band="mid"] .autolight-meter-fill {
-  background: linear-gradient(90deg, #10b981, #84cc16);
-}
-.autolight-meter[data-band="treble"] .autolight-meter-fill {
-  background: linear-gradient(90deg, #06b6d4, #a855f7);
-}
-
-.autolight-beat {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 44px;
-  padding: 6px 8px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--muted, #8b97a6);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: background 120ms ease, color 120ms ease, transform 120ms ease, border-color 120ms ease;
-}
-
-.autolight-beat.is-beat {
-  color: #04130e;
-  background: #f59e0b;
-  border-color: #f59e0b;
-  transform: scale(1.08);
-  box-shadow: 0 0 14px rgba(245, 158, 11, 0.6);
-}
-
-.autolight-drums {
-  display: flex;
-  gap: 6px;
-  margin: 4px 0 6px;
-}
-
-.autolight-drum-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--muted, #8b97a6);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: background 100ms ease, color 100ms ease, transform 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
-}
-
-.autolight-drum-pill .autolight-drum-count {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--muted, #8b97a6);
-  opacity: 0.8;
-  font-variant-numeric: tabular-nums;
-}
-
-.autolight-drum-pill[data-drum="kick"].is-hit  { color: #04130e; background: #f97316; border-color: #f97316; box-shadow: 0 0 10px rgba(249, 115, 22, 0.55); transform: scale(1.06); }
-.autolight-drum-pill[data-drum="snare"].is-hit { color: #04130e; background: #facc15; border-color: #facc15; box-shadow: 0 0 10px rgba(250, 204, 21, 0.55); transform: scale(1.06); }
-.autolight-drum-pill[data-drum="hat"].is-hit   { color: #04130e; background: #06b6d4; border-color: #06b6d4; box-shadow: 0 0 10px rgba(6, 182, 212, 0.55); transform: scale(1.06); }
-.autolight-drum-pill.is-hit .autolight-drum-count { color: #04130e; opacity: 1; }
-
-.autolight-audio-row {
-  align-items: center;
-}
-
-/* Alias for legacy markup that uses .autolight-audio-label — same look
-   as .autolight-row-label so the panel reads as one piece. */
-.autolight-audio-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--autolight-muted, #94a3b8);
-}
-
-.autolight-audio-row select {
-  flex: 1 1 auto;
-  min-width: 0;
-  /* font-size + padding inherited from the unified `.autolight-row select` */
-}
-
-.autolight-diag {
-  font-size: 10px;
-  letter-spacing: 0.03em;
-  opacity: 0.75;
-}
-
-.autolight-diag.is-warn {
-  color: #f59e0b;
-  opacity: 1;
-}
-
-/* Diagnostics block: collapsed by default to keep the panel uncluttered.
-   The five status lines used to render in a permanent 5-row stack which
-   pushed the actual controls way down the screen. Now they're behind a
-   <summary> the user can open when they want them. */
-.autolight-diag-group {
-  margin-top: 4px;
-  padding: 4px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.autolight-diag-group > summary {
-  cursor: pointer;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--autolight-muted, #94a3b8);
-  padding: 2px 0;
-  list-style: none;
-  user-select: none;
-}
-
-.autolight-diag-group > summary::before {
-  content: "▸ ";
-  display: inline-block;
-  transition: transform 120ms ease;
-}
-
-.autolight-diag-group[open] > summary::before {
-  content: "▾ ";
-}
-
-.autolight-diag-group > .autolight-diag {
-  padding-left: 12px;
-  margin-top: 2px;
-}
-
-.autolight-diag.is-active {
-  color: #a5b4fc;
-  opacity: 1;
-}
-
-.autolight-sc-row input[type="text"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: monospace;
-  font-size: 11px;
-  padding: 3px 6px;
-}
-
-.autolight-sc-row button {
-  font-size: 11px;
-  padding: 3px 10px;
-}
-
-.autolight-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 9000;
-  display: none;
-  align-items: center;
-  justify-content: center;
-}
-
-.autolight-modal.is-open {
-  display: flex;
-}
-
-/* The modals live inside .cues-panel (a .panel), so the generic
-   `.panel > * { position: relative; z-index: 1 }` rule matches them at equal
-   specificity. This higher-specificity guard guarantees the modal stays a
-   viewport-fixed top-layer element instead of being trapped/stacked behind
-   sibling panels (symptom: backdrop shows but the panel sits behind). */
-.panel > .autolight-modal {
-  position: fixed;
-  z-index: 9000;
-}
-
-.autolight-modal-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background: rgba(5, 8, 14, 0.72);
-}
-
-.autolight-modal-panel {
-  position: relative;
-  z-index: 1;
-  width: min(960px, 92vw);
-  max-height: 88vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel, #11151d);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-  overflow: hidden;
-}
-
-.autolight-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.autolight-modal-header h3 {
-  margin: 0;
-  font-size: 15px;
-  letter-spacing: 0.02em;
-}
-
-.autolight-modal-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.autolight-modal-hint {
-  padding: 10px 18px;
-  font-size: 11px;
-  color: var(--muted, #8b97a6);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.autolight-modal-body {
-  overflow: auto;
-  padding: 8px 0;
-}
-
-.autolight-effects-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.autolight-effects-table th,
-.autolight-effects-table td {
-  padding: 6px 10px;
-  text-align: left;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  vertical-align: middle;
-}
-
-.autolight-effects-table th {
-  position: sticky;
-  top: 0;
-  background: var(--panel, #11151d);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted, #8b97a6);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.autolight-effects-table td.effect-name {
-  font-family: monospace;
-  font-size: 11px;
-}
-
-.autolight-effects-table td.effect-scenes {
-  font-size: 10px;
-  color: var(--muted, #8b97a6);
-}
-
-.autolight-effects-table tr.is-disabled td.effect-name,
-.autolight-effects-table tr.is-disabled td.effect-scenes {
-  opacity: 0.4;
-}
-
-.autolight-effects-table input[type="number"] {
-  width: 70px;
-  font-size: 11px;
-  padding: 2px 4px;
-  font-family: monospace;
-}
-
-.autolight-effects-table input[type="range"] {
-  width: 90px;
-  vertical-align: middle;
-}
-
-.autolight-effects-table .weight-value {
-  display: inline-block;
-  margin-left: 6px;
-  font-family: monospace;
-  font-size: 11px;
-  color: var(--muted, #8b97a6);
-  min-width: 30px;
-}
-
-.autolight-effects-table button.effect-trigger {
-  font-size: 10px;
-  padding: 2px 8px;
-}
-
-.autolight-effects-table td.effect-bpm,
-.autolight-effects-table td.effect-moods {
-  font-size: 10px;
-  color: var(--muted, #8b97a6);
-  font-family: monospace;
-}
-
-.autolight-spectrum {
-  display: block;
-  width: 100%;
-  height: 44px;
-  margin: 4px 0;
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 3px;
-}
-
-.autolight-genre-row,
-.autolight-scene-lock-row {
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-/* Scene-lock & genre rows now inherit padding from `.autolight-row
-   button/select` above. We only override semantic colours here (the
-   active scene-lock highlight is blue, not the green of normal active
-   buttons, to read as a manual override). */
-.autolight-scene-lock-row button.is-active {
-  background: #0ea5e9;
-  border-color: #0ea5e9;
-  color: #04130e;
-}
-
-.autolight-genre-row button.is-pulsing {
-  background: #f59e0b;
-  border-color: #f59e0b;
-  color: #04130e;
-  transition: background 80ms ease;
-}
-
-.autolight-mood-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 8px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  font-size: 10px;
-}
-
-.autolight-mood-bar .mood-chip {
-  padding: 3px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  cursor: pointer;
-  color: var(--muted, #8b97a6);
-  user-select: none;
-}
-
-.autolight-mood-bar .mood-chip.is-on {
-  background: #10b981;
-  color: #04130e;
-  border-color: #10b981;
-}
-
-.autolight-tuning-form {
-  padding: 10px 18px;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 18px;
-}
-
-.autolight-tuning-form .tuning-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
-}
-
-.autolight-tuning-form .tuning-field label {
-  display: flex;
-  justify-content: space-between;
-  color: var(--muted, #8b97a6);
-}
-
-.autolight-tuning-form .tuning-field .tuning-value {
-  font-family: monospace;
-  color: var(--text);
-}
-
-.autolight-tuning-form input[type="range"] {
-  width: 100%;
-}
-
-.autolight-topology-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-  font-family: monospace;
-}
-
-.autolight-topology-table th,
-.autolight-topology-table td {
-  padding: 3px 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  text-align: left;
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-.autolight-topology-table th {
-  position: sticky;
-  top: 0;
-  background: var(--panel, #11151d);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted, #8b97a6);
-  cursor: pointer;
-  user-select: none;
-}
-
-.autolight-topology-table th.is-sorted::after {
-  content: " ▼";
-  color: #10b981;
-}
-
-.autolight-topology-table th.is-sorted.is-asc::after {
-  content: " ▲";
-}
-
-.autolight-topology-table td.num {
-  text-align: right;
-}
-
-.autolight-topology-table tr.is-left { background: rgba(245, 158, 11, 0.06); }
-.autolight-topology-table tr.is-right { background: rgba(14, 165, 233, 0.06); }
-.autolight-topology-table tr.is-orphan { background: rgba(120, 120, 120, 0.08); }
-
-.autolight-topology-table td.side-left { color: #f59e0b; font-weight: 700; }
-.autolight-topology-table td.side-right { color: #0ea5e9; font-weight: 700; }
-
-.autolight-topology-table button.identify-btn {
-  background: transparent;
-  border: 1px solid rgba(255,255,255,0.12);
-  color: inherit;
-  cursor: pointer;
-  font-family: monospace;
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 3px;
-}
-
-.autolight-topology-table button.identify-btn:hover {
-  background: rgba(255,255,255,0.08);
-}
-
-#autolight-topology-search {
-  font-size: 11px;
-  padding: 3px 8px;
-  min-width: 220px;
 }
 
 .swal2-popup.dmx-settings-modal {
@@ -3617,15 +2690,18 @@ input[type="range"].vertical.tilt-slider {
   align-items: center;
   gap: 14px;
 }
+
 .project-menu {
   position: relative;
   display: inline-block;
 }
+
 #project-menu-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
+
 .project-current {
   font-weight: 600;
   opacity: 0.85;
@@ -3634,14 +2710,17 @@ input[type="range"].vertical.tilt-slider {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .project-current:not(:empty)::before {
   content: "— ";
   opacity: 0.6;
 }
+
 .project-caret {
   font-size: 0.8em;
   opacity: 0.7;
 }
+
 .project-dropdown {
   position: absolute;
   top: calc(100% + 6px);
@@ -3656,9 +2735,11 @@ input[type="range"].vertical.tilt-slider {
   border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
+
 .project-dropdown.hidden {
   display: none;
 }
+
 .project-item {
   display: block;
   width: 100%;
@@ -3672,18 +2753,22 @@ input[type="range"].vertical.tilt-slider {
   cursor: pointer;
   font-size: 0.92rem;
 }
+
 .project-item:hover {
   background: var(--accent-soft, rgba(255, 255, 255, 0.08));
 }
+
 .project-item.active {
   font-weight: 700;
   color: var(--accent, #6ea8fe);
 }
+
 .project-sep {
   height: 1px;
   margin: 6px 4px;
   background: var(--border, rgba(255, 255, 255, 0.12));
 }
+
 .project-group-label {
   padding: 6px 10px 2px;
   font-size: 0.72rem;
@@ -3691,76 +2776,55 @@ input[type="range"].vertical.tilt-slider {
   letter-spacing: 0.05em;
   opacity: 0.6;
 }
+
 .project-sublist {
   max-height: 28vh;
   overflow-y: auto;
 }
+
 .project-file {
   padding-left: 18px;
   font-size: 0.88rem;
 }
+
 .project-empty {
   padding: 4px 10px 8px;
   font-size: 0.82rem;
 }
 
-/* ============================================================
-   AutoLight 2.0 — DJ view + guardrails mini-panel
-   ============================================================ */
-.autolight-dj {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  margin: 6px 0;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-.autolight-dj.is-empty { opacity: 0.45; }
-.dj-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.86rem; }
-.dj-bpm b { font-size: 1.05rem; }
-.dj-counter { opacity: 0.85; }
-.dj-pill {
-  font-size: 0.72rem; padding: 1px 7px; border-radius: 10px;
-  background: rgba(255, 255, 255, 0.1); opacity: 0.7;
-}
-.dj-pill.is-locked { background: rgba(110, 231, 168, 0.22); color: #6ee7a8; opacity: 1; }
-.dj-beat { color: rgba(255, 255, 255, 0.25); font-size: 1.1rem; transition: none; }
-.dj-beat.pulse { animation: dj-beat-pulse 0.18s ease-out; }
-.dj-beat.is-downbeat.pulse { animation: dj-downbeat-pulse 0.22s ease-out; }
 @keyframes dj-beat-pulse { from { color: #6ea8fe; transform: scale(1.5); } to { color: rgba(255,255,255,0.25); transform: scale(1); } }
-@keyframes dj-downbeat-pulse { from { color: #ffd166; transform: scale(1.9); } to { color: rgba(255,255,255,0.25); transform: scale(1); } }
-.dj-intent {
-  font-weight: 700; letter-spacing: 0.06em; font-size: 0.8rem;
-  padding: 2px 8px; border-radius: 6px; background: rgba(255,255,255,0.08);
-}
-.dj-intent-calm, .dj-intent-silence { color: #7aa2f7; }
-.dj-intent-groove { color: #9ece6a; }
-.dj-intent-build { color: #ffd166; }
-.dj-intent-drop { color: #f7768e; background: rgba(247,118,142,0.18); }
-.dj-intent-release { color: #bb9af7; }
-.dj-drop { font-size: 0.78rem; }
-.dj-build { flex: 1; min-width: 60px; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); overflow: hidden; }
-.dj-build-fill { height: 100%; width: 0; background: linear-gradient(90deg, #ffd166, #f7768e); transition: width 0.1s linear; }
-.autolight-guardrails { margin: 4px 0; font-size: 0.85rem; }
-.autolight-guardrails summary { cursor: pointer; opacity: 0.8; }
-.autolight-guardrails .autolight-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
-.autolight-guardrails input[type="range"] { flex: 1; }
 
-/* ============================================================
-   Position calibration panel (AutoLight 2.0) — inline, not modal
-   ============================================================ */
+@keyframes dj-downbeat-pulse { from { color: #ffd166; transform: scale(1.9); } to { color: rgba(255,255,255,0.25); transform: scale(1); } }
+
+/* Small label + checkbox pair (calibration toolbar). */
+.inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
 .calib-panel { margin: 4px 0; font-size: 0.85rem; }
+
 .calib-panel > summary { cursor: pointer; opacity: 0.85; padding: 4px 0; }
+
 .calib-hint { font-size: 0.78rem; margin: 4px 0 8px; }
+
 .calib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+
 .calib-table-wrap { max-height: 240px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; }
+
 .calib-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+
 .calib-table th, .calib-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.05); }
+
 .calib-table thead th { position: sticky; top: 0; background: var(--panel, #11151d); opacity: 0.85; font-weight: 600; }
+
 .calib-table .calib-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .calib-table .calib-num { width: 64px; }
+
 .calib-table .calib-inv { text-align: center; }
 
 /* ============================================================
@@ -3775,9 +2839,13 @@ input[type="range"].vertical.tilt-slider {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   cursor: grab;
 }
+
 .timeline-block.selected { border-color: #ffd166; box-shadow: 0 0 0 2px rgba(255, 209, 102, 0.6), 0 4px 12px rgba(0, 0, 0, 0.55); }
+
 .timeline-block.playing { border-color: #6ee7a8; box-shadow: 0 0 0 2px rgba(110, 231, 168, 0.5); }
+
 .timeline-block.loop-linked { border-style: dashed; }
+
 .tl-clip-title {
   position: absolute; top: 0; left: 0; right: 0; z-index: 2;
   display: flex; justify-content: space-between; gap: 6px;
@@ -3786,33 +2854,53 @@ input[type="range"].vertical.tilt-slider {
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   pointer-events: none;
 }
+
 .tl-clip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .tl-clip-dur { opacity: 0.7; font-weight: 500; }
+
 .tl-clip-fade { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+
 .tl-fade-area { fill: hsla(var(--clip-hue, 210), 85%, 65%, 0.18); }
+
 .tl-fade-line { fill: none; stroke: hsla(var(--clip-hue, 210), 92%, 78%, 0.92); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+
 .tl-fade-handle {
   position: absolute; top: 18px; width: 11px; height: 11px; margin-left: -6px; z-index: 4;
   background: #ffd166; border: 1px solid rgba(0, 0, 0, 0.55); border-radius: 50%; cursor: ew-resize;
 }
+
 .tl-fade-handle:hover { background: #fff; transform: scale(1.15); }
+
 .tl-clip-resize { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 3; }
+
 .tl-resize-left { left: 0; }
+
 .tl-resize-right { right: 0; }
+
 .tl-clip-resize:hover { background: rgba(255, 255, 255, 0.28); }
+
 .tl-clip-op {
   position: absolute; bottom: 2px; right: 4px; z-index: 2; pointer-events: none;
   font-size: 10px; font-weight: 700; opacity: 0.85;
   background: rgba(0, 0, 0, 0.45); padding: 0 5px; border-radius: 3px;
 }
+
 /* Properties panel */
 .timeline-props { border-top: 1px solid rgba(148, 163, 184, 0.2); padding: 8px 10px; background: rgba(2, 6, 23, 0.55); }
+
 .timeline-props-empty { font-size: 12px; padding: 6px; }
+
 .tl-props-head { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; margin-bottom: 6px; }
+
 .tl-props-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+
 .tl-prop { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+
 .tl-prop span { opacity: 0.7; }
+
 .tl-prop input, .tl-prop select { width: 100%; box-sizing: border-box; }
+
 .tl-prop-wide { grid-column: span 2; }
 
 /* ============================================================
@@ -3820,6 +2908,7 @@ input[type="range"].vertical.tilt-slider {
    Unifies classic + timeline modes; overrides the older flex/grid rules.
    ============================================================ */
 html, body { height: 100%; }
+
 body { overflow: hidden; }
 
 .main-grid,
@@ -3835,14 +2924,17 @@ body.cue-editor-mode-timeline .main-grid {
   align-items: stretch;
   overflow: hidden;
 }
+
 .main-grid > .rig-panel,
 body.cue-editor-mode-timeline .rig-panel {
   grid-area: rig; margin: 0; min-height: 0; max-height: none; overflow: hidden;
 }
+
 .main-grid > .controller-panel,
 body.cue-editor-mode-timeline .controller-panel {
   grid-area: controller; margin: 0; min-height: 0; max-height: none; overflow: auto;
 }
+
 .main-grid > .cues-panel,
 body.cue-editor-mode-timeline .cues-panel {
   grid-area: cues; margin: 0; min-height: 0; max-height: none; overflow: auto;
@@ -3850,23 +2942,34 @@ body.cue-editor-mode-timeline .cues-panel {
 
 /* Rig canvas fills its cell (toolbars stay fixed height above it). */
 .rig-panel { min-height: 0; }
+
 #rig-canvas { flex: 1 1 0; min-height: 0; width: 100%; height: 100%; }
 
 /* Cues panel: prioritise the cue table / timeline, push optional feature
    sections (Sync Video, Auto-Light) to the bottom — visual reorder only. */
 .cues-panel { display: flex; flex-direction: column; gap: 6px; }
+
 .cues-panel > * { flex: 0 0 auto; }
+
 .cues-panel > .cue-files { order: 0; }
+
 .cues-panel > .cue-toolbar { order: 1; }
+
 .cues-panel > #playback-bar { order: 2; }
+
 .cues-panel > .cue-table-container { order: 3; flex: 1 1 0; min-height: 90px; max-height: none; overflow: auto; }
+
 .cues-panel > #timeline-editor:not(.hidden) { order: 3; flex: 1 1 0; min-height: 140px; }
+
 .cues-panel > .cue-props { order: 4; }
+
 .cues-panel > #sync-video-section { order: 5; max-height: 32vh; overflow: auto; }
-.cues-panel > #autolight-section { order: 6; }
+
 /* Timeline editor fills its region instead of forcing a 420px min-height. */
 .timeline-editor { min-height: 0; }
+
 .cues-panel > #timeline-editor:not(.hidden) { display: flex; flex-direction: column; }
+
 .timeline-scroll { flex: 1 1 0; min-height: 0; }
 
 /* Give the bottom (cues/timeline) a bit more height; cap optional sections. */
@@ -3874,25 +2977,35 @@ body.cue-editor-mode-timeline .cues-panel {
 body.cue-editor-mode-timeline .main-grid {
   grid-template-rows: minmax(0, 1fr) minmax(0, 1.08fr);
 }
+
 .cues-panel > #sync-video-section { max-height: 26vh; }
-.cues-panel > #autolight-section { max-height: 30vh; overflow: auto; }
+
 /* Compaction pass: tighter paddings + slightly smaller controls. */
 .panel { padding: 8px; gap: 6px; }
+
 .panel-header h2 { font-size: 14px; margin: 0; }
+
 .cue-toolbar, .cue-files { gap: 6px; }
+
 .cue-toolbar button, .cue-files button, .controller-actions button { padding: 4px 8px; font-size: 12px; }
+
 .ctrl-box { min-height: 0; padding: 6px; gap: 4px; }
+
 .ctrl-box h3 { font-size: 12px; margin: 0 0 4px; }
 
 /* In timeline mode the classic cue-props is redundant (the timeline has its own
    properties panel) — hide it so the timeline fills the bottom panel. */
 body.cue-editor-mode-timeline .cues-panel > .cue-props { display: none; }
+
 .cues-panel > #timeline-editor:not(.hidden) { min-height: 180px; }
 
 /* Direct Cue list / Timeline view toggle in the cue toolbar. */
 .cue-view-toggle { display: inline-flex; margin-left: auto; border: 1px solid var(--border, rgba(148,163,184,0.3)); border-radius: 6px; overflow: hidden; }
+
 .cue-view-btn { padding: 4px 10px; font-size: 12px; background: transparent; border: none; color: var(--text-muted, #94a3b8); cursor: pointer; }
+
 .cue-view-btn + .cue-view-btn { border-left: 1px solid var(--border, rgba(148,163,184,0.3)); }
+
 .cue-view-btn.active { background: var(--accent, #2563eb); color: #fff; font-weight: 600; }
 
 /* ============================================================
@@ -3914,25 +3027,38 @@ body.cue-editor-mode-timeline .main-grid {
   box-sizing: border-box;
   overflow: hidden;
 }
+
 .main-grid > .rig-panel,        body.cue-editor-mode-timeline .rig-panel        { grid-area: rig; }
+
 .main-grid > .controller-panel, body.cue-editor-mode-timeline .controller-panel { grid-area: controller; }
+
 .main-grid > .cues-panel,       body.cue-editor-mode-timeline .cues-panel       { grid-area: cues; }
+
 .main-grid > .panel { margin: 0; min-height: 0; max-height: none; }
 
 /* Resize splitters */
 .tl-vsplit, .tl-hsplit { background: rgba(148, 163, 184, 0.14); border-radius: 3px; z-index: 5; }
+
 .tl-vsplit { grid-area: vsplit; cursor: col-resize; }
+
 .tl-hsplit { grid-area: hsplit; cursor: row-resize; }
+
 .tl-vsplit:hover, .tl-hsplit:hover { background: var(--accent, #2563eb); }
 
 /* RIG canvas dominates its (now tall) cell. */
 .rig-panel { overflow: hidden; }
+
 #rig-canvas { flex: 1 1 0; min-height: 120px; width: 100%; height: 100%; }
+
 /* Compact rig toolbars so the canvas gets the space. */
 .add-device-bar { gap: 6px; }
+
 .add-device-bar label { font-size: 11px; }
+
 .rig-type-bar, .rig-sort-bar { font-size: 11px; gap: 4px; }
+
 .rig-sort-bar button, .rig-type-bar .rig-type-buttons button { padding: 2px 7px; font-size: 11px; }
+
 .calib-panel > summary { font-size: 12px; }
 
 /* Controller fills its cell, scrolls internally only if needed. */
@@ -3940,91 +3066,127 @@ body.cue-editor-mode-timeline .main-grid {
 
 /* ---- Bottom tabbed area (Cues / Sync Video / Auto-Light) ---- */
 .cues-panel { overflow: hidden; }
+
 .cues-tabbar { display: flex; gap: 4px; flex: 0 0 auto; margin-bottom: 4px; order: -1; }
+
 .cues-tab-btn {
   padding: 4px 12px; font-size: 12px; border: 1px solid var(--border, rgba(148,163,184,0.3));
   border-radius: 6px 6px 0 0; background: transparent; color: var(--text-muted, #94a3b8); cursor: pointer;
 }
+
 .cues-tab-btn.active { background: var(--accent, #2563eb); color: #fff; font-weight: 600; }
+
 /* Show only the active group; the tabbar (no data-bgroup) always stays. */
 .cues-panel[data-tab="cues"]      > [data-bgroup]:not([data-bgroup="cues"])      { display: none !important; }
+
 .cues-panel[data-tab="sync"]      > [data-bgroup]:not([data-bgroup="sync"])      { display: none !important; }
-.cues-panel[data-tab="autolight"] > [data-bgroup]:not([data-bgroup="autolight"]) { display: none !important; }
-/* Active feature sections fill the bottom (no more vh caps in tab mode). */
-.cues-panel > [data-bgroup="sync"], .cues-panel > [data-bgroup="autolight"] {
-  flex: 1 1 auto; max-height: none; overflow: auto; order: 5;
-}
 
 /* ============================================================
    Global compaction — denser UI (smaller text/controls/paddings).
    Appended last so it sets the new defaults; specific rules still win.
    ============================================================ */
 body { font-size: 13px; }
+
 .topbar { padding: 5px 12px; }
+
 .topbar h1 { font-size: 15px; }
+
 .main-grid,
 body.cue-editor-mode-timeline .main-grid { height: calc(100vh - 46px); padding: 5px 7px; gap: 5px; }
 
 .panel { padding: 7px; gap: 5px; border-radius: 10px; }
+
 .panel-header h2 { font-size: 13px; }
+
 .panel-header .muted, .muted { font-size: 11px; }
 
 button { font-size: 12px; padding: 4px 9px; }
+
 input, select, textarea { font-size: 12px; padding: 3px 6px; }
+
 label { font-size: 12px; }
+
 h3 { font-size: 12px; }
 
 /* Controller density */
 .ctrl-box { padding: 6px; gap: 4px; }
+
 .ctrl-box h3 { font-size: 11px; margin: 0 0 3px; }
+
 .controller-tabs .tab-btn { padding: 3px 10px; font-size: 12px; }
+
 .fixture-group-card { padding: 6px; margin-bottom: 6px; }
+
 .fixture-group-title { font-size: 11px; margin-bottom: 5px; }
+
 .fixture-presets button { font-size: 10px; padding: 3px 6px; }
 
 /* Rig toolbars density */
 .add-device-bar { gap: 5px; }
+
 .add-device-bar label, .add-device-bar input, .add-device-bar select { font-size: 11px; }
+
 .add-device-bar button { padding: 4px 10px; }
+
 .rig-type-bar, .rig-sort-bar { font-size: 11px; }
 
 /* Cue toolbar / table density */
 .cue-toolbar-title { font-size: 11px; }
+
 .cue-table { font-size: 12px; }
+
 .cue-table th, .cue-table td { padding: 3px 8px; }
+
 .cue-view-btn, .cues-tab-btn { padding: 3px 10px; font-size: 11px; }
 
 /* ============================================================
    Compaction pass 2 — tighter still.
    ============================================================ */
 body { font-size: 11.5px; }
+
 .topbar { padding: 4px 10px; }
+
 .topbar h1 { font-size: 13px; }
+
 .main-grid,
 body.cue-editor-mode-timeline .main-grid { height: calc(100vh - 40px); padding: 4px 6px; gap: 4px; }
 
 .panel { padding: 6px; gap: 4px; border-radius: 9px; }
+
 .panel-header h2 { font-size: 12px; }
+
 .panel-header .muted, .muted { font-size: 10px; }
 
 button { font-size: 11px; padding: 3px 7px; }
+
 input, select, textarea { font-size: 11px; padding: 2px 5px; }
+
 label { font-size: 11px; }
+
 h3 { font-size: 11px; }
 
 .ctrl-box { padding: 5px; gap: 3px; }
+
 .ctrl-box h3 { font-size: 10px; margin: 0 0 2px; }
+
 .controller-tabs .tab-btn { padding: 2px 9px; font-size: 11px; }
+
 .fixture-group-card { padding: 5px; margin-bottom: 5px; }
+
 .fixture-group-title { font-size: 10px; margin-bottom: 4px; }
 
 .add-device-bar label, .add-device-bar input, .add-device-bar select { font-size: 10px; }
+
 .rig-type-bar, .rig-sort-bar { font-size: 10px; }
+
 .rig-sort-bar button, .rig-type-bar .rig-type-buttons button { padding: 2px 6px; font-size: 10px; }
 
 .cue-toolbar-title { font-size: 10px; }
+
 .cue-table { font-size: 11px; }
+
 .cue-table th, .cue-table td { padding: 2px 7px; }
+
 .cue-view-btn, .cues-tab-btn { padding: 2px 9px; font-size: 11px; }
 
 /* Tighter sliders/range controls */
@@ -4034,6 +3196,7 @@ input[type="range"] { height: 14px; }
    RIG: toolbar moved to a right-click context menu on the canvas.
    ============================================================ */
 .add-device-bar, .rig-type-bar, .rig-sort-bar { display: none !important; }
+
 .rig-panel #rig-canvas { flex: 1 1 0; }
 
 .rig-context-menu {
@@ -4041,18 +3204,24 @@ input[type="range"] { height: 14px; }
   background: var(--panel, #11151d); border: 1px solid var(--border, rgba(148,163,184,0.3));
   border-radius: 8px; padding: 4px; box-shadow: 0 14px 34px rgba(0,0,0,0.55);
 }
+
 .rig-menu-item {
   display: block; width: 100%; text-align: left; padding: 5px 11px; margin: 1px 0;
   border: none; background: transparent; color: inherit; font-size: 12px;
   border-radius: 5px; cursor: pointer; white-space: nowrap;
 }
+
 .rig-menu-item:hover:not(:disabled) { background: var(--accent-soft, rgba(255,255,255,0.08)); }
+
 .rig-menu-item:disabled { opacity: 0.4; cursor: default; }
+
 .rig-menu-back { opacity: 0.75; font-style: italic; }
+
 .rig-menu-sep { height: 1px; margin: 4px 6px; background: var(--border, rgba(148,163,184,0.2)); }
 
 /* Calibration becomes a floating overlay over the canvas (opened from menu). */
 .calib-panel { display: none; }
+
 .calib-panel.calib-floating-open {
   display: block; position: absolute; z-index: 30; left: 8px; right: 8px; top: 36px;
   max-height: 72%; overflow: auto; padding: 8px;
@@ -4072,22 +3241,30 @@ button, button.secondary, button.danger, button.primary {
   color: var(--text, #e5e7eb);
   font-weight: 500;
 }
+
 button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.11) !important;
   border-color: rgba(148, 163, 184, 0.5) !important;
   transform: none !important;
   box-shadow: none !important;
 }
+
 button:active:not(:disabled) {
   transform: none !important;
   background: rgba(255, 255, 255, 0.16) !important;
   box-shadow: none !important;
 }
+
 button.secondary { background: rgba(255, 255, 255, 0.03); color: var(--text-muted, #94a3b8); }
+
 button.primary { background: var(--accent, #2563eb); border-color: var(--accent, #2563eb); color: #fff; }
+
 button.primary:hover:not(:disabled) { background: #1d4ed8 !important; border-color: #1d4ed8 !important; }
+
 button.danger { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; }
+
 button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.24) !important; border-color: #ef4444 !important; }
+
 /* Flatten inputs/selects too. */
 input, select, textarea { border-radius: 4px !important; box-shadow: none !important; }
 
@@ -4101,10 +3278,15 @@ button {
   line-height: 1.35 !important;
   font-weight: 500 !important;
 }
+
 .playback-btn { min-height: 24px !important; padding: 4px 12px !important; font-size: 12px !important; }
+
 .ctc-stop-button { min-width: 120px !important; min-height: 28px !important; padding: 4px 12px !important; font-size: 12px !important; letter-spacing: 0.04em !important; }
+
 .playback-bar button { padding: 2px 7px !important; }
+
 .cue-view-btn, .cues-tab-btn { padding: 3px 10px !important; font-size: 11px !important; }
+
 input, select, textarea { font-size: 11px !important; padding: 2px 6px !important; }
 
 .playback-btn { min-width: 70px !important; font-weight: 600 !important; letter-spacing: 0 !important; }
@@ -4113,18 +3295,30 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
    Cues panel — reclaim wasted vertical space (denser toolbar).
    ============================================================ */
 .cues-panel { gap: 4px; }
+
 .cues-panel > .panel-header { margin: 0; flex-direction: row; align-items: baseline; gap: 8px; }
+
 .cues-panel > .panel-header h2 { font-size: 12px; margin: 0; }
-.cues-panel > .panel-header .muted { display: none; }       /* hide "/cue/*.json" */
+
+.cues-panel > .panel-header .muted { display: none; }
+       /* hide "/cue/*.json" */
 .cue-files { gap: 5px; margin: 0; }
+
 .cue-loop-actions { margin: 0; }
+
 /* Playback + Edit on one wrapping row, tiny inline section titles. */
 .cue-toolbar { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 5px 16px; margin: 0; padding: 0; }
+
 .cue-toolbar-group { display: flex; flex-direction: row; align-items: center; gap: 6px; }
+
 .cue-toolbar-title { font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.5; margin: 0 2px 0 0; }
+
 .cue-actions, .cue-actions-playback { display: flex; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 5px; margin: 0; }
+
 .playback-controls-row { gap: 5px; }
+
 .cue-speed-control { gap: 4px; }
+
 /* Timeline toolbar (zoom) compact. */
 .timeline-toolbar { gap: 10px; padding: 2px 0; }
 
@@ -4132,14 +3326,19 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
    Cue bar — file row + loop + playback/edit on ONE organized line.
    ============================================================ */
 .cue-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+
 .cue-bar > * { margin: 0 !important; }
+
 #cue-file-select { width: 210px; flex: 0 0 auto; }
+
 .cue-files { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; }
+
 /* flatten the loop + toolbar boxes so they blend into the single bar */
 .cue-bar .cue-loop-actions, .cue-bar .cue-toolbar {
   background: none !important; border: none !important; box-shadow: none !important;
   padding: 0 !important; display: flex; align-items: center; gap: 5px;
 }
+
 /* group separators */
 .cue-bar > .cue-loop-actions, .cue-bar > .cue-toolbar,
 .cue-bar .cue-toolbar-group + .cue-toolbar-group {
@@ -4149,16 +3348,22 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
 
 /* Force the whole cue bar onto ONE line: flatten the toolbar into the flow. */
 .cue-bar { flex-wrap: nowrap; gap: 5px 8px; overflow-x: auto; }
+
 .cue-bar .cue-toolbar { display: contents; }
+
 #cue-file-select { width: 170px; }
+
 .cue-files { gap: 4px; }
+
 .cue-bar .cue-actions, .cue-bar .cue-actions-playback { flex-wrap: nowrap; gap: 4px; }
+
 .cue-bar > .cue-loop-actions,
 .cue-bar .cue-toolbar-group {
   border-left: 1px solid rgba(148, 163, 184, 0.2);
   padding-left: 8px !important;
   flex: 0 0 auto;
 }
+
 .cue-bar button { white-space: nowrap; }
 
 /* ── Timeline playback performance ─────────────────────────────────────────
@@ -4174,6 +3379,7 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
   content-visibility: auto;
   contain-intrinsic-size: auto 60px;
 }
+
 .timeline-playhead {
   will-change: transform;
 }
@@ -4191,12 +3397,14 @@ input, select, textarea { font-size: 11px !important; padding: 2px 6px !importan
   background: rgba(15, 23, 42, 0.55);
   padding: 10px;
 }
+
 .cues-panel > #rapidfire-grid:not(.hidden) {
   order: 3;
   flex: 1 1 0;
   min-height: 140px;
   display: flex;
 }
+
 /* The classic cue properties block is meaningless here — reclaim the space. */
 body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
 
@@ -4206,6 +3414,7 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   gap: 10px;
   flex: 0 0 auto;
 }
+
 .rapidfire-heading {
   font-size: 13px;
   font-weight: 600;
@@ -4213,12 +3422,15 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   text-transform: uppercase;
   color: var(--text);
 }
+
 .rapidfire-status { font-size: 12px; margin-right: auto; }
+
 .rapidfire-stop-all {
   background: var(--danger-soft);
   border: 1px solid var(--danger);
   color: #fecaca;
 }
+
 .rapidfire-stop-all:disabled { opacity: 0.45; }
 
 .rapidfire-pads {
@@ -4231,6 +3443,7 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   gap: 8px;
   align-content: start;
 }
+
 .rapidfire-empty {
   grid-column: 1 / -1;
   padding: 18px 12px;
@@ -4249,18 +3462,23 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   background: var(--panel-2);
   transition: border-color 0.12s ease, background 0.12s ease;
 }
+
 .rapidfire-pad.is-loaded { border-left-color: var(--accent-strong); }
+
 .rapidfire-pad.is-playing {
   border-color: #22c55e;
   border-left-color: #22c55e;
   background: rgba(34, 197, 94, 0.12);
 }
+
 .rapidfire-pad.is-paused {
   border-color: #fbbf24;
   border-left-color: #fbbf24;
   background: rgba(251, 191, 36, 0.12);
 }
+
 .rapidfire-pad.is-starting { border-color: var(--accent); }
+
 .rapidfire-pad.is-broken { opacity: 0.55; }
 
 /* The pad body is the primary trigger: one click fires the cue list. */
@@ -4279,14 +3497,18 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   color: var(--text);
   cursor: pointer;
 }
+
 .rapidfire-pad-fire:hover:not(:disabled) { background: var(--accent-soft); }
+
 .rapidfire-pad-fire:disabled { cursor: not-allowed; }
+
 .rapidfire-pad-title {
   font-size: 14px;
   font-weight: 600;
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
+
 .rapidfire-pad-sub {
   font-size: 11px;
   color: var(--text-muted);
@@ -4294,6 +3516,7 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
 }
 
 .rapidfire-pad-controls { display: flex; gap: 6px; }
+
 .rapidfire-pad-btn {
   flex: 1 1 0;
   padding: 5px 8px;
@@ -4302,23 +3525,28 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   border-radius: 6px;
   cursor: pointer;
 }
+
 .rapidfire-pad-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .rapidfire-pad-play {
   background: var(--accent);
   border: 1px solid var(--accent);
   color: #fff;
 }
+
 .rapidfire-pad.is-playing .rapidfire-pad-play {
   background: rgba(251, 191, 36, 0.2);
   border-color: #fbbf24;
   color: #fde68a;
 }
+
 .rapidfire-pad-stop {
   flex: 0 0 auto;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--text-muted);
 }
+
 .rapidfire-pad-stop:not(:disabled):hover {
   border-color: var(--danger);
   color: #fecaca;
@@ -4334,8 +3562,11 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
    min-height on every <button> with !important. Rapid Fire pads are meant to be
    hit in the dark during a show, so they reclaim a real touch target. */
 .rapidfire-pad-fire { min-height: 64px !important; padding: 10px !important; }
+
 .rapidfire-pad-btn { min-height: 26px !important; padding: 5px 8px !important; font-size: 12px !important; font-weight: 600 !important; }
+
 .rapidfire-stop-all { padding: 4px 10px !important; font-size: 12px !important; }
+
 @media (max-width: 1500px) {
   .rapidfire-pad-fire { min-height: 52px !important; padding: 8px !important; }
 }
@@ -4344,6 +3575,7 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
    Right-click menu items now carry a keyboard hint, and the bulk-add modal
    shows a live DMX patch preview. */
 .rig-menu-item { display: flex; align-items: center; gap: 14px; justify-content: space-between; }
+
 .rig-menu-shortcut {
   font-size: 10.5px;
   letter-spacing: 0.04em;
@@ -4351,9 +3583,11 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   opacity: 0.75;
   white-space: nowrap;
 }
+
 .rig-menu-item:disabled .rig-menu-shortcut { opacity: 0.5; }
 
 .dmx-modal-bulk-add .dmx-modal-body { max-height: min(62vh, 560px); overflow-y: auto; }
+
 .dmx-modal-preview {
   margin-top: 2px;
   padding: 8px 10px;
@@ -4377,7 +3611,11 @@ body.cue-editor-mode-rapidfire .cues-panel > .cue-props { display: none; }
   cursor: pointer;
   user-select: none;
 }
+
 .rapidfire-loop input { width: auto; margin: 0; cursor: pointer; }
+
 .rapidfire-loop:has(input:checked) { color: var(--text); font-weight: 600; }
+
 /* Fallback for engines without :has() — the checkbox itself still shows state. */
 .rapidfire-loop input:checked { accent-color: var(--accent, #3b82f6); }
+

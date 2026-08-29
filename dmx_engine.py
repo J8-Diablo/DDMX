@@ -93,7 +93,7 @@ class DeviceState:
     fixture_template: str = ""
     cname: str = ""
     capabilities: Dict[str, Any] = field(default_factory=dict)
-    # Per-fixture movement calibration (AutoLight "home / audience" position).
+    # Per-fixture movement calibration (the "home / audience" position).
     # home_pan/home_tilt are DMX values (0-255) the fixture returns to when idle;
     # invert_pan/invert_tilt flip the axis for fixtures mounted upside-down or
     # oriented differently. None means "not calibrated" (engine leaves as-is).
@@ -103,11 +103,11 @@ class DeviceState:
     invert_tilt: bool = False
 
 def _classify_device_capabilities(attr_map: Dict[str, int], fixture_template: str) -> Dict[str, Any]:
-    """Derive AutoLight-relevant capabilities from a device's channel map.
+    """Derive per-fixture capabilities from a device's channel map.
 
     Returns flags (``has_dimmer``, ``has_color``, ``has_movement``,
-    ``strobe_friendly``) plus the raw channel indexes that the overlay will
-    drive. Called once at rig registration; results are cached on the device.
+    ``strobe_friendly``) plus the raw channel indexes behind them. Called once
+    at rig registration; results are cached on the device.
     """
     dimmer_ch: Optional[int] = None
     red_ch: Optional[int] = None
@@ -263,10 +263,6 @@ class DMXRenderEngine:
         # engine resolves the channel through that device's attr_map, so a
         # re-address or a fixture swap cannot leave a stale write behind.
         self._manual_attrs: Dict[str, Dict[str, int]] = {}  # {device_id: {attr_key: value}}
-
-        # Optional AutoLight render-pipeline overlay. Callable invoked after the
-        # base render pass with (universes, now_ts); may mutate values in place.
-        self._autolight_overlay: Optional[Any] = None
 
         # Movement smoothing (pan/tilt) - channels provided by UI
         self._smooth_channels: Dict[int, set] = {}  # {universe: {channel}}
@@ -1431,14 +1427,6 @@ class DMXRenderEngine:
             if self._smooth_targets:
                 self._apply_smoothing()
 
-            # AutoLight overlay: audio-reactive values written on top of the
-            # base render, but below the identify overlay.
-            if self._autolight_overlay is not None:
-                try:
-                    self._autolight_overlay(self._universes, now)
-                except Exception as exc:
-                    log.debug("autolight overlay failed: %s", exc)
-
             # Apply identify overlay (highest priority, overrides everything)
             if self._identify_devices or self._identify_data:
                 self._render_identify(now)
@@ -2317,12 +2305,6 @@ class DMXRenderEngine:
             self._smooth_last_targets.clear()
             for uni in self._universes.values():
                 uni[:] = self._zero_universe
-            overlay = self._autolight_overlay
-        if overlay is not None and hasattr(overlay, "on_rig_changed"):
-            try:
-                overlay.on_rig_changed(self._devices)
-            except Exception as exc:
-                log.debug("autolight overlay on_rig_changed failed: %s", exc)
 
     def register_rig_devices(self, devices: List[Any], replace: bool = False):
         """Register/update devices with attr_map from UI rig.
@@ -2427,34 +2409,10 @@ class DMXRenderEngine:
                     )
                 self._ensure_universe(universe)
 
-            overlay = self._autolight_overlay
-        if overlay is not None and hasattr(overlay, "on_rig_changed"):
-            try:
-                overlay.on_rig_changed(self._devices)
-            except Exception as exc:
-                log.debug("autolight overlay on_rig_changed failed: %s", exc)
-
-    def set_autolight_overlay(self, overlay: Optional[Any]) -> None:
-        """Install (or clear) a callable invoked each render tick.
-
-        Signature: ``overlay(universes: Dict[int, List[int]], now: float)``.
-        The callable runs inside the render lock and may mutate universe
-        values in place. Pass ``None`` to remove the overlay.
-        """
-        with self._lock:
-            self._autolight_overlay = overlay
-            devices_snapshot = dict(self._devices) if self._devices else {}
-        if overlay is not None and hasattr(overlay, "on_rig_changed") and devices_snapshot:
-            try:
-                overlay.on_rig_changed(devices_snapshot)
-            except Exception as exc:
-                log.debug("autolight overlay on_rig_changed (install) failed: %s", exc)
-
     def has_active_fade_for(self, device_id: str) -> bool:
         """True when a cue fade is currently touching ``device_id``.
 
-        Used by AutoLight to yield a fixture while a manual cue is fading it
-        in/out. Must be called without the engine lock; acquires it briefly.
+        Must be called without the engine lock; acquires it briefly.
         """
         with self._lock:
             fade = self._fade
